@@ -194,7 +194,19 @@ static_assert(sizeof(float128_t) == 16, "");
 
 extern void const *undef_value(size_t size);
 
+// Clang can materialize a defined arbitrary value without a runtime provider.
+// Its builtin supports integers, floating-point values and vectors. Other
+// types are rejected by the compiler instead of receiving a fabricated value.
+#if defined(__has_builtin)
+#if __has_builtin(__builtin_nondeterministic_value)
+#define undef(T) __builtin_nondeterministic_value((__typeof__(T)){0})
+#endif
+#endif
+
+// Other compilers retain the explicit requirement for a runtime provider.
+#ifndef undef
 #define undef(T) (*(__typeof__(T) *) undef_value(sizeof(T)))
+#endif
 
 //
 // Break and continue
