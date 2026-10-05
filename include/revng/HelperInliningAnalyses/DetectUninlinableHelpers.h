@@ -19,7 +19,7 @@ bool isPointerToConstantGlobal(const llvm::Value *Pointer);
 ///
 /// An operand of an instruction is *critical* when one of the following holds:
 /// - it is the condition of a `switch` instruction;
-/// - it is one of the index operands of a `getelementptr` instruction.
+/// - it is the pointer or an index operand of a `getelementptr` instruction.
 ///
 /// A *critical argument* of `Helper` is a formal parameter that flows into a
 /// critical operand. The function performs a backward dataflow walk from every

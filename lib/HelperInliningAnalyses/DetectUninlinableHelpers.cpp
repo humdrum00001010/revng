@@ -39,14 +39,18 @@ std::optional<BitVector> computeCriticalArgumentsFor(const Function &Helper) {
     return std::nullopt;
 
   // Seed the backward worklist with every critical operand: the condition of
-  // every `switch` and the index operands of every `getelementptr`. Done in a
+  // every `switch` and the pointer and index operands of every `getelementptr`. Done in a
   // single pass over the function.
   OnceQueue<const Value *> Worklist;
   for (const BasicBlock &BB : Helper) {
     for (const Instruction &I : BB) {
-      if (const auto *GEP = dyn_cast<GetElementPtrInst>(&I))
+      if (const auto *GEP = dyn_cast<GetElementPtrInst>(&I)) {
+        // Constant indices do not make a GEP constant when its base pointer
+        // remains a runtime value after helper inlining.
+        Worklist.insert(GEP->getPointerOperand());
         for (const auto &Index : GEP->indices())
           Worklist.insert(Index);
+      }
     }
 
     if (const auto *Switch = dyn_cast<SwitchInst>(BB.getTerminator()))
@@ -69,6 +73,19 @@ std::optional<BitVector> computeCriticalArgumentsFor(const Function &Helper) {
       // known. Anything else is a load from runtime memory and we have to
       // give up — the helper cannot be inlined at any call site.
       if (not isPointerToConstantGlobal(Load->getPointerOperand()))
+        return std::nullopt;
+    } else if (isa<AllocaInst, CallBase>(V)) {
+
+      // These produce runtime values even when their operands are constant.
+      // Following operands alone would incorrectly promise constant folding.
+      return std::nullopt;
+    } else if (const auto *Phi = dyn_cast<PHINode>(V)) {
+
+      // Distinct incoming constants still depend on runtime control flow,
+      // which is not represented among a PHI's data operands.
+      if (const Value *Common = Phi->hasConstantValue())
+        Worklist.insert(Common);
+      else
         return std::nullopt;
     } else if (const auto *I = dyn_cast<Instruction>(V)) {
 
