@@ -214,28 +214,20 @@ void Builder<ModelMode>::addDependenciesFrom(const AssociatedNodes Dependent,
                                            NodesDependedOn.Declaration;
     revng_assert(NodeDependedOn);
     addAndLogSuccessor(DependentNode, NodeDependedOn);
-    return;
-  }
-
-  // If `FoundPointer` is true, and `LastArray` is false, the node depended on
-  // is always the `Declaration` node, because we don't need the full
-  // definition.
-  if (FoundPointer) {
+  } else if (FoundPointer) {
+    // A pointer not followed by an array only needs the declaration.
     addAndLogSuccessor(DependentNode, NodesDependedOn.Declaration);
     return;
-  }
+  } else {
+    // Otherwise we fall back in the baseline case.
+    addAndLogSuccessor(DependentNode, NodesDependedOn.Declaration);
 
-  // Otherwise we fall back in the baseline case.
-
-  // The `DependentNode` always depends on the `Declaration` node.
-  addAndLogSuccessor(DependentNode, NodesDependedOn.Declaration);
-
-  // If both `Dependent` and `DefinitionDependedOn` have a separate forward
-  // declaration we add a dependency from `DependentNode` to the `Definition`
-  // of the `NodesDependedOn`.
-  if (ForwardDeclaration
-      and isSeparateDeclarationAllowed(DefinitionDependedOn)) {
-    addAndLogSuccessor(DependentNode, NodesDependedOn.Definition);
+    // If both types have a separate forward declaration, depend on the full
+    // definition as well.
+    if (ForwardDeclaration
+        and isSeparateDeclarationAllowed(DefinitionDependedOn)) {
+      addAndLogSuccessor(DependentNode, NodesDependedOn.Definition);
+    }
   }
 
   // Finally, if the `DependentDefinition` has a forward declaration, it also
@@ -243,7 +235,9 @@ void Builder<ModelMode>::addDependenciesFrom(const AssociatedNodes Dependent,
   // In that case, if `DefinitionDependedOn` is a typedef, we also have to look
   // across all those typedefs and ensure the full definition of the dependent
   // also depends on the full definition of the depended-on, across typedefs.
-  if (ForwardDeclaration
+  // Array elements must also be complete across typedefs, even when the
+  // dependent is itself a typedef and has no separate definition node.
+  if ((ForwardDeclaration or LastArray)
       and mlir::isa<clift::TypedefType>(DefinitionDependedOn)) {
     using DefinedType = clift::DefinedType;
     if (auto D = clift::unwrapped_dyn_cast<DefinedType>(DefinitionDependedOn)) {

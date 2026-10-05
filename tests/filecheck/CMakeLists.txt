@@ -26,6 +26,7 @@ set(FILECHECK_TESTS
     clift/backend/always_inline.mlir
     clift/backend/arithmetic.mlir
     clift/backend/array.mlir
+    clift/backend/array-typedef-dependency.mlir
     clift/backend/attributes.mlir
     clift/backend/block.mlir
     clift/backend/break-to.mlir
