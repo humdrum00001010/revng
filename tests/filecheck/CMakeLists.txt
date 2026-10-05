@@ -18,6 +18,7 @@ function(add_filecheck_test PATH)
 endfunction()
 
 set(FILECHECK_TESTS
+    primitive-types/undef.c
     clift/attributes/data-model.mlir
     clift/backend-transforms/immediate-radix-switch.mlir
     clift/backend-transforms/immediate-radix.mlir
@@ -60,6 +61,7 @@ set(FILECHECK_TESTS
     clift/backend/switch.mlir
     clift/backend/ternary.mlir
     clift/backend/types.mlir
+    clift/backend/undefined-values.mlir
     clift/backend/while.mlir
     clift/c-legalization/add-i16.mlir
     clift/c-legalization/eq-to-i8.mlir
@@ -465,6 +467,8 @@ set(FILECHECK_TESTS
     model/drop-types/DropViaPointer.yml
     model/drop-types/UnionCascade.yml
     model/drop-types/UnionPartialDrop.yml)
+
+list(APPEND FILECHECK_TESTS primitive-types/native-entry-stack.c)
 
 foreach(F IN LISTS FILECHECK_TESTS)
   add_filecheck_test(${F})

@@ -311,7 +311,7 @@ private:
         uint64_t OffsetInBits = StructLayout->getElementOffsetInBits(Index);
         revng_assert(OffsetInBits % 8 == 0);
 
-        uint64_t FieldSizeInBits = DataLayout->getTypeSizeInBits(FieldType);
+        uint64_t FieldSizeInBits = DataLayout->getTypeAllocSizeInBits(FieldType);
         revng_assert(FieldSizeInBits % 8 == 0,
                      ("StructType with a field whose size is not a multiple of "
                       " 8 bits. Field index: "
@@ -414,7 +414,7 @@ private:
                                       FieldOffsetInBits / 8,
                                       FieldType));
 
-      uint64_t FieldSizeInBits = DataLayout.getTypeSizeInBits(T);
+      uint64_t FieldSizeInBits = DataLayout.getTypeAllocSizeInBits(T);
       revng_assert(FieldSizeInBits % 8 == 0,
                    (HelperFunction->getName().str()
                     + " returns a StructType with a field whose size "
@@ -819,6 +819,9 @@ private:
   mlir::Value emitImplicitBitcast(mlir::Location Loc,
                                   mlir::Value Value,
                                   mlir::Type TargetType) {
+    // A cast expression produces an rvalue. Drop only its top-level const;
+    // PointerType::removeConst preserves the qualification of its pointee.
+    TargetType = clift::removeConst(TargetType);
     mlir::Type SourceType = Value.getType();
 
     if (SourceType == TargetType)

@@ -16,6 +16,7 @@
 #include "revng/CliftEmitC/TypeDefinitionEmitter.h"
 #include "revng/CliftEmitC/TypeDependencyGraph.h"
 #include "revng/CliftImportModel/ImportModel.h"
+#include "revng/Model/OperatingSystem.h"
 #include "revng/PTML/CTokenEmitter.h"
 #include "revng/Ranks/Location.h"
 #include "revng/Ranks/Ranks.h"
@@ -312,6 +313,14 @@ void emitHelperHeader(ptml::CTokenEmitter &Tokens,
                                             NonModelOpaqueTypes.end()));
 
   Emitter.emitOpaqueTypes(Context, NonModelOpaqueTypes);
+
+  // The binding stays opt-in and must appear after helper declarations.
+  if (Binary.Architecture() == model::Architecture::x86
+      and Binary.OperatingSystem() == model::OperatingSystem::Windows) {
+    Tokens.emitIncludeDirective("native-entry-stack.h",
+                                "",
+                                ptml::CTokenEmitter::IncludeMode::Quote);
+  }
 }
 
 void emitSingleTypeDefinition(ptml::CTokenEmitter &Tokens,

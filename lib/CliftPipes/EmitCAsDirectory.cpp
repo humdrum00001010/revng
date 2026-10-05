@@ -54,4 +54,5 @@ void revng::pypeline::piperuns::EmitCAsDirectory::run() {
   AddHeader("attributes.h");
   AddHeader("primitive-types.h");
   AddHeader("runtime-library.h");
+  AddHeader("native-entry-stack.h");
 }

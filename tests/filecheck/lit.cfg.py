@@ -7,6 +7,7 @@
 # type: ignore
 
 import os
+import subprocess
 import tempfile
 
 import lit.formats
@@ -28,3 +29,14 @@ build_dir = os.environ.get("REVNG_BUILD_DIR", os.getcwd())
 config.test_exec_root_handle = tempfile.TemporaryDirectory(prefix="revng-filecheck-")
 config.test_exec_root = config.test_exec_root_handle.name
 config.substitutions.append(("%root", build_dir))
+
+# These source-header tests require a compiler supporting the native builtin.
+probe = subprocess.run(
+    ["clang", "-E", "-P", "-x", "c", "-"],
+    input=b"__has_builtin(__builtin_nondeterministic_value)\n",
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    check=False,
+)
+if probe.returncode == 0 and probe.stdout.strip() == b"1":
+    config.available_features.add("clang-nondeterministic-value")

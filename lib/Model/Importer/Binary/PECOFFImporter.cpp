@@ -2,6 +2,8 @@
 // This file is distributed under the MIT License. See LICENSE.md for details.
 //
 
+#include <limits>
+
 #include "llvm/Object/COFF.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/Error.h"
@@ -57,6 +59,9 @@ private:
   Error parseSectionsHeaders();
   /// Parse static symbols from the file.
   void parseSymbols();
+
+  /// Parse code roots and aliases from the PE export address table.
+  void parseExportedSymbols();
 
   /// Parse dynamic symbols from the file.
   void parseImportedSymbols();
@@ -192,6 +197,114 @@ void PECOFFImporter::parseSymbols() {
 
     if (auto *Function = registerFunctionEntry(Address))
       Function->Name() = *MaybeName;
+  }
+}
+
+void PECOFFImporter::parseExportedSymbols() {
+  // Walk the name table independently: one EAT slot can have several names,
+  // while ExportDirectoryEntryRef::getSymbolName returns only the first one.
+  std::map<uint32_t, std::vector<std::string>> NamesByExportIndex;
+  const export_directory_table_entry *Table = TheBinary.ObjectFile
+                                                 .getExportTable();
+  if (Table == nullptr)
+    return;
+
+  auto ReadNames = [&]() {
+    uint32_t Count = Table->NumberOfNamePointers;
+    if (Count == 0)
+      return;
+    if (Count > std::numeric_limits<uint32_t>::max() / sizeof(uint32_t))
+      return;
+
+    ArrayRef<uint8_t> OrdinalBytes;
+    ArrayRef<uint8_t> NameBytes;
+    if (Error E = TheBinary.ObjectFile.getRvaAndSizeAsBytes(
+          Table->OrdinalTableRVA, Count * sizeof(uint16_t), OrdinalBytes)) {
+      revng_log(Log, "Cannot get export name ordinals: " << E);
+      consumeError(std::move(E));
+      return;
+    }
+    if (Error E = TheBinary.ObjectFile.getRvaAndSizeAsBytes(
+          Table->NamePointerRVA, Count * sizeof(uint32_t), NameBytes)) {
+      revng_log(Log, "Cannot get export name pointers: " << E);
+      consumeError(std::move(E));
+      return;
+    }
+    auto *Ordinals = reinterpret_cast<const export_ordinal_table_entry *>(
+      OrdinalBytes.data());
+    auto *Names = reinterpret_cast<const export_name_pointer_table_entry *>(
+      NameBytes.data());
+    StringRef Buffer = TheBinary.ObjectFile.getMemoryBufferRef().getBuffer();
+    uintptr_t BufferStart = reinterpret_cast<uintptr_t>(Buffer.data());
+    uintptr_t BufferEnd = BufferStart + Buffer.size();
+    for (uint32_t Index = 0; Index < Count; ++Index) {
+      uint32_t ExportIndex = Ordinals[Index];
+      if (ExportIndex >= Table->AddressTableEntries)
+        continue;
+      uintptr_t NamePointer = 0;
+      if (Error E = TheBinary.ObjectFile.getRvaPtr(Names[Index], NamePointer)) {
+        revng_log(Log, "Cannot get export name: " << E);
+        consumeError(std::move(E));
+        continue;
+      }
+      if (NamePointer < BufferStart or NamePointer >= BufferEnd)
+        continue;
+      StringRef Remaining(reinterpret_cast<const char *>(NamePointer),
+                           BufferEnd - NamePointer);
+      size_t Length = Remaining.find('\0');
+      if (Length == StringRef::npos or Length == 0)
+        continue;
+      NamesByExportIndex[ExportIndex].push_back(Remaining.take_front(Length)
+                                                .str());
+    }
+  };
+  ReadNames();
+
+  uint32_t ExportIndex = 0;
+  for (const ExportDirectoryEntryRef &Entry :
+       TheBinary.ObjectFile.export_directories()) {
+    uint32_t Index = ExportIndex++;
+    bool IsForwarder = false;
+    if (Error E = Entry.isForwarder(IsForwarder)) {
+      revng_log(Log, "Cannot identify export forwarder: " << E);
+      consumeError(std::move(E));
+      continue;
+    }
+    if (IsForwarder)
+      continue;
+
+    uint32_t RVA = 0;
+    if (Error E = Entry.getExportRVA(RVA)) {
+      revng_log(Log, "Cannot get export RVA: " << E);
+      consumeError(std::move(E));
+      continue;
+    }
+    // A zero EAT slot is an unused ordinal, not a function at ImageBase.
+    if (RVA == 0)
+      continue;
+
+    MetaAddress Address = toPC(ImageBase + u64(RVA));
+    if (not Address.isValid())
+      continue;
+    // The helper rejects non-executable sections, including data exports.
+    model::Function *Function = registerFunctionEntry(Address);
+    if (Function == nullptr)
+      continue;
+
+    uint32_t Ordinal = 0;
+    if (Error E = Entry.getOrdinal(Ordinal)) {
+      revng_log(Log, "Cannot get export ordinal: " << E);
+      consumeError(std::move(E));
+    } else {
+      revng_log(Log, "Export ordinal " << Ordinal << " at " << Address.toString());
+    }
+
+    // Ordinal-only exports are valid roots. Preserve their unnamed status.
+    for (const std::string &Name : NamesByExportIndex[Index]) {
+      if (Function->Name().empty())
+        Function->Name() = Name;
+      Function->ExportedNames().insert(Name);
+    }
   }
 }
 
@@ -395,6 +508,9 @@ Error PECOFFImporter::import(const ImporterOptions &Options) {
 
   // Parse the symbol table.
   parseSymbols();
+
+  // DLL APIs can be exported without a static COFF symbol table or entrypoint.
+  parseExportedSymbols();
 
   // Parse dynamic symbol table.
   parseImportedSymbols();
