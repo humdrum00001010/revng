@@ -12,7 +12,7 @@
 namespace DetectUninlinableHelpers {
 
 /// \return `true` if `Pointer` addresses a `GlobalVariable` marked as
-///         `constant`.
+///         `constant` and has a definitive initializer.
 bool isPointerToConstantGlobal(const llvm::Value *Pointer);
 
 /// Compute the set of *critical formal arguments* of `Helper`.

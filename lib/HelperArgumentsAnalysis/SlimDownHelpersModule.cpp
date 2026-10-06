@@ -59,7 +59,10 @@ public:
     StringMap<GlobalValue::LinkageTypes> GlobalLinkageBackup;
     for (GlobalVariable &GV : M.globals()) {
       GV.eraseMetadata(LLVMContext::MD_dbg);
-      if (GV.isDeclaration() or isSpecialGV(GV))
+      // Policy analysis may rely on loads from immutable initialized globals
+      // being constant. Keep that evidence in the to-inline module as well.
+      if (GV.isDeclaration() or isSpecialGV(GV)
+          or (GV.isConstant() and GV.hasDefinitiveInitializer()))
         continue;
 
       if (FunctionTags::CSV.isTagOf(&GV)) {

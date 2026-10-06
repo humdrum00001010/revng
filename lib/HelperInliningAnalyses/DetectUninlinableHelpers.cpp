@@ -28,7 +28,8 @@ namespace DetectUninlinableHelpers {
 bool isPointerToConstantGlobal(const Value *Pointer) {
   const Value *Stripped = Pointer->stripPointerCasts();
   const auto *Global = dyn_cast<GlobalVariable>(Stripped);
-  return Global != nullptr and Global->isConstant();
+  return Global != nullptr and Global->isConstant()
+         and Global->hasDefinitiveInitializer();
 }
 
 std::optional<BitVector> computeCriticalArgumentsFor(const Function &Helper) {
