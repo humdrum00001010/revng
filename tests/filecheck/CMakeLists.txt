@@ -33,6 +33,7 @@ set(FILECHECK_TESTS
     clift/backend/break-to.mlir
     clift/backend/call.mlir
     clift/backend/cast.mlir
+    clift/backend/const-record-writes.mlir
     clift/backend/comments.mlir
     clift/backend/continue-to.mlir
     clift/backend/do-while.mlir
@@ -460,6 +461,7 @@ set(FILECHECK_TESTS
     llvm-passes/remove-extractvalues.ll
     llvm-passes/scope-graph-dumper.ll
     llvm-passes/select-scope.ll
+    llvm-passes/slim-down-helper-constant-globals.ll
     llvm-passes/split-exponential-dataflow.ll
     llvm-passes/split-struct-phis.ll
     llvm-passes/switch-to-statements.ll

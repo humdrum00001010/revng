@@ -427,6 +427,144 @@ public:
     return Cast.getValue();
   }
 
+  // Clift member accesses retain the declared member type, but C inherits
+  // const from a containing record. Inspect the emitted expression's view,
+  // rather than only the operation result type, before lowering a write.
+  static bool isConstCPointee(mlir::Value V) {
+    if (auto Decay = V.getDefiningOp<DecayOp>())
+      return isConstCLvalue(Decay.getValue());
+    if (auto Cast = V.getDefiningOp<CastOpInterface>()) {
+      if (isHiddenCast(Cast))
+        return isConstCPointee(Cast.getValue());
+    }
+    if (auto Address = V.getDefiningOp<AddressofOp>())
+      return isConstCLvalue(Address.getObject());
+    if (mlir::isa_and_nonnull<PtrAddOp, PtrSubOp>(V.getDefiningOp())) {
+      for (mlir::Value Operand : V.getDefiningOp()->getOperands()) {
+        if (unwrapped_isa<PointerType>(Operand.getType()))
+          return isConstCPointee(Operand);
+      }
+    }
+    if (auto Pointer = unwrapped_dyn_cast<PointerType>(V.getType()))
+      return isConst(collapseTypedefs(Pointer.getPointeeType()));
+    return false;
+  }
+
+  static bool isConstCLvalue(mlir::Value V) {
+    if (isConst(collapseTypedefs(V.getType())))
+      return true;
+    if (auto Access = V.getDefiningOp<DirectAccessOp>())
+      return isConstCLvalue(Access.getValue());
+    if (auto Access = V.getDefiningOp<IndirectAccessOp>())
+      return isConstCPointee(Access.getValue());
+    if (auto Index = V.getDefiningOp<SubscriptOp>())
+      return isConstCPointee(Index.getPointer());
+    if (auto Indirection = V.getDefiningOp<IndirectionOp>())
+      return isConstCPointee(Indirection.getPointer());
+    return false;
+  }
+
+  RecursiveCoroutine<void> emitWritablePointer(mlir::Value V) {
+    if (auto Decay = V.getDefiningOp<DecayOp>()) {
+      rc_recur emitWritableLvalue(Decay.getValue());
+      rc_return;
+    }
+    if (auto Cast = V.getDefiningOp<CastOpInterface>()) {
+      if (isHiddenCast(Cast)) {
+        rc_recur emitWritablePointer(Cast.getValue());
+        rc_return;
+      }
+    }
+    if (auto Address = V.getDefiningOp<AddressofOp>()) {
+      Tokens.emitOperator(CTE::Operator::Ampersand);
+      Tokens.emitOperator(CTE::Operator::LeftParenthesis);
+      CurrentPrecedence = OperatorPrecedence::Parentheses;
+      rc_recur emitWritableLvalue(Address.getObject());
+      Tokens.emitOperator(CTE::Operator::RightParenthesis);
+      rc_return;
+    }
+    if (mlir::isa_and_nonnull<PtrAddOp, PtrSubOp>(V.getDefiningOp())) {
+      auto *Op = V.getDefiningOp();
+      CurrentPrecedence = decrementPrecedence(OperatorPrecedence::Additive);
+      auto Lhs = Op->getOperand(0);
+      if (unwrapped_isa<PointerType>(Lhs.getType()))
+        rc_recur emitWritablePointer(Lhs);
+      else
+        rc_recur emitExpression(Lhs);
+      Tokens.emitSpace();
+      Tokens.emitOperator(getOperator(Op));
+      Tokens.emitSpace();
+      CurrentPrecedence = OperatorPrecedence::Additive;
+      auto Rhs = Op->getOperand(1);
+      if (unwrapped_isa<PointerType>(Rhs.getType()))
+        rc_recur emitWritablePointer(Rhs);
+      else
+        rc_recur emitExpression(Rhs);
+      rc_return;
+    }
+    auto Pointer = unwrapped_cast<PointerType>(V.getType());
+    auto Pointee = removeConst(collapseTypedefs(Pointer.getPointeeType()));
+    Tokens.emitOperator(CTE::Operator::LeftParenthesis);
+    emitCStyleCast(PointerType::get(Pointee, Pointer.getPointerSize()));
+    CurrentPrecedence = decrementPrecedence(OperatorPrecedence::UnaryPrefix);
+    rc_recur emitExpression(V);
+    Tokens.emitOperator(CTE::Operator::RightParenthesis);
+  }
+
+  RecursiveCoroutine<void> emitWritableLvalue(mlir::Value V) {
+    if (auto Access = V.getDefiningOp<AccessOpInterface>()) {
+      CurrentPrecedence = decrementPrecedence(OperatorPrecedence::UnaryPostfix);
+      Tokens.emitOperator(CTE::Operator::LeftParenthesis);
+      if (mlir::isa<DirectAccessOp>(Access.getOperation()))
+        rc_recur emitWritableLvalue(Access.getValue());
+      else
+        rc_recur emitWritablePointer(Access.getValue());
+      Tokens.emitOperator(CTE::Operator::RightParenthesis);
+      Tokens.emitOperator(mlir::isa<DirectAccessOp>(Access.getOperation()) ?
+                            CTE::Operator::Dot : CTE::Operator::Arrow);
+      FieldAttr Field = Access.getFieldAttr();
+      Tokens.emitIdentifier(Field.getName(), Field.getHandle(),
+                            CTE::EntityKind::Field,
+                            CTE::IdentifierKind::Reference);
+      rc_return;
+    }
+    if (auto Index = V.getDefiningOp<SubscriptOp>()) {
+      CurrentPrecedence = decrementPrecedence(OperatorPrecedence::UnaryPostfix);
+      Tokens.emitOperator(CTE::Operator::LeftParenthesis);
+      rc_recur emitWritablePointer(Index.getPointer());
+      Tokens.emitOperator(CTE::Operator::RightParenthesis);
+      Tokens.emitOperator(CTE::Operator::LeftBracket);
+      CurrentPrecedence = OperatorPrecedence::Parentheses;
+      rc_recur emitExpression(Index.getIndex());
+      Tokens.emitOperator(CTE::Operator::RightBracket);
+      rc_return;
+    }
+    if (auto Indirection = V.getDefiningOp<IndirectionOp>()) {
+      Tokens.emitOperator(CTE::Operator::Star);
+      Tokens.emitOperator(CTE::Operator::LeftParenthesis);
+      rc_recur emitWritablePointer(Indirection.getPointer());
+      Tokens.emitOperator(CTE::Operator::RightParenthesis);
+      rc_return;
+    }
+    if (not isConstCLvalue(V)) {
+      rc_recur emitExpression(V);
+      rc_return;
+    }
+    // For a const aggregate view, cast its address to the same unqualified
+    // aggregate type. Keeping member accesses preserves packed-member layout;
+    // casting the member address to an unrelated scalar pointer would not.
+    auto Object = removeConst(collapseTypedefs(V.getType()));
+    Tokens.emitOperator(CTE::Operator::LeftParenthesis);
+    Tokens.emitOperator(CTE::Operator::Star);
+    emitCStyleCast(PointerType::get(Object, DataModel.PointerSize));
+    Tokens.emitOperator(CTE::Operator::Ampersand);
+    Tokens.emitOperator(CTE::Operator::LeftParenthesis);
+    CurrentPrecedence = OperatorPrecedence::Parentheses;
+    rc_recur emitExpression(V);
+    Tokens.emitOperator(CTE::Operator::RightParenthesis);
+    Tokens.emitOperator(CTE::Operator::RightParenthesis);
+  }
+
   static bool requiresExplicitBitCast(BitCastOp Op) {
     auto IsCastableType = [](mlir::Type T) {
       return clift::unwrapped_isa<IntegerType, EnumType, PointerType>(T);
@@ -560,12 +698,18 @@ public:
     // Parenthesizing a nested unary prefix expression is not necessary.
     CurrentPrecedence = decrementPrecedence(OperatorPrecedence::UnaryPrefix);
 
+    if (mlir::isa<IncrementOp, DecrementOp>(Op) and isConstCLvalue(Operand))
+      return emitWritableLvalue(Operand);
     return emitExpression(Operand);
   }
 
   RecursiveCoroutine<void> emitPostfixExpression(mlir::Value V) {
     mlir::Operation *Op = V.getDefiningOp();
-    rc_recur emitExpression(Op->getOperand(0));
+    auto Operand = Op->getOperand(0);
+    if (isConstCLvalue(Operand))
+      rc_recur emitWritableLvalue(Operand);
+    else
+      rc_recur emitExpression(Operand);
 
     // Parenthesizing a nested unary postfix expression is not necessary.
     CurrentPrecedence = decrementPrecedence(OperatorPrecedence::UnaryPostfix);
@@ -594,6 +738,21 @@ public:
 
     CurrentPrecedence = RhsPrecedence;
     rc_recur emitExpression(Op->getOperand(1));
+  }
+
+  RecursiveCoroutine<void> emitAssignmentExpression(mlir::Value V) {
+    auto Assignment = V.getDefiningOp<AssignOp>();
+    if (not isConstCLvalue(Assignment.getLhs())) {
+      rc_recur emitInfixExpression(V);
+      rc_return;
+    }
+    CurrentPrecedence = OperatorPrecedence::Assignment;
+    rc_recur emitWritableLvalue(Assignment.getLhs());
+    Tokens.emitSpace();
+    Tokens.emitOperator(CTE::Operator::Equals);
+    Tokens.emitSpace();
+    CurrentPrecedence = decrementPrecedence(OperatorPrecedence::Assignment);
+    rc_recur emitExpression(Assignment.getRhs());
   }
 
   struct ExpressionEmitInfo {
@@ -822,7 +981,7 @@ public:
     if (mlir::isa<AssignOp>(E)) {
       return {
         .Precedence = OperatorPrecedence::Assignment,
-        .Emit = &CliftToCEmitter::emitInfixExpression,
+        .Emit = &CliftToCEmitter::emitAssignmentExpression,
       };
     }
 
