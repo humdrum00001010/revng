@@ -1,0 +1,7 @@
+{
+  "comment_all": [645, 646, 647, 648, 649, 650, 651, 652, 653, 654, 655],
+  "close_after_comment": [647, 648, 650, 651, 652, 655],
+  "leave_open": [645, 649, 653, 654],
+  "already_closed": [646],
+  "pull_request": false
+}
