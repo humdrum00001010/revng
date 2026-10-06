@@ -61,3 +61,11 @@ set_tests_properties(
              "PYTHONPATH=${CMAKE_BINARY_DIR}/${PYTHON_INSTALL_PATH};\
 PYPELINE_PIPEBOX=${CMAKE_CURRENT_BINARY_DIR}/pipebox.py;\
 PYPELINE_PIPELINE=${CMAKE_CURRENT_SOURCE_DIR}/pipeline.yml")
+
+# Eligibility refresh must be available through Pipebox's ordinary dependencies,
+# without an explicit analysis-library preload. Repeated construction is safe.
+add_executable(helperPolicyRegistration helper_policy_registration.cpp)
+target_link_libraries(helperPolicyRegistration revngPipebox revngModel revngSupport
+                      ${LLVM_LIBRARIES})
+revng_add_test(NAME helper-policy-registration COMMAND helperPolicyRegistration)
+set_tests_properties(helper-policy-registration PROPERTIES LABELS "pypeline;test")

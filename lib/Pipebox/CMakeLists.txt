@@ -16,6 +16,7 @@ target_link_libraries(
   revngDataLayoutAnalysis
   revngEditCBodyAnalysis
   revngFunctionIsolation
+  revngHelperInliningAnalyses
   revngEditCTypeAnalysis
   revngLLMRenameAnalysis
   revngLift

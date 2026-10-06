@@ -233,6 +233,9 @@ branches:
           passes:
             - mem2reg
             - link-helpers-to-inline
+            # Helper splitting and CSV promotion can change helper bodies.
+            # Recompute their eligibility from the bodies about to be inlined.
+            - detect-uninlinable-helpers
             - inline-helpers
             - delete-helper-bodies
       - pipe: attach-debug-info

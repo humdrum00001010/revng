@@ -11,6 +11,10 @@
 
 namespace DetectUninlinableHelpers {
 
+/// Register the eligibility pass. This is idempotent and can be called by
+/// consumers that do not load all analysis libraries eagerly.
+void initializePass();
+
 /// \return `true` if `Pointer` addresses a `GlobalVariable` marked as
 ///         `constant` and has a definitive initializer.
 bool isPointerToConstantGlobal(const llvm::Value *Pointer);

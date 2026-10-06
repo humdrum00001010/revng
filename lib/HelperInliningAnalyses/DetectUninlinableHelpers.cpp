@@ -182,14 +182,27 @@ public:
 char DetectUninlinableHelpersPass::ID = 0;
 
 using Register = RegisterPass<DetectUninlinableHelpersPass>;
-static Register X("detect-uninlinable-helpers",
-                  "Detect which `revng_inline` helpers can be inlined at lift "
-                  "time; "
-                  "those that can are tagged with `!revng.inline.policy` "
-                  "metadata, those "
-                  "that cannot have their `revng_inline` section attribute "
-                  "stripped",
-                  true,
-                  true);
+
+} // namespace
+
+void DetectUninlinableHelpers::initializePass() {
+  static Register X("detect-uninlinable-helpers",
+                    "Detect which `revng_inline` helpers can be inlined at lift "
+                    "time; "
+                    "those that can are tagged with `!revng.inline.policy` "
+                    "metadata, those "
+                    "that cannot have their `revng_inline` section attribute "
+                    "stripped",
+                    true,
+                    true);
+}
+
+namespace {
+
+struct RegisterDetectUninlinableHelpers {
+  RegisterDetectUninlinableHelpers() {
+    DetectUninlinableHelpers::initializePass();
+  }
+} Registration;
 
 } // namespace

@@ -4,6 +4,7 @@
 
 #include "llvm/PassRegistry.h"
 
+#include "revng/HelperInliningAnalyses/DetectUninlinableHelpers.h"
 #include "revng/Pipebox/LLVMPipe.h"
 
 namespace rpp = revng::pypeline::pipes;
@@ -26,6 +27,7 @@ PureLLVMPassesPipeBase::PureLLVMPassesPipeBase(llvm::StringRef
                                                  StaticConfiguration) :
   StaticConfiguration(StaticConfiguration) {
 
+  DetectUninlinableHelpers::initializePass();
   Configuration Configuration = Configuration::parse(StaticConfiguration);
   llvm::PassRegistry &Registry = *llvm::PassRegistry::getPassRegistry();
   for (llvm::StringRef PassName : Configuration.Passes) {
