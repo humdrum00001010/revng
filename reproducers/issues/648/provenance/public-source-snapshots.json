@@ -1,0 +1,14 @@
+[
+  {
+    "source_url": "https://raw.githubusercontent.com/revng/revng/f29ed6fa36c82d523813dd613865076c833e6f03/lib/DataLayoutAnalysis/Middleend/MergePointeesOfPointerUnion.cpp",
+    "file": "provenance/MergePointeesOfPointerUnion.cpp",
+    "bytes": 16577,
+    "sha256": "45c694ac8fbb202867aafb366df3e757d457484fbc8b4decb62162f4a7200f60"
+  },
+  {
+    "source_url": "https://raw.githubusercontent.com/revng/revng/f29ed6fa36c82d523813dd613865076c833e6f03/lib/DataLayoutAnalysis/Backend/DLAMakeModelTypes.cpp",
+    "file": "provenance/DLAMakeModelTypes.cpp",
+    "bytes": 19568,
+    "sha256": "dfdd10d17d7a68a7c2cc70a4cdcdb9af0c681ea6b1cfcb313d1f59a955c1112f"
+  }
+]

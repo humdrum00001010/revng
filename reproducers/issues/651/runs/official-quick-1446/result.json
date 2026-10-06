@@ -1,0 +1,90 @@
+{
+  "issue": 651,
+  "image": "revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+  "binary_sha256": "23b5db4ff72600bd64e77319816a3869a86a295d49427dcf71fb1e0b2e5e36b8",
+  "complete_original_binary": true,
+  "manual_model_or_metadata_overrides": false,
+  "function_selectors": false,
+  "IR_or_Clift_inputs_used": false,
+  "commands": [
+    {
+      "stage": "quick",
+      "argv": [
+        "docker",
+        "run",
+        "--platform",
+        "linux/amd64",
+        "--network",
+        "none",
+        "--name",
+        "maintainer-repro-651-quick-23b5db4ff7-ick-1446",
+        "--cpus",
+        "1",
+        "--memory",
+        "4g",
+        "--memory-swap",
+        "4g",
+        "--mount",
+        "type=bind,src=<PACKAGE>/repro.dll,dst=/inputs/repro.dll,readonly",
+        "--mount",
+        "type=bind,src=<PACKAGE>/runs/official-quick-1446/project,dst=/work",
+        "--workdir",
+        "/work",
+        "revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+        "revng",
+        "quick",
+        "artifact",
+        "emit-recompilable-archive",
+        "/inputs/repro.dll",
+        "-o",
+        "recompilable.tar.gz"
+      ],
+      "exit": 0,
+      "state": {
+        "Status": "exited",
+        "Running": false,
+        "Paused": false,
+        "Restarting": false,
+        "OOMKilled": false,
+        "Dead": false,
+        "Pid": 0,
+        "ExitCode": 0,
+        "Error": "",
+        "StartedAt": "2026-10-06T10:57:15.981383958Z",
+        "FinishedAt": "2026-10-06T10:57:21.909372128Z"
+      }
+    },
+    {
+      "stage": "complete-C-to-COFF",
+      "argv": [
+        "<LLVM_BIN>/clang",
+        "--target=i686-w64-windows-gnu",
+        "-std=gnu2x",
+        "-ffreestanding",
+        "-O0",
+        "-I",
+        "<PACKAGE>/runs/official-quick-1446/generated/decompiled",
+        "-c",
+        "<PACKAGE>/runs/official-quick-1446/generated/decompiled/functions.c",
+        "-o",
+        "<PACKAGE>/runs/official-quick-1446/whole.obj"
+      ],
+      "exit": 0
+    }
+  ],
+  "supported_pipeline": "revng quick artifact",
+  "generated_C_sha256": "500d773709078fb947b2eaa20a3cbdbf29c322994cf00793ce5fe7b34f8a0a8e",
+  "archive_sha256": "c31b032e7fba69ae49f38008e87c52c013154de31eff20e5792019a89f28d9da",
+  "complete_generated_C_compile_exit": 0,
+  "undefined_symbols": [
+    "         U _helper_fadd_STN_ST0_wrapper",
+    "         U _helper_flds_ST0_wrapper",
+    "         U _helper_fldt_ST0_wrapper",
+    "         U _helper_fpop_wrapper",
+    "         U _helper_fstt_ST0_wrapper",
+    "         U _revng_undefined_local_sp",
+    "         U _undef_value"
+  ],
+  "classification": "not_reproduced",
+  "scope_of_classification": "This independently authored complete binary candidate on the official normal pipeline only"
+}

@@ -1,0 +1,9 @@
+
+<PACKAGE>/runs/official-quick-20261006-public-cli/program.elf:	file format elf32-i386
+
+Disassembly of section .text:
+
+004010f0 <_start>:
+  4010f0: c7 05 04 21 40 00 09 00 00 00	movl	$0x9, 0x402104
+  4010fa: 66 0f 1f 44 00 00            	nopw	(%eax,%eax)
+  401100: eb fe                        	jmp	0x401100 <_start+0x10>

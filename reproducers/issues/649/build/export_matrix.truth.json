@@ -1,0 +1,190 @@
+{
+  "machine": "0x14c",
+  "DLL_flag": true,
+  "entrypoint_RVA": 0,
+  "COFF_symbol_count": 0,
+  "all_EAT_slots": [
+    {
+      "index": 0,
+      "ordinal": 1,
+      "rva": 4096,
+      "names": [
+        "alpha"
+      ],
+      "executable": true,
+      "zero_RVA_hole": false,
+      "forwarder": null,
+      "EAT_field_offset": 1594
+    },
+    {
+      "index": 1,
+      "ordinal": 2,
+      "rva": 4096,
+      "names": [
+        "alias_alpha"
+      ],
+      "executable": true,
+      "zero_RVA_hole": false,
+      "forwarder": null,
+      "EAT_field_offset": 1598
+    },
+    {
+      "index": 2,
+      "ordinal": 3,
+      "rva": 0,
+      "names": [],
+      "executable": false,
+      "zero_RVA_hole": true,
+      "forwarder": null,
+      "EAT_field_offset": 1602
+    },
+    {
+      "index": 3,
+      "ordinal": 4,
+      "rva": 0,
+      "names": [],
+      "executable": false,
+      "zero_RVA_hole": true,
+      "forwarder": null,
+      "EAT_field_offset": 1606
+    },
+    {
+      "index": 4,
+      "ordinal": 5,
+      "rva": 0,
+      "names": [],
+      "executable": false,
+      "zero_RVA_hole": true,
+      "forwarder": null,
+      "EAT_field_offset": 1610
+    },
+    {
+      "index": 5,
+      "ordinal": 6,
+      "rva": 0,
+      "names": [],
+      "executable": false,
+      "zero_RVA_hole": true,
+      "forwarder": null,
+      "EAT_field_offset": 1614
+    },
+    {
+      "index": 6,
+      "ordinal": 7,
+      "rva": 4128,
+      "names": [],
+      "executable": true,
+      "zero_RVA_hole": false,
+      "forwarder": null,
+      "EAT_field_offset": 1618
+    },
+    {
+      "index": 7,
+      "ordinal": 8,
+      "rva": 0,
+      "names": [],
+      "executable": false,
+      "zero_RVA_hole": true,
+      "forwarder": null,
+      "EAT_field_offset": 1622
+    },
+    {
+      "index": 8,
+      "ordinal": 9,
+      "rva": 12288,
+      "names": [
+        "exported_data"
+      ],
+      "executable": false,
+      "zero_RVA_hole": false,
+      "forwarder": null,
+      "EAT_field_offset": 1626
+    },
+    {
+      "index": 9,
+      "ordinal": 10,
+      "rva": 0,
+      "names": [],
+      "executable": false,
+      "zero_RVA_hole": true,
+      "forwarder": null,
+      "EAT_field_offset": 1630
+    },
+    {
+      "index": 10,
+      "ordinal": 11,
+      "rva": 0,
+      "names": [],
+      "executable": false,
+      "zero_RVA_hole": true,
+      "forwarder": null,
+      "EAT_field_offset": 1634
+    },
+    {
+      "index": 11,
+      "ordinal": 12,
+      "rva": 4112,
+      "names": [
+        "beta"
+      ],
+      "executable": true,
+      "zero_RVA_hole": false,
+      "forwarder": null,
+      "EAT_field_offset": 1638
+    },
+    {
+      "index": 12,
+      "ordinal": 13,
+      "rva": 8379,
+      "names": [
+        "forwarded"
+      ],
+      "executable": false,
+      "zero_RVA_hole": false,
+      "forwarder": "_KERNEL32.GetCurrentProcessId",
+      "EAT_field_offset": 1642
+    }
+  ],
+  "all_unique_executable_export_RVAs": [
+    4096,
+    4112,
+    4128
+  ],
+  "names_by_executable_RVA": {
+    "0x1000": [
+      "alias_alpha",
+      "alpha"
+    ],
+    "0x1020": [],
+    "0x1010": [
+      "beta"
+    ]
+  },
+  "expected_executable_function_roots": 3,
+  "sections": [
+    {
+      "name": ".text",
+      "rva": 4096,
+      "virtual_size": 38,
+      "raw_size": 512,
+      "raw_offset": 1024,
+      "flags": 1610612768
+    },
+    {
+      "name": ".rdata",
+      "rva": 8192,
+      "virtual_size": 217,
+      "raw_size": 512,
+      "raw_offset": 1536,
+      "flags": 1073741888
+    },
+    {
+      "name": ".data",
+      "rva": 12288,
+      "virtual_size": 4,
+      "raw_size": 512,
+      "raw_offset": 2048,
+      "flags": 3221225536
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+Principal normal command:
+revng quick artifact emit-recompilable-archive build/export_matrix.dll -o quick.tar.gz
+
+Complete source/export truth: PE32/i386 DLL, entrypointRVA0, COFFsymbols0, unique executable exportRVAs3.
+Observed pristine command exit0; generated model functions0; generated functions.c bytes52:
+#include "types-and-globals.h"
+#include "helpers.h"
+
+Same failure for the full shared-ordinal alias fixture, and confirmed independently by normal project init/archive.
+Classification: reproduced_supported_path

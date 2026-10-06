@@ -1,0 +1,167 @@
+---
+Version: 10
+Architecture: x86
+OperatingSystem: Windows
+EntryPoint: "0x10001040:Code_x86"
+DefaultABI: Microsoft_x86_cdecl
+DefaultPrototype:
+  Kind: DefinedType
+  Definition: "/TypeDefinitions/4-RawFunctionDefinition"
+Binaries:
+  - Index: 0
+    Hash: 1c5ac2f67e694019e8493910b67c018fc72a96d9a0809c28cad639729606e337
+    Size: 2560
+    CanonicalPath: '/inputs/repro.dll'
+Segments:
+  - Binary: "/Binaries/0"
+    StartAddress: "0x10001000:Generic32"
+    VirtualSize: 512
+    StartOffset: 1024
+    FileSize: 512
+    IsReadable: true
+    IsExecutable: true
+    Type:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/0-StructDefinition"
+  - Binary: "/Binaries/0"
+    StartAddress: "0x10002000:Generic32"
+    VirtualSize: 512
+    StartOffset: 1536
+    FileSize: 512
+    IsReadable: true
+    Type:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/1-StructDefinition"
+  - Binary: "/Binaries/0"
+    StartAddress: "0x10003000:Generic32"
+    VirtualSize: 4
+    IsReadable: true
+    IsWriteable: true
+    Type:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/2-StructDefinition"
+  - Binary: "/Binaries/0"
+    StartAddress: "0x10004000:Generic32"
+    VirtualSize: 512
+    StartOffset: 2048
+    FileSize: 512
+    IsReadable: true
+    Type:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/3-StructDefinition"
+Functions:
+  - Entry: "0x10001000:Code_x86"
+    Prototype:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/19-CABIFunctionDefinition"
+  - Entry: "0x10001010:Code_x86"
+    StackFrame:
+      Type:
+        Kind: DefinedType
+        Definition: "/TypeDefinitions/11-StructDefinition"
+    Prototype:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/20-CABIFunctionDefinition"
+  - Entry: "0x10001040:Code_x86"
+    StackFrame:
+      Type:
+        Kind: DefinedType
+        Definition: "/TypeDefinitions/12-StructDefinition"
+    Prototype:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/21-CABIFunctionDefinition"
+TypeDefinitions:
+  - ID: 0
+    Kind: StructDefinition
+    Size: 512
+    CanContainCode: true
+  - ID: 1
+    Kind: StructDefinition
+    Size: 512
+  - ID: 2
+    Kind: StructDefinition
+    Size: 4
+  - ID: 3
+    Kind: StructDefinition
+    Size: 512
+  - ID: 4
+    Kind: RawFunctionDefinition
+    Architecture: x86
+    ReturnValues:
+      - Location: eax_x86
+        Type:
+          Kind: PrimitiveType
+          PrimitiveKind: PointerOrNumber
+          Size: 4
+      - Location: edx_x86
+        Type:
+          Kind: PrimitiveType
+          PrimitiveKind: PointerOrNumber
+          Size: 4
+    PreservedRegisters:
+      - ebx_x86
+      - esi_x86
+      - edi_x86
+      - ebp_x86
+    FinalStackOffset: 4
+  - ID: 11
+    Kind: StructDefinition
+    Size: 8
+  - ID: 12
+    Kind: StructDefinition
+    Size: 4
+  - ID: 19
+    Kind: CABIFunctionDefinition
+    ABI: Microsoft_x86_cdecl
+    ReturnType:
+      Kind: PrimitiveType
+      PrimitiveKind: Generic
+      Size: 4
+    Arguments:
+      - Index: 0
+        Type:
+          Kind: PrimitiveType
+          PrimitiveKind: Generic
+          Size: 4
+      - Index: 1
+        Type:
+          Kind: PrimitiveType
+          PrimitiveKind: Generic
+          Size: 4
+  - ID: 20
+    Kind: CABIFunctionDefinition
+    ABI: Microsoft_x86_cdecl
+    ReturnType:
+      Kind: PrimitiveType
+      PrimitiveKind: Generic
+      Size: 4
+    Arguments:
+      - Index: 0
+        Type:
+          Kind: PrimitiveType
+          PrimitiveKind: Generic
+          Size: 4
+  - ID: 21
+    Kind: CABIFunctionDefinition
+    ABI: Microsoft_x86_cdecl
+    ReturnType:
+      Kind: PrimitiveType
+      PrimitiveKind: Generic
+      Size: 4
+    Arguments:
+      - Index: 0
+        Type:
+          Kind: PrimitiveType
+          PrimitiveKind: Generic
+          Size: 4
+      - Index: 1
+        Type:
+          Kind: PrimitiveType
+          PrimitiveKind: Generic
+          Size: 4
+      - Index: 2
+        Type:
+          Kind: PrimitiveType
+          PrimitiveKind: Generic
+          Size: 4
+...

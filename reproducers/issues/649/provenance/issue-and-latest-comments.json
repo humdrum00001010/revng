@@ -1,0 +1,9 @@
+{
+  "issue_url": "https://github.com/revng/revng/issues/649",
+  "title": "ModelImporterBinary: seed DLL function roots from the PE export table",
+  "state": "open",
+  "updated_at": "2026-10-05T23:31:10Z",
+  "checked_utc": "2026-10-06T10:27:32.120376+00:00",
+  "public_comment_count": 0,
+  "comments": []
+}

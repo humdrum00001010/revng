@@ -1,0 +1,1 @@
+occupancy-control: reserved PROT_NONE page 0x8000; page 0x9000 is free

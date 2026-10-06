@@ -1,0 +1,9 @@
+{
+  "issue": 645,
+  "url": "https://github.com/revng/revng/issues/645",
+  "title": "CliftEmitC: emit complete array element definitions through typedefs",
+  "state": "OPEN",
+  "state_reason": "",
+  "comments": [],
+  "resolution": "open; supported binary evidence assessed separately"
+}

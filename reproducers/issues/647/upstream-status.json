@@ -1,0 +1,9 @@
+{
+  "issue": 647,
+  "url": "https://github.com/revng/revng/issues/647",
+  "title": "Clifter: remove top-level const from implicit bitcast results",
+  "state": "OPEN",
+  "state_reason": "",
+  "comments": [],
+  "resolution": "open; supported binary evidence assessed separately"
+}

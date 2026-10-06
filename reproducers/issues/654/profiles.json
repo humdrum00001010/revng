@@ -1,0 +1,51 @@
+{
+  "schema": "issue654-public-producer-profiles.v1",
+  "official_baseline": {
+    "class": "pristine_pinned_upstream",
+    "image": "revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+    "revng_commit": "ba8cdb0278084da07b2655f19d1e5f1ce2ebbbdf",
+    "QEMU_repository": "https://github.com/revng/qemu.git",
+    "QEMU_commit": "c9dd0d8936f892904090c8c55ad2ef54b8d7bcc3",
+    "libtcg_i386_sha256": "3325513ba8e322ad2da904b6eed1aecfa1ae033a692e6c648abc75e63e967dc6"
+  },
+  "matching_source_baseline": {
+    "class": "modified_producer_disclosed",
+    "image_id": "sha256:de8623833af6c5e8160231230ee047acf42b1bff20ad6cf8a80508f75c41526d",
+    "QEMU_commit": "c9dd0d8936f892904090c8c55ad2ef54b8d7bcc3",
+    "libtcg_i386_sha256": "cf5bea0847751c46d920d480747f215989465cceb4d40f297f8ac78f336946f8",
+    "other_components": "Shared comparison base; this is a locally rebuilt QEMU library, not the official shipped library"
+  },
+  "source_fixed": {
+    "class": "modified_producer_disclosed",
+    "image_id": "sha256:379998b7893a1c2f81d8a889d0c265ecbf11606eec569136835e635cb43a2f40",
+    "QEMU_commit": "c9dd0d8936f892904090c8c55ad2ef54b8d7bcc3",
+    "libtcg_i386_sha256": "ceabd7869165a3c34251ebcee2b37d0f76b919b956286349930d00f2d62a45bc",
+    "source_patch_sha256": "c7396cbed904666304f606c32bdfe02e8e9d217c74a8ace4e3c28e37c2ad0a7b",
+    "source_change": "Move guest address-space defaults and mmap_min_addr initialization into once-only mmap_init; invoke it in libtcg_context_create before register setup",
+    "fix_is_LD_PRELOAD": false,
+    "public_API_headers_unchanged": true,
+    "exported_API_symbols_match_SDK": true,
+    "CPU_layout_guard_unchanged": true
+  },
+  "recorded_host": {
+    "OS": "macOS 26.1",
+    "host_CPU": "arm64",
+    "Docker_daemon_CPU": "aarch64",
+    "runtime_CPU": "amd64 via Rosetta",
+    "Linux_kernel": "7.0.12-linuxkit"
+  },
+  "historical_comparison": {
+    "fixture_sha256": "7b592d48fa2d49b4bd603ac14d21ba0db8bb71fb3e6d4a4fe177afd8279bf744",
+    "control_language": "Python",
+    "control": "Reserve PROT_NONE 4096-byte anonymous page0x8000 with MAP_FIXED_NOREPLACE",
+    "matching_baseline_natural_exit": 0,
+    "matching_baseline_controlled_exit": 134,
+    "source_fixed_natural_exit": 0,
+    "source_fixed_controlled_exit": 0,
+    "successful_function_count": 3,
+    "successful_function_rows_sha256": "679b09914ca5b0e8a2eaca650b9a6ce87911cb9111d2822b04b5508ccea30674",
+    "result_receipt_sha256": "8396f37f6f9e7fdc9d72384eff58bd58744e48e4552b804d5b89c44059e3d253",
+    "is_new_C_control_self_check": false
+  },
+  "publication": "Local review only; no private binary, model, source, IR, path, or raw private log is included"
+}

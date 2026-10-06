@@ -1,0 +1,18 @@
+
+<PACKAGE>/runs/official-quick-20261006-public-cli/program.elf:	file format elf32-i386
+
+Disassembly of section .text:
+
+004010e0 <read_second>:
+  4010e0: 8b 44 24 04                  	movl	0x4(%esp), %eax
+  4010e4: 8b 40 04                     	movl	0x4(%eax), %eax
+  4010e7: c3                           	retl
+  4010e8: 0f 1f 84 00 00 00 00 00      	nopl	(%eax,%eax)
+
+004010f0 <_start>:
+  4010f0: 83 ec 0c                     	subl	$0xc, %esp
+  4010f3: c7 04 24 14 21 40 00         	movl	$0x402114, (%esp)       # imm = 0x402114
+  4010fa: e8 e1 ff ff ff               	calll	0x4010e0 <read_second>
+  4010ff: a3 24 21 40 00               	movl	%eax, 0x402124
+  401104: 66 66 66 2e 0f 1f 84 00 00 00 00 00  	nopw	%cs:(%eax,%eax)
+  401110: eb fe                        	jmp	0x401110 <_start+0x20>

@@ -1,0 +1,262 @@
+{
+  "issue": 649,
+  "public_source_and_independently_authored_binaries_only": true,
+  "private_identifier_scan_matches": [],
+  "artifacts": [
+    {
+      "file": "README.md",
+      "bytes": 4422,
+      "sha256": "55ac2b4c17ae942d08f07c95c9ab7add1c56faec9e42c1276914a672b6c99fec"
+    },
+    {
+      "file": "build/build-receipt.json",
+      "bytes": 2656,
+      "sha256": "8593938a4b75150c1f285f0356f72d0bcbb52ab05f3c80ef155c35aee17b1c50"
+    },
+    {
+      "file": "build/clang-version.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "build/clang-version.stdout.log",
+      "bytes": 127,
+      "sha256": "cfcd9c9e851246b6ce35626221c1aac35ca617af05a51d7b7e2d6bce1ff23db8"
+    },
+    {
+      "file": "build/compile.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "build/compile.stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "build/export_matrix.dll",
+      "bytes": 2560,
+      "sha256": "a7d30d11535ef8af6c25f6d4f85a0426acd2bbdd2c9d5f0a4786f6ee90fa910a"
+    },
+    {
+      "file": "build/export_matrix.dll-complete-PE.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "build/export_matrix.dll-complete-PE.stdout.log",
+      "bytes": 4484,
+      "sha256": "65ca0e1ad735429463a1e61c21fb5a4264478a44a3b40d9f75bdd9b67c09491f"
+    },
+    {
+      "file": "build/export_matrix.lib",
+      "bytes": 1968,
+      "sha256": "18f63f4ea05d8a86c0e5d899530e00a37a16f3c99621618c2403f75840208aa9"
+    },
+    {
+      "file": "build/export_matrix.obj",
+      "bytes": 539,
+      "sha256": "b2e30f06d6ab4d44b83886de8d2e4cae69b9b08e0f21718e2b140c883c2a3f92"
+    },
+    {
+      "file": "build/export_matrix.truth.json",
+      "bytes": 3635,
+      "sha256": "801d7370c3648c5ce73cb63ec0cbcc667fc3c587e6333a9a4482e2915c8533e4"
+    },
+    {
+      "file": "build/link-whole-DLL.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "build/link-whole-DLL.stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "build/shared_ordinal_alias.dll",
+      "bytes": 2560,
+      "sha256": "4c9ae52a27491ac9f9682d410775f2d201c2c76c972575425d7055d022e64952"
+    },
+    {
+      "file": "build/shared_ordinal_alias.dll-complete-PE.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "build/shared_ordinal_alias.dll-complete-PE.stdout.log",
+      "bytes": 4483,
+      "sha256": "46f579fea1e400d977f2b520d46f51e3364f10552bfbaf58ba58b901f248a264"
+    },
+    {
+      "file": "build/shared_ordinal_alias.truth.json",
+      "bytes": 3626,
+      "sha256": "1d80478a1449316064b04873c1c75c15fcb81be781bfbf8bd018b689998b98fd"
+    },
+    {
+      "file": "build.py",
+      "bytes": 4452,
+      "sha256": "bdfc9ead14daee7c14b8323e016279caf0f7a16d8c7d0ebb6204b61efaaa1660"
+    },
+    {
+      "file": "environment.json",
+      "bytes": 396,
+      "sha256": "bf32ef575224fc3ea7a2c9d7bda2649151510e93cb37475b2b6e6d08e54510af"
+    },
+    {
+      "file": "observed-signature.txt",
+      "bytes": 523,
+      "sha256": "d41b1c97d04c46be84524b58cc122284fe68f67db3c22055e09c2f0f3323f671"
+    },
+    {
+      "file": "pe_exports.py",
+      "bytes": 3986,
+      "sha256": "af5dd1759101c992410d2d0008cee8562962137644cd31e6e81f1e258bf94e56"
+    },
+    {
+      "file": "provenance/PECOFFImporter.cpp",
+      "bytes": 17033,
+      "sha256": "e9d6a0d86db176a9023cdaafe42af90ba0fc56b560acedc32098a7db1f292248"
+    },
+    {
+      "file": "provenance/issue-and-latest-comments.json",
+      "bytes": 306,
+      "sha256": "c7a267601a1d9174898277931da8ecc5b8379a4bae165b195cbbeb3e655cb5f0"
+    },
+    {
+      "file": "provenance/public-source-snapshots.json",
+      "bytes": 311,
+      "sha256": "eb2aa35b0970eff646325ca68666c59b60875eeb9a51f28b05b1836d643aca15"
+    },
+    {
+      "file": "provenance/upstream-develop.json",
+      "bytes": 164,
+      "sha256": "248d7f16428cb46f35b5bee0145c8559f0b0a2b8ed8cc2052aef569004d550ca"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/export_matrix/project/export_matrix.dll",
+      "bytes": 2560,
+      "sha256": "a7d30d11535ef8af6c25f6d4f85a0426acd2bbdd2c9d5f0a4786f6ee90fa910a"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/export_matrix/project/project.tar.gz",
+      "bytes": 10240,
+      "sha256": "6a2a804188b483de4882a723240592107be0b5b3e73083e8dc559b52904ee42a"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/export_matrix/project/revng.yml",
+      "bytes": 1773,
+      "sha256": "81f06222e153bec30c9c5449ac3efe7cc3ed263669f656bc539e1144b271b6af"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/export_matrix/project-functions.c",
+      "bytes": 52,
+      "sha256": "6360813eda4214abfcdc1fc15df604053548c7bd5f85ff449bf4935e4f38218c"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/export_matrix/quick-functions.c",
+      "bytes": 52,
+      "sha256": "6360813eda4214abfcdc1fc15df604053548c7bd5f85ff449bf4935e4f38218c"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/export_matrix/quick-model.yml",
+      "bytes": 1773,
+      "sha256": "81f06222e153bec30c9c5449ac3efe7cc3ed263669f656bc539e1144b271b6af"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/export_matrix/quick.tar.gz",
+      "bytes": 10240,
+      "sha256": "ef39f318095b46cb44c356cd65c3437626f0d163ab048c2ff57a70ba4fbe6221"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/export_matrix-whole-supported-paths.stderr.log",
+      "bytes": 132,
+      "sha256": "389753e3b65fc55c255cc5a737cc3e1db675b4d55668e6792eb9e9db3b3308bf"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/export_matrix-whole-supported-paths.stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/image-identity.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/image-identity.stdout.log",
+      "bytes": 72,
+      "sha256": "152d9dafd8265cd20b82df3dd5f1ebfcecd9b34f4c85a9159a0a3aacac84807c"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/receipt.json",
+      "bytes": 16840,
+      "sha256": "00220ad1cbaea8ccd08fa5cd1c516f1f68e6378df0d8d60f425bf3875a30aaad"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/shared_ordinal_alias/project/project.tar.gz",
+      "bytes": 10240,
+      "sha256": "9b8b6a380815abee31ae4aa8b2b858d4e0dfef8f62a42794988e9a365dd4d19c"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/shared_ordinal_alias/project/revng.yml",
+      "bytes": 1780,
+      "sha256": "98ce30ffb79fbda286aad6dfa4190922052af328fc7aeba2ef17e626f9c8980a"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/shared_ordinal_alias/project/shared_ordinal_alias.dll",
+      "bytes": 2560,
+      "sha256": "4c9ae52a27491ac9f9682d410775f2d201c2c76c972575425d7055d022e64952"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/shared_ordinal_alias/project-functions.c",
+      "bytes": 52,
+      "sha256": "6360813eda4214abfcdc1fc15df604053548c7bd5f85ff449bf4935e4f38218c"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/shared_ordinal_alias/quick-functions.c",
+      "bytes": 52,
+      "sha256": "6360813eda4214abfcdc1fc15df604053548c7bd5f85ff449bf4935e4f38218c"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/shared_ordinal_alias/quick-model.yml",
+      "bytes": 1780,
+      "sha256": "98ce30ffb79fbda286aad6dfa4190922052af328fc7aeba2ef17e626f9c8980a"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/shared_ordinal_alias/quick.tar.gz",
+      "bytes": 10240,
+      "sha256": "85d82c4db4be830d36496f1dd1b35b045139298c706ae80682e42215590195ed"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/shared_ordinal_alias-whole-supported-paths.stderr.log",
+      "bytes": 132,
+      "sha256": "389753e3b65fc55c255cc5a737cc3e1db675b4d55668e6792eb9e9db3b3308bf"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/shared_ordinal_alias-whole-supported-paths.stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "run.py",
+      "bytes": 5249,
+      "sha256": "054d63bcc5208840c26c2be87833a339fd6d4fc22fb8b901cbfec6c4e5a63661"
+    },
+    {
+      "file": "src/export_matrix.c",
+      "bytes": 183,
+      "sha256": "d59f0ed17f36700c95fda7b76561a256bb4a05d8724cea22a7190239f24c2bcd"
+    },
+    {
+      "file": "src/export_matrix.def",
+      "bytes": 169,
+      "sha256": "c19d1ae2e0e32d748ae263c6fcdeeffe6f7395d460956a7aebe894901934e3cd"
+    },
+    {
+      "file": "status.json",
+      "bytes": 542,
+      "sha256": "3bc3ca5b3c34bdc3dcbdb9547ae096ed341f48dd1253a7e0bb4f721d44c41fd7"
+    }
+  ]
+}

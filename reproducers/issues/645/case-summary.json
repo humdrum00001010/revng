@@ -1,0 +1,56 @@
+{
+  "issue": 645,
+  "upstream_url": "https://github.com/revng/revng/issues/645",
+  "supported_binary_reproduction": true,
+  "classification": "reproduced",
+  "independently_authored_complete_C": true,
+  "private_fragments": false,
+  "all_generated_C_unchanged_from_archives": true,
+  "known_private_identifier_scan": {
+    "findings": [],
+    "binary_files_included": true,
+    "archive_members_included": true
+  },
+  "cases": [
+    {
+      "receipt": "runs/official-1446/result.json",
+      "classification": "reproduced",
+      "binary_sha256": "80ded741d3ca17b87a803827c63b3716095482fabf3c8db9e9e20f50f380baea",
+      "generated_C_sha256": "b5375b097f8c2623e988964ddfee8c6f9da748e2834879909d97cb77fb93c132",
+      "compile_exit": 1,
+      "pipeline": "revng project init then artifact",
+      "terminal_stages": [
+        {
+          "stage": "init",
+          "exit": 0
+        },
+        {
+          "stage": "archive",
+          "exit": 0
+        },
+        {
+          "stage": "complete-C-to-COFF",
+          "exit": 1
+        }
+      ]
+    },
+    {
+      "receipt": "runs/official-quick-1446/result.json",
+      "classification": "reproduced",
+      "binary_sha256": "80ded741d3ca17b87a803827c63b3716095482fabf3c8db9e9e20f50f380baea",
+      "generated_C_sha256": "b5375b097f8c2623e988964ddfee8c6f9da748e2834879909d97cb77fb93c132",
+      "compile_exit": 1,
+      "pipeline": "revng quick artifact",
+      "terminal_stages": [
+        {
+          "stage": "quick",
+          "exit": 0
+        },
+        {
+          "stage": "complete-C-to-COFF",
+          "exit": 1
+        }
+      ]
+    }
+  ]
+}

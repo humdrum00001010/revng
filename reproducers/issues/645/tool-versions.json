@@ -1,0 +1,26 @@
+{
+  "official_image": "revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+  "official_source_revision": "ba8cdb0278084da07b2655f19d1e5f1ce2ebbbdf",
+  "build_host_architecture": "macOS arm64",
+  "pipeline_platform": "linux/amd64",
+  "pipeline_memory_limit": "4 GiB",
+  "pipeline_cpu_limit": 1,
+  "LLVM_tools": {
+    "clang": {
+      "version": "Homebrew clang version 17.0.6\nTarget: arm64-apple-darwin25.1.0\nThread model: posix\nInstalledDir: /opt/homebrew/opt/llvm@17/bin",
+      "sha256": "945326f96f74cfdde4c7f148881cb02b9f8778dee83990f3b116cafbfd3864db"
+    },
+    "lld-link": {
+      "version": "Homebrew LLD 17.0.6",
+      "sha256": "25001201f3a0c2fa9fbe973b5ef5d15f31e3f2be46c495a688e708548f99647e"
+    },
+    "llvm-dlltool": {
+      "version": "OVERVIEW: llvm-dlltool\n\nUSAGE: llvm-dlltool [options] file...\n\nOPTIONS:\n  -D <value>              Specify the input DLL Name\n  -d <value>              Input .def File\n  -f <value>              Assembler Flags\n  -k                      Kill @n Symbol from export\n  -l <value>              Generate an import lib\n  -m <value>              Set target machine\n  --no-leading-underscore Don't add leading underscores on symbols\n  -S <value>              Assembler\n  -t <value>              Prefix for temporary files (ignored)\n\nTARGETS: i386, i386:x86-64, arm, arm64",
+      "sha256": "fbef8842febc02aeeb17cca64c374742a636cff1a672abfa7182596449f177bb"
+    },
+    "llvm-nm": {
+      "version": "llvm-nm, compatible with GNU nm\nHomebrew LLVM version 17.0.6\n  Optimized build.",
+      "sha256": "8f0e4165fbec51b7cdac0020713a9a10bfbb53af2ff83cd973475dc046e33c97"
+    }
+  }
+}

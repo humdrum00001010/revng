@@ -1,0 +1,372 @@
+{
+  "OOMKilled": false,
+  "archive_created": false,
+  "archive_metadata": {
+    "format": "ustar",
+    "gid": 0,
+    "gname": "",
+    "gzip_compression_level": 9,
+    "gzip_filename": "",
+    "gzip_mtime": 0,
+    "member_order": "lexicographic",
+    "mtime": 0,
+    "uid": 0,
+    "uname": ""
+  },
+  "archive_sha256": null,
+  "classification": "supported_binary_verifier_failure_reproduced_cause_pending",
+  "content_scan": {
+    "nested_generated_files_scanned": 0,
+    "private_path_and_proprietary_vendor_identifier_matches": 0,
+    "scan_terms_recorded_outside_packet": true
+  },
+  "exact_official_container_command": [
+    "revng",
+    "quick",
+    "artifact",
+    "emit-recompilable-archive",
+    "/inputs/program.elf",
+    "-o",
+    "recompilable.tar.gz"
+  ],
+  "excluded": [
+    "direct_helper_sources",
+    "synthetic_IR_or_Clift_fixtures",
+    "helper-fixture_runner",
+    "prior_nonprincipal_observations",
+    "intermediate_object_file"
+  ],
+  "executable_sha256": "39ade80af9a92f98ecfee7ffd50d34a71314de1ecd10f22e0abfd697fc03606c",
+  "file_inventory_excludes_this_manifest": true,
+  "files": [
+    {
+      "bytes": 5012,
+      "copy_changed": true,
+      "original_sha256": "aac8574b4eebbaf31fb1a41b67f7d5b0dd72210272b1c406e48c7676fe380f35",
+      "path": "README.md",
+      "role": "readme",
+      "sha256": "b85c9bc2c74b30efdcc84992f5decff0ae23c7eab162bf25aac59c45056af4aa"
+    },
+    {
+      "bytes": 491,
+      "copy_changed": false,
+      "original_sha256": "13b50dd01344cf7008aa67d7d9c331bc745281ede05f4c4209db58f5592d57f9",
+      "path": "build-binary.sh",
+      "role": "reproduction_script",
+      "sha256": "13b50dd01344cf7008aa67d7d9c331bc745281ede05f4c4209db58f5592d57f9"
+    },
+    {
+      "bytes": 251,
+      "copy_changed": false,
+      "original_sha256": "5b71278641fc8f8b3ea3fe973b7b7977fdc95f6d279ab4bf54b17e31163719c3",
+      "path": "run-quick.sh",
+      "role": "reproduction_script",
+      "sha256": "5b71278641fc8f8b3ea3fe973b7b7977fdc95f6d279ab4bf54b17e31163719c3"
+    },
+    {
+      "bytes": 0,
+      "copy_changed": false,
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "runs/official-quick-20261006-public-cli/binary-disassembly.stderr.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 971,
+      "copy_changed": true,
+      "original_sha256": "fa8766114e880518590963b0a348e4ed8f4bacef40299f33617f4d947228722e",
+      "path": "runs/official-quick-20261006-public-cli/binary-disassembly.stdout.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "a9006eac697e4388f7fc066241f5b51cbad7609f8495bf7a91f11caa5badf169"
+    },
+    {
+      "bytes": 0,
+      "copy_changed": false,
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "runs/official-quick-20261006-public-cli/binary-format.stderr.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 1808,
+      "copy_changed": true,
+      "original_sha256": "806b2590744ddf1328758dbfdfbaa3e227638836dd909fab79031e2e3df144da",
+      "path": "runs/official-quick-20261006-public-cli/binary-format.stdout.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "003a95017d678d4bab46b66b86e4645311c9515fdc2b8879dcac1e1765153fa5"
+    },
+    {
+      "bytes": 0,
+      "copy_changed": false,
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "runs/official-quick-20261006-public-cli/build.stderr.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "copy_changed": false,
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "runs/official-quick-20261006-public-cli/build.stdout.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "copy_changed": false,
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "runs/official-quick-20261006-public-cli/clang-version.stderr.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 127,
+      "copy_changed": false,
+      "original_sha256": "cfcd9c9e851246b6ce35626221c1aac35ca617af05a51d7b7e2d6bce1ff23db8",
+      "path": "runs/official-quick-20261006-public-cli/clang-version.stdout.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "cfcd9c9e851246b6ce35626221c1aac35ca617af05a51d7b7e2d6bce1ff23db8"
+    },
+    {
+      "bytes": 2221,
+      "copy_changed": true,
+      "original_sha256": "03890e97f8bb87dbfc6490689486495e7f4311c9dbc49a130428b9a64191d57e",
+      "path": "runs/official-quick-20261006-public-cli/commands.txt",
+      "role": "official_command_receipt_or_log",
+      "sha256": "29c370e8a51c9c661ff563acf504e5af931f95a00349968890f6424cd2fc6b60"
+    },
+    {
+      "bytes": 0,
+      "copy_changed": false,
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "runs/official-quick-20261006-public-cli/ld.lld-version.stderr.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 50,
+      "copy_changed": false,
+      "original_sha256": "5376b0abaf41c3b8dd3676dc30f2b6006da4b1a462c0d9880042a1049f077960",
+      "path": "runs/official-quick-20261006-public-cli/ld.lld-version.stdout.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "5376b0abaf41c3b8dd3676dc30f2b6006da4b1a462c0d9880042a1049f077960"
+    },
+    {
+      "bytes": 0,
+      "copy_changed": false,
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "runs/official-quick-20261006-public-cli/link.stderr.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "copy_changed": false,
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "runs/official-quick-20261006-public-cli/link.stdout.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 0,
+      "copy_changed": false,
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "runs/official-quick-20261006-public-cli/llvm-objdump-version.stderr.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 1547,
+      "copy_changed": false,
+      "original_sha256": "fe3602036e11faa561ed882458cc936ffc4bf43d7a36bc4a97fc17ea449619cc",
+      "path": "runs/official-quick-20261006-public-cli/llvm-objdump-version.stdout.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "fe3602036e11faa561ed882458cc936ffc4bf43d7a36bc4a97fc17ea449619cc"
+    },
+    {
+      "bytes": 0,
+      "copy_changed": false,
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "runs/official-quick-20261006-public-cli/llvm-readobj-version.stderr.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 48,
+      "copy_changed": false,
+      "original_sha256": "d4fbc4f67b58cb733bac2bb70d4c1050786583471725a7ae48e0e352b1d5181a",
+      "path": "runs/official-quick-20261006-public-cli/llvm-readobj-version.stdout.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "d4fbc4f67b58cb733bac2bb70d4c1050786583471725a7ae48e0e352b1d5181a"
+    },
+    {
+      "bytes": 0,
+      "copy_changed": false,
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "runs/official-quick-20261006-public-cli/official-image-inspect.stderr.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 1881,
+      "copy_changed": false,
+      "original_sha256": "77fbea3d2d6bf492a562a00032be3f2b71635284bf45ac7dc4e1e5305992a474",
+      "path": "runs/official-quick-20261006-public-cli/official-image-inspect.stdout.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "77fbea3d2d6bf492a562a00032be3f2b71635284bf45ac7dc4e1e5305992a474"
+    },
+    {
+      "bytes": 1932,
+      "copy_changed": false,
+      "original_sha256": "39ade80af9a92f98ecfee7ffd50d34a71314de1ecd10f22e0abfd697fc03606c",
+      "path": "runs/official-quick-20261006-public-cli/program.elf",
+      "role": "complete_public_binary",
+      "sha256": "39ade80af9a92f98ecfee7ffd50d34a71314de1ecd10f22e0abfd697fc03606c"
+    },
+    {
+      "bytes": 0,
+      "copy_changed": false,
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "runs/official-quick-20261006-public-cli/quick-pre-stop-state.stderr.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 217,
+      "copy_changed": false,
+      "original_sha256": "b2ac154fc0ae0ae97a49b338c7a3c412f403d65fd596951b8beab8d2507fa45e",
+      "path": "runs/official-quick-20261006-public-cli/quick-pre-stop-state.stdout.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "b2ac154fc0ae0ae97a49b338c7a3c412f403d65fd596951b8beab8d2507fa45e"
+    },
+    {
+      "bytes": 0,
+      "copy_changed": false,
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "runs/official-quick-20261006-public-cli/quick-process-at-stop.stderr.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 285,
+      "copy_changed": false,
+      "original_sha256": "c632ecbf609312b7c8e824a4183adb6403bbf65c66726723efa0632073cfc02f",
+      "path": "runs/official-quick-20261006-public-cli/quick-process-at-stop.stdout.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "c632ecbf609312b7c8e824a4183adb6403bbf65c66726723efa0632073cfc02f"
+    },
+    {
+      "bytes": 0,
+      "copy_changed": false,
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "runs/official-quick-20261006-public-cli/quick-stop.stderr.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 94,
+      "copy_changed": false,
+      "original_sha256": "e12e12c46d2cff03be0ca742f00d053d13f4ec5363c634c9c7308c0f676eeeec",
+      "path": "runs/official-quick-20261006-public-cli/quick-stop.stdout.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "e12e12c46d2cff03be0ca742f00d053d13f4ec5363c634c9c7308c0f676eeeec"
+    },
+    {
+      "bytes": 0,
+      "copy_changed": false,
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "runs/official-quick-20261006-public-cli/quick-terminal-state.stderr.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 226,
+      "copy_changed": false,
+      "original_sha256": "a10239f48799d8a14ef811f2952a6debd09f1f58646f82c27977ac01c48a4b32",
+      "path": "runs/official-quick-20261006-public-cli/quick-terminal-state.stdout.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "a10239f48799d8a14ef811f2952a6debd09f1f58646f82c27977ac01c48a4b32"
+    },
+    {
+      "bytes": 13555,
+      "copy_changed": false,
+      "original_sha256": "0c6287618fa705a3c4385cc8ceb7acd1080ec8e80ca7edc8cee5ba6b305be918",
+      "path": "runs/official-quick-20261006-public-cli/quick.stderr.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "0c6287618fa705a3c4385cc8ceb7acd1080ec8e80ca7edc8cee5ba6b305be918"
+    },
+    {
+      "bytes": 0,
+      "copy_changed": false,
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "runs/official-quick-20261006-public-cli/quick.stdout.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 9425,
+      "copy_changed": true,
+      "original_sha256": "e70d9f760c0c503e3d9c8ecb5d48bf2a23b955ce82d53bdff0713699f4d1df29",
+      "path": "runs/official-quick-20261006-public-cli/result.json",
+      "role": "official_command_receipt_or_log",
+      "sha256": "f1edf6e6ccbbf07f96796e245a2ac2cf3ee78ad4febfb9147a7290873dcc473a"
+    },
+    {
+      "bytes": 0,
+      "copy_changed": false,
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "runs/official-quick-20261006-public-cli/revng-opt-version.stderr.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 146,
+      "copy_changed": false,
+      "original_sha256": "abcfb77618c5addaf6a4a2a1fdeccd384005b9563bc5b4544317e85786142fa7",
+      "path": "runs/official-quick-20261006-public-cli/revng-opt-version.stdout.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "abcfb77618c5addaf6a4a2a1fdeccd384005b9563bc5b4544317e85786142fa7"
+    },
+    {
+      "bytes": 0,
+      "copy_changed": false,
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "runs/official-quick-20261006-public-cli/revng-system-info.stderr.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "bytes": 4645,
+      "copy_changed": false,
+      "original_sha256": "b5d8aa6f1af56304195a4cb5f34c7fe20b4176f8b203f4dd8c8b5e5f1dabf297",
+      "path": "runs/official-quick-20261006-public-cli/revng-system-info.stdout.log",
+      "role": "official_command_receipt_or_log",
+      "sha256": "b5d8aa6f1af56304195a4cb5f34c7fe20b4176f8b203f4dd8c8b5e5f1dabf297"
+    },
+    {
+      "bytes": 378,
+      "copy_changed": false,
+      "original_sha256": "3bcfcfbd77c0af1108a3d7f6455c11694b80799a8011eafb39a69d143e01578b",
+      "path": "source/program.c",
+      "role": "public_authored_source",
+      "sha256": "3bcfcfbd77c0af1108a3d7f6455c11694b80799a8011eafb39a69d143e01578b"
+    },
+    {
+      "bytes": 8027,
+      "copy_changed": false,
+      "original_sha256": "96aa2fdb8f2c96d4574e7d8f62c1ca8c7ef3da2ea4044ca7c020fa849e6eed3c",
+      "path": "validate.py",
+      "role": "reproduction_script",
+      "sha256": "96aa2fdb8f2c96d4574e7d8f62c1ca8c7ef3da2ea4044ca7c020fa849e6eed3c"
+    }
+  ],
+  "host_path_normalization": "<PACKAGE> denotes this packet root; host location only, all flags and container paths preserved",
+  "issue": 653,
+  "observer_stop_reason": "Native fatal assertion observed; owned probe remained running for 5 seconds under Rosetta",
+  "official_image": "revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+  "official_revng_component": "linux-x86-64/revng/optimized/ba8cdb0278084da07b2655f19d1e5f1ce2ebbbdf_bd576c8c818d26e9f88eaeda137c929c5f852e20.tar.xz",
+  "principal_proof": "Complete independently authored binary processed by the stock pinned official quick CLI",
+  "public_source_sha256": "3bcfcfbd77c0af1108a3d7f6455c11694b80799a8011eafb39a69d143e01578b",
+  "quick_exit_code": 137,
+  "specific_issue_cause_established": false
+}

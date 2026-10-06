@@ -1,0 +1,18 @@
+{
+  "issue": 648,
+  "supported_binary_gate_passed": false,
+  "classification": "not_reproduced",
+  "source_and_binary_reproduction": true,
+  "baseline_class": "pristine_pinned_upstream",
+  "current_upstream_binary_tested": false,
+  "latest_comment_count": 0,
+  "publication_approved": false,
+  "no_new_issue_authorized": true,
+  "known_limits": [
+    "New model-width loss condition not demonstrated by current authored binary probes",
+    "Direct graph test is not binary proof",
+    "No A/B claim for existing upstream fix versus new width change"
+  ],
+  "principal_supported_command": "revng quick artifact emit-recompilable-archive BINARY -o ARCHIVE",
+  "canonical_gate": "revissue"
+}

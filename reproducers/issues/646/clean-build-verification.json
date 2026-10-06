@@ -1,0 +1,13 @@
+{
+  "source_sha256": "56fa84ef98bb5034b2918217315d2aff0fe805a2b7bf77abe2b2bff83975552d",
+  "build_script_sha256": "f2d55da2d1a8914b30a060880b62014d240abd2fbbafa55d1c618b6cd97071e2",
+  "results": [
+    {
+      "binary": "repro.dll",
+      "fresh_source_build_exit": 0,
+      "sha256": "b81003b6e2d600ef6ded824b769efa20f1e2beca64400fdd7a3e8e185afc81da",
+      "equals_recorded_binary": true,
+      "private_identifiers_present": false
+    }
+  ]
+}

@@ -1,0 +1,65 @@
+
+build/raw.elf:	file format elf32-i386
+
+Disassembly of section .text:
+
+004010e0 <scalar_view>:
+  4010e0: 8b 44 24 04                  	movl	0x4(%esp), %eax
+  4010e4: dd 00                        	fldl	(%eax)
+  4010e6: c3                           	retl
+  4010e7: 66 0f 1f 84 00 00 00 00 00   	nopw	(%eax,%eax)
+
+004010f0 <small_target>:
+  4010f0: 8b 44 24 04                  	movl	0x4(%esp), %eax
+  4010f4: 8b 00                        	movl	(%eax), %eax
+  4010f6: c3                           	retl
+  4010f7: 66 0f 1f 84 00 00 00 00 00   	nopw	(%eax,%eax)
+
+00401100 <wide_target>:
+  401100: 8b 4c 24 04                  	movl	0x4(%esp), %ecx
+  401104: 8b 41 04                     	movl	0x4(%ecx), %eax
+  401107: 03 01                        	addl	(%ecx), %eax
+  401109: c3                           	retl
+  40110a: 66 0f 1f 44 00 00            	nopw	(%eax,%eax)
+
+00401110 <overlapping_views>:
+  401110: 56                           	pushl	%esi
+  401111: 83 ec 38                     	subl	$0x38, %esp
+  401114: 8b 74 24 40                  	movl	0x40(%esp), %esi
+  401118: 89 34 24                     	movl	%esi, (%esp)
+  40111b: e8 c0 ff ff ff               	calll	0x4010e0 <scalar_view>
+  401120: dd 5c 24 18                  	fstpl	0x18(%esp)
+  401124: 8b 06                        	movl	(%esi), %eax
+  401126: 8b 36                        	movl	(%esi), %esi
+  401128: 89 04 24                     	movl	%eax, (%esp)
+  40112b: e8 c0 ff ff ff               	calll	0x4010f0 <small_target>
+  401130: 66 0f 6e c0                  	movd	%eax, %xmm0
+  401134: f3 0f 7e 0d d8 00 40 00      	movq	0x4000d8, %xmm1         # xmm1 = mem[0],zero
+  40113c: 66 0f eb c1                  	por	%xmm1, %xmm0
+  401140: f2 0f 5c c1                  	subsd	%xmm1, %xmm0
+  401144: f2 0f 58 44 24 18            	addsd	0x18(%esp), %xmm0
+  40114a: 66 0f 29 44 24 20            	movapd	%xmm0, 0x20(%esp)
+  401150: 89 34 24                     	movl	%esi, (%esp)
+  401153: e8 a8 ff ff ff               	calll	0x401100 <wide_target>
+  401158: 66 0f 6e c0                  	movd	%eax, %xmm0
+  40115c: f3 0f 7e 0d d8 00 40 00      	movq	0x4000d8, %xmm1         # xmm1 = mem[0],zero
+  401164: 66 0f eb c1                  	por	%xmm1, %xmm0
+  401168: f2 0f 5c c1                  	subsd	%xmm1, %xmm0
+  40116c: f2 0f 58 44 24 20            	addsd	0x20(%esp), %xmm0
+  401172: f2 0f 11 44 24 10            	movsd	%xmm0, 0x10(%esp)
+  401178: dd 44 24 10                  	fldl	0x10(%esp)
+  40117c: 83 c4 38                     	addl	$0x38, %esp
+  40117f: 5e                           	popl	%esi
+  401180: c3                           	retl
+  401181: 66 66 66 66 66 66 2e 0f 1f 84 00 00 00 00 00 	nopw	%cs:(%eax,%eax)
+
+00401190 <_start>:
+  401190: 83 ec 0c                     	subl	$0xc, %esp
+  401193: c7 05 d4 21 40 00 00 00 00 00	movl	$0x0, 0x4021d4
+  40119d: c7 05 d0 21 40 00 c4 21 40 00	movl	$0x4021c4, 0x4021d0     # imm = 0x4021C4
+  4011a7: c7 04 24 d0 21 40 00         	movl	$0x4021d0, (%esp)       # imm = 0x4021D0
+  4011ae: e8 5d ff ff ff               	calll	0x401110 <overlapping_views>
+  4011b3: dd 1d d8 21 40 00            	fstpl	0x4021d8
+  4011b9: 0f 1f 80 00 00 00 00         	nopl	(%eax)
+  4011c0: f3 90                        	pause
+  4011c2: eb fc                        	jmp	0x4011c0 <_start+0x30>

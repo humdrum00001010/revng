@@ -1,0 +1,7 @@
+         U _helper_fadd_STN_ST0_wrapper
+         U _helper_flds_ST0_wrapper
+         U _helper_fldt_ST0_wrapper
+         U _helper_fpop_wrapper
+         U _helper_fstt_ST0_wrapper
+         U _revng_undefined_local_sp
+         U _undef_value

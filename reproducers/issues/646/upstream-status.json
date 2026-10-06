@@ -1,0 +1,26 @@
+{
+  "issue": 646,
+  "url": "https://github.com/revng/revng/issues/646",
+  "title": "CliftEmitC: provide undefined-value lowering for recompilable C",
+  "state": "CLOSED",
+  "state_reason": "COMPLETED",
+  "comments": [
+    {
+      "author": "pfez",
+      "url": "https://github.com/revng/revng/issues/646#issuecomment-6011579959"
+    },
+    {
+      "author": "humdrum00001010",
+      "url": "https://github.com/revng/revng/issues/646#issuecomment-6011644880"
+    },
+    {
+      "author": "pfez",
+      "url": "https://github.com/revng/revng/issues/646#issuecomment-6013572805"
+    },
+    {
+      "author": "humdrum00001010",
+      "url": "https://github.com/revng/revng/issues/646#issuecomment-6013653882"
+    }
+  ],
+  "resolution": "intended design: callers supply undef_value semantics"
+}

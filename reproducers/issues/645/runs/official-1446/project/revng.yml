@@ -1,0 +1,481 @@
+---
+Version: 10
+Architecture: x86
+OperatingSystem: Windows
+EntryPoint: "0x10001000:Code_x86"
+DefaultABI: Microsoft_x86_cdecl
+DefaultPrototype:
+  Kind: DefinedType
+  Definition: "/TypeDefinitions/4-RawFunctionDefinition"
+Binaries:
+  - Index: 0
+    Hash: 80ded741d3ca17b87a803827c63b3716095482fabf3c8db9e9e20f50f380baea
+    Size: 3072
+    CanonicalPath: '/inputs/repro.dll'
+Segments:
+  - Binary: "/Binaries/0"
+    StartAddress: "0x10001000:Generic32"
+    VirtualSize: 512
+    StartOffset: 1024
+    FileSize: 512
+    IsReadable: true
+    IsExecutable: true
+    Type:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/0-StructDefinition"
+  - Binary: "/Binaries/0"
+    StartAddress: "0x10002000:Generic32"
+    VirtualSize: 512
+    StartOffset: 1536
+    FileSize: 512
+    IsReadable: true
+    Type:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/1-StructDefinition"
+  - Binary: "/Binaries/0"
+    StartAddress: "0x10003000:Generic32"
+    VirtualSize: 512
+    StartOffset: 2048
+    FileSize: 512
+    IsReadable: true
+    IsWriteable: true
+    Type:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/2-StructDefinition"
+  - Binary: "/Binaries/0"
+    StartAddress: "0x10004000:Generic32"
+    VirtualSize: 512
+    StartOffset: 2560
+    FileSize: 512
+    IsReadable: true
+    Type:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/3-StructDefinition"
+ImportedLibraries:
+  - GDI32.dll
+ImportedDynamicFunctions:
+  - Name: CreateDIBSection
+    Prototype:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/5-CABIFunctionDefinition"
+    Relocations:
+      - Address: "0x10002098:Generic32"
+        Type: WriteAbsoluteAddress32
+  - Name: CreatePalette
+    Prototype:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/6-CABIFunctionDefinition"
+    Relocations:
+      - Address: "0x1000209c:Generic32"
+        Type: WriteAbsoluteAddress32
+Functions:
+  - Entry: "0x10001000:Code_x86"
+    StackFrame:
+      Type:
+        Kind: DefinedType
+        Definition: "/TypeDefinitions/31-StructDefinition"
+    Prototype:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/42-CABIFunctionDefinition"
+TypeDefinitions:
+  - ID: 0
+    Kind: StructDefinition
+    Size: 512
+    CanContainCode: true
+  - ID: 1
+    Kind: StructDefinition
+    Size: 512
+  - ID: 2
+    Kind: StructDefinition
+    Size: 512
+  - ID: 3
+    Kind: StructDefinition
+    Size: 512
+  - ID: 4
+    Kind: RawFunctionDefinition
+    Architecture: x86
+    ReturnValues:
+      - Location: eax_x86
+        Type:
+          Kind: PrimitiveType
+          PrimitiveKind: PointerOrNumber
+          Size: 4
+      - Location: edx_x86
+        Type:
+          Kind: PrimitiveType
+          PrimitiveKind: PointerOrNumber
+          Size: 4
+    PreservedRegisters:
+      - ebx_x86
+      - esi_x86
+      - edi_x86
+      - ebp_x86
+    FinalStackOffset: 4
+  - ID: 5
+    Kind: CABIFunctionDefinition
+    ABI: Microsoft_x86_stdcall
+    ReturnType:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/27-TypedefDefinition"
+    Arguments:
+      - Index: 0
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/26-TypedefDefinition"
+      - Index: 1
+        Type:
+          Kind: PointerType
+          PointerSize: 4
+          PointeeType:
+            Kind: DefinedType
+            IsConst: true
+            Definition: "/TypeDefinitions/21-TypedefDefinition"
+      - Index: 2
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/22-TypedefDefinition"
+      - Index: 3
+        Type:
+          Kind: PointerType
+          PointerSize: 4
+          PointeeType:
+            Kind: PointerType
+            PointerSize: 4
+            PointeeType:
+              Kind: PrimitiveType
+              PrimitiveKind: Void
+      - Index: 4
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/28-TypedefDefinition"
+      - Index: 5
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/17-TypedefDefinition"
+  - ID: 6
+    Kind: CABIFunctionDefinition
+    ABI: Microsoft_x86_stdcall
+    ReturnType:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/25-TypedefDefinition"
+    Arguments:
+      - Index: 0
+        Type:
+          Kind: PointerType
+          PointerSize: 4
+          PointeeType:
+            Kind: DefinedType
+            IsConst: true
+            Definition: "/TypeDefinitions/24-TypedefDefinition"
+  - ID: 7
+    Kind: StructDefinition
+    Name: tagRGBQUAD
+    Size: 4
+    Fields:
+      - Offset: 0
+        Name: rgbBlue
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/18-TypedefDefinition"
+      - Offset: 1
+        Name: rgbGreen
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/18-TypedefDefinition"
+      - Offset: 2
+        Name: rgbRed
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/18-TypedefDefinition"
+      - Offset: 3
+        Name: rgbReserved
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/18-TypedefDefinition"
+  - ID: 8
+    Kind: StructDefinition
+    Name: tagBITMAPINFOHEADER
+    Size: 40
+    Fields:
+      - Offset: 0
+        Name: biSize
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/17-TypedefDefinition"
+      - Offset: 4
+        Name: biWidth
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/16-TypedefDefinition"
+      - Offset: 8
+        Name: biHeight
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/16-TypedefDefinition"
+      - Offset: 12
+        Name: biPlanes
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/15-TypedefDefinition"
+      - Offset: 14
+        Name: biBitCount
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/15-TypedefDefinition"
+      - Offset: 16
+        Name: biCompression
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/17-TypedefDefinition"
+      - Offset: 20
+        Name: biSizeImage
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/17-TypedefDefinition"
+      - Offset: 24
+        Name: biXPelsPerMeter
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/16-TypedefDefinition"
+      - Offset: 28
+        Name: biYPelsPerMeter
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/16-TypedefDefinition"
+      - Offset: 32
+        Name: biClrUsed
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/17-TypedefDefinition"
+      - Offset: 36
+        Name: biClrImportant
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/17-TypedefDefinition"
+  - ID: 9
+    Kind: StructDefinition
+    Name: tagBITMAPINFO
+    Size: 44
+    Fields:
+      - Offset: 0
+        Name: bmiHeader
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/20-TypedefDefinition"
+      - Offset: 40
+        Name: bmiColors
+        Type:
+          Kind: ArrayType
+          ElementCount: 1
+          ElementType:
+            Kind: DefinedType
+            Definition: "/TypeDefinitions/19-TypedefDefinition"
+  - ID: 10
+    Kind: StructDefinition
+    Name: tagPALETTEENTRY
+    Size: 4
+    Fields:
+      - Offset: 0
+        Name: peRed
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/18-TypedefDefinition"
+      - Offset: 1
+        Name: peGreen
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/18-TypedefDefinition"
+      - Offset: 2
+        Name: peBlue
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/18-TypedefDefinition"
+      - Offset: 3
+        Name: peFlags
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/18-TypedefDefinition"
+  - ID: 11
+    Kind: StructDefinition
+    Name: tagLOGPALETTE
+    Size: 8
+    Fields:
+      - Offset: 0
+        Name: palVersion
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/15-TypedefDefinition"
+      - Offset: 2
+        Name: palNumEntries
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/15-TypedefDefinition"
+      - Offset: 4
+        Name: palPalEntry
+        Type:
+          Kind: ArrayType
+          ElementCount: 1
+          ElementType:
+            Kind: DefinedType
+            Definition: "/TypeDefinitions/23-TypedefDefinition"
+  - ID: 12
+    Kind: StructDefinition
+    Name: HPALETTE__
+    Size: 4
+    Fields:
+      - Offset: 0
+        Name: unused
+        Type:
+          Kind: PrimitiveType
+          PrimitiveKind: Signed
+          Size: 4
+  - ID: 13
+    Kind: StructDefinition
+    Name: HDC__
+    Size: 4
+    Fields:
+      - Offset: 0
+        Name: unused
+        Type:
+          Kind: PrimitiveType
+          PrimitiveKind: Signed
+          Size: 4
+  - ID: 14
+    Kind: StructDefinition
+    Name: HBITMAP__
+    Size: 4
+    Fields:
+      - Offset: 0
+        Name: unused
+        Type:
+          Kind: PrimitiveType
+          PrimitiveKind: Signed
+          Size: 4
+  - ID: 15
+    Kind: TypedefDefinition
+    Name: WORD
+    UnderlyingType:
+      Kind: PrimitiveType
+      PrimitiveKind: Unsigned
+      Size: 2
+  - ID: 16
+    Kind: TypedefDefinition
+    Name: LONG
+    UnderlyingType:
+      Kind: PrimitiveType
+      PrimitiveKind: Signed
+      Size: 4
+  - ID: 17
+    Kind: TypedefDefinition
+    Name: DWORD
+    UnderlyingType:
+      Kind: PrimitiveType
+      PrimitiveKind: Unsigned
+      Size: 4
+  - ID: 18
+    Kind: TypedefDefinition
+    Name: BYTE
+    UnderlyingType:
+      Kind: PrimitiveType
+      PrimitiveKind: Unsigned
+      Size: 1
+  - ID: 19
+    Kind: TypedefDefinition
+    Name: RGBQUAD
+    UnderlyingType:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/7-StructDefinition"
+  - ID: 20
+    Kind: TypedefDefinition
+    Name: BITMAPINFOHEADER
+    UnderlyingType:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/8-StructDefinition"
+  - ID: 21
+    Kind: TypedefDefinition
+    Name: BITMAPINFO
+    UnderlyingType:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/9-StructDefinition"
+  - ID: 22
+    Kind: TypedefDefinition
+    Name: UINT
+    UnderlyingType:
+      Kind: PrimitiveType
+      PrimitiveKind: Unsigned
+      Size: 4
+  - ID: 23
+    Kind: TypedefDefinition
+    Name: PALETTEENTRY
+    UnderlyingType:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/10-StructDefinition"
+  - ID: 24
+    Kind: TypedefDefinition
+    Name: LOGPALETTE
+    UnderlyingType:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/11-StructDefinition"
+  - ID: 25
+    Kind: TypedefDefinition
+    Name: HPALETTE
+    UnderlyingType:
+      Kind: PointerType
+      PointerSize: 4
+      PointeeType:
+        Kind: DefinedType
+        Definition: "/TypeDefinitions/12-StructDefinition"
+  - ID: 26
+    Kind: TypedefDefinition
+    Name: HDC
+    UnderlyingType:
+      Kind: PointerType
+      PointerSize: 4
+      PointeeType:
+        Kind: DefinedType
+        Definition: "/TypeDefinitions/13-StructDefinition"
+  - ID: 27
+    Kind: TypedefDefinition
+    Name: HBITMAP
+    UnderlyingType:
+      Kind: PointerType
+      PointerSize: 4
+      PointeeType:
+        Kind: DefinedType
+        Definition: "/TypeDefinitions/14-StructDefinition"
+  - ID: 28
+    Kind: TypedefDefinition
+    Name: HANDLE
+    UnderlyingType:
+      Kind: PointerType
+      PointerSize: 4
+      PointeeType:
+        Kind: PrimitiveType
+        PrimitiveKind: Void
+  - ID: 31
+    Kind: StructDefinition
+    Size: 8
+  - ID: 42
+    Kind: CABIFunctionDefinition
+    ABI: Microsoft_x86_cdecl
+    ReturnType:
+      Kind: PrimitiveType
+      PrimitiveKind: Generic
+      Size: 4
+    Arguments:
+      - Index: 0
+        Type:
+          Kind: PrimitiveType
+          PrimitiveKind: Generic
+          Size: 4
+      - Index: 1
+        Type:
+          Kind: PrimitiveType
+          PrimitiveKind: Generic
+          Size: 4
+      - Index: 2
+        Type:
+          Kind: PrimitiveType
+          PrimitiveKind: Generic
+          Size: 4
+...

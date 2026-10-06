@@ -1,0 +1,573 @@
+{
+  "issue": 649,
+  "image": "revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+  "actual_image_id": "sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+  "baseline_class": "pristine_pinned_upstream",
+  "supported_whole_binary_paths_only": true,
+  "commands": [
+    {
+      "name": "image-identity",
+      "argv": [
+        "/usr/local/bin/docker",
+        "image",
+        "inspect",
+        "revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+        "--format",
+        "{{.Id}}"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "export_matrix-whole-supported-paths",
+      "argv": [
+        "/usr/local/bin/docker",
+        "run",
+        "--platform",
+        "linux/amd64",
+        "--network",
+        "none",
+        "--cpus",
+        "1",
+        "--memory",
+        "4g",
+        "--memory-swap",
+        "4g",
+        "--mount",
+        "type=bind,src=${CASE_DIR},dst=/case",
+        "--workdir",
+        "/case",
+        "--entrypoint",
+        "/bin/bash",
+        "revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+        "-lc",
+        "revng --version; revng quick artifact emit-recompilable-archive /case/build/export_matrix.dll -o /case/results/pristine-pinned-upstream/export_matrix/quick.tar.gz && revng quick analyze /case/build/export_matrix.dll -o /case/results/pristine-pinned-upstream/export_matrix/quick-model.yml && mkdir /case/results/pristine-pinned-upstream/export_matrix/project && cd /case/results/pristine-pinned-upstream/export_matrix/project && revng project init /case/build/export_matrix.dll && revng project artifact emit-recompilable-archive -o project.tar.gz"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "shared_ordinal_alias-whole-supported-paths",
+      "argv": [
+        "/usr/local/bin/docker",
+        "run",
+        "--platform",
+        "linux/amd64",
+        "--network",
+        "none",
+        "--cpus",
+        "1",
+        "--memory",
+        "4g",
+        "--memory-swap",
+        "4g",
+        "--mount",
+        "type=bind,src=${CASE_DIR},dst=/case",
+        "--workdir",
+        "/case",
+        "--entrypoint",
+        "/bin/bash",
+        "revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+        "-lc",
+        "revng --version; revng quick artifact emit-recompilable-archive /case/build/shared_ordinal_alias.dll -o /case/results/pristine-pinned-upstream/shared_ordinal_alias/quick.tar.gz && revng quick analyze /case/build/shared_ordinal_alias.dll -o /case/results/pristine-pinned-upstream/shared_ordinal_alias/quick-model.yml && mkdir /case/results/pristine-pinned-upstream/shared_ordinal_alias/project && cd /case/results/pristine-pinned-upstream/shared_ordinal_alias/project && revng project init /case/build/shared_ordinal_alias.dll && revng project artifact emit-recompilable-archive -o project.tar.gz"
+      ],
+      "exit": 0
+    }
+  ],
+  "cases": [
+    {
+      "fixture": "export_matrix",
+      "input": {
+        "file": "build/export_matrix.dll",
+        "bytes": 2560,
+        "sha256": "a7d30d11535ef8af6c25f6d4f85a0426acd2bbdd2c9d5f0a4786f6ee90fa910a"
+      },
+      "complete_export_truth": {
+        "machine": "0x14c",
+        "DLL_flag": true,
+        "entrypoint_RVA": 0,
+        "COFF_symbol_count": 0,
+        "all_EAT_slots": [
+          {
+            "index": 0,
+            "ordinal": 1,
+            "rva": 4096,
+            "names": [
+              "alpha"
+            ],
+            "executable": true,
+            "zero_RVA_hole": false,
+            "forwarder": null,
+            "EAT_field_offset": 1594
+          },
+          {
+            "index": 1,
+            "ordinal": 2,
+            "rva": 4096,
+            "names": [
+              "alias_alpha"
+            ],
+            "executable": true,
+            "zero_RVA_hole": false,
+            "forwarder": null,
+            "EAT_field_offset": 1598
+          },
+          {
+            "index": 2,
+            "ordinal": 3,
+            "rva": 0,
+            "names": [],
+            "executable": false,
+            "zero_RVA_hole": true,
+            "forwarder": null,
+            "EAT_field_offset": 1602
+          },
+          {
+            "index": 3,
+            "ordinal": 4,
+            "rva": 0,
+            "names": [],
+            "executable": false,
+            "zero_RVA_hole": true,
+            "forwarder": null,
+            "EAT_field_offset": 1606
+          },
+          {
+            "index": 4,
+            "ordinal": 5,
+            "rva": 0,
+            "names": [],
+            "executable": false,
+            "zero_RVA_hole": true,
+            "forwarder": null,
+            "EAT_field_offset": 1610
+          },
+          {
+            "index": 5,
+            "ordinal": 6,
+            "rva": 0,
+            "names": [],
+            "executable": false,
+            "zero_RVA_hole": true,
+            "forwarder": null,
+            "EAT_field_offset": 1614
+          },
+          {
+            "index": 6,
+            "ordinal": 7,
+            "rva": 4128,
+            "names": [],
+            "executable": true,
+            "zero_RVA_hole": false,
+            "forwarder": null,
+            "EAT_field_offset": 1618
+          },
+          {
+            "index": 7,
+            "ordinal": 8,
+            "rva": 0,
+            "names": [],
+            "executable": false,
+            "zero_RVA_hole": true,
+            "forwarder": null,
+            "EAT_field_offset": 1622
+          },
+          {
+            "index": 8,
+            "ordinal": 9,
+            "rva": 12288,
+            "names": [
+              "exported_data"
+            ],
+            "executable": false,
+            "zero_RVA_hole": false,
+            "forwarder": null,
+            "EAT_field_offset": 1626
+          },
+          {
+            "index": 9,
+            "ordinal": 10,
+            "rva": 0,
+            "names": [],
+            "executable": false,
+            "zero_RVA_hole": true,
+            "forwarder": null,
+            "EAT_field_offset": 1630
+          },
+          {
+            "index": 10,
+            "ordinal": 11,
+            "rva": 0,
+            "names": [],
+            "executable": false,
+            "zero_RVA_hole": true,
+            "forwarder": null,
+            "EAT_field_offset": 1634
+          },
+          {
+            "index": 11,
+            "ordinal": 12,
+            "rva": 4112,
+            "names": [
+              "beta"
+            ],
+            "executable": true,
+            "zero_RVA_hole": false,
+            "forwarder": null,
+            "EAT_field_offset": 1638
+          },
+          {
+            "index": 12,
+            "ordinal": 13,
+            "rva": 8379,
+            "names": [
+              "forwarded"
+            ],
+            "executable": false,
+            "zero_RVA_hole": false,
+            "forwarder": "_KERNEL32.GetCurrentProcessId",
+            "EAT_field_offset": 1642
+          }
+        ],
+        "all_unique_executable_export_RVAs": [
+          4096,
+          4112,
+          4128
+        ],
+        "names_by_executable_RVA": {
+          "0x1000": [
+            "alias_alpha",
+            "alpha"
+          ],
+          "0x1020": [],
+          "0x1010": [
+            "beta"
+          ]
+        },
+        "expected_executable_function_roots": 3,
+        "sections": [
+          {
+            "name": ".text",
+            "rva": 4096,
+            "virtual_size": 38,
+            "raw_size": 512,
+            "raw_offset": 1024,
+            "flags": 1610612768
+          },
+          {
+            "name": ".rdata",
+            "rva": 8192,
+            "virtual_size": 217,
+            "raw_size": 512,
+            "raw_offset": 1536,
+            "flags": 1073741888
+          },
+          {
+            "name": ".data",
+            "rva": 12288,
+            "virtual_size": 4,
+            "raw_size": 512,
+            "raw_offset": 2048,
+            "flags": 3221225536
+          }
+        ]
+      },
+      "pipeline_exit": 0,
+      "baseline_class": "pristine_pinned_upstream",
+      "manual_model_or_prototype_input": false,
+      "function_selection": false,
+      "models": [
+        {
+          "mode": "quick",
+          "artifact": {
+            "file": "results/pristine-pinned-upstream/export_matrix/quick-model.yml",
+            "bytes": 1773,
+            "sha256": "81f06222e153bec30c9c5449ac3efe7cc3ed263669f656bc539e1144b271b6af"
+          },
+          "function_count": 0,
+          "all_function_entries": []
+        },
+        {
+          "mode": "project",
+          "artifact": {
+            "file": "results/pristine-pinned-upstream/export_matrix/project/revng.yml",
+            "bytes": 1773,
+            "sha256": "81f06222e153bec30c9c5449ac3efe7cc3ed263669f656bc539e1144b271b6af"
+          },
+          "function_count": 0,
+          "all_function_entries": []
+        }
+      ],
+      "archives": [
+        {
+          "mode": "quick",
+          "artifact": {
+            "file": "results/pristine-pinned-upstream/export_matrix/quick.tar.gz",
+            "bytes": 10240,
+            "sha256": "ef39f318095b46cb44c356cd65c3437626f0d163ab048c2ff57a70ba4fbe6221"
+          },
+          "functions_C_bytes": 52,
+          "functions_C_sha256": "6360813eda4214abfcdc1fc15df604053548c7bd5f85ff449bf4935e4f38218c"
+        },
+        {
+          "mode": "project",
+          "artifact": {
+            "file": "results/pristine-pinned-upstream/export_matrix/project/project.tar.gz",
+            "bytes": 10240,
+            "sha256": "6a2a804188b483de4882a723240592107be0b5b3e73083e8dc559b52904ee42a"
+          },
+          "functions_C_bytes": 52,
+          "functions_C_sha256": "6360813eda4214abfcdc1fc15df604053548c7bd5f85ff449bf4935e4f38218c"
+        }
+      ],
+      "classification": "reproduced_supported_path"
+    },
+    {
+      "fixture": "shared_ordinal_alias",
+      "input": {
+        "file": "build/shared_ordinal_alias.dll",
+        "bytes": 2560,
+        "sha256": "4c9ae52a27491ac9f9682d410775f2d201c2c76c972575425d7055d022e64952"
+      },
+      "complete_export_truth": {
+        "machine": "0x14c",
+        "DLL_flag": true,
+        "entrypoint_RVA": 0,
+        "COFF_symbol_count": 0,
+        "all_EAT_slots": [
+          {
+            "index": 0,
+            "ordinal": 1,
+            "rva": 4096,
+            "names": [
+              "alias_alpha",
+              "alpha"
+            ],
+            "executable": true,
+            "zero_RVA_hole": false,
+            "forwarder": null,
+            "EAT_field_offset": 1594
+          },
+          {
+            "index": 1,
+            "ordinal": 2,
+            "rva": 0,
+            "names": [],
+            "executable": false,
+            "zero_RVA_hole": true,
+            "forwarder": null,
+            "EAT_field_offset": 1598
+          },
+          {
+            "index": 2,
+            "ordinal": 3,
+            "rva": 0,
+            "names": [],
+            "executable": false,
+            "zero_RVA_hole": true,
+            "forwarder": null,
+            "EAT_field_offset": 1602
+          },
+          {
+            "index": 3,
+            "ordinal": 4,
+            "rva": 0,
+            "names": [],
+            "executable": false,
+            "zero_RVA_hole": true,
+            "forwarder": null,
+            "EAT_field_offset": 1606
+          },
+          {
+            "index": 4,
+            "ordinal": 5,
+            "rva": 0,
+            "names": [],
+            "executable": false,
+            "zero_RVA_hole": true,
+            "forwarder": null,
+            "EAT_field_offset": 1610
+          },
+          {
+            "index": 5,
+            "ordinal": 6,
+            "rva": 0,
+            "names": [],
+            "executable": false,
+            "zero_RVA_hole": true,
+            "forwarder": null,
+            "EAT_field_offset": 1614
+          },
+          {
+            "index": 6,
+            "ordinal": 7,
+            "rva": 4128,
+            "names": [],
+            "executable": true,
+            "zero_RVA_hole": false,
+            "forwarder": null,
+            "EAT_field_offset": 1618
+          },
+          {
+            "index": 7,
+            "ordinal": 8,
+            "rva": 0,
+            "names": [],
+            "executable": false,
+            "zero_RVA_hole": true,
+            "forwarder": null,
+            "EAT_field_offset": 1622
+          },
+          {
+            "index": 8,
+            "ordinal": 9,
+            "rva": 12288,
+            "names": [
+              "exported_data"
+            ],
+            "executable": false,
+            "zero_RVA_hole": false,
+            "forwarder": null,
+            "EAT_field_offset": 1626
+          },
+          {
+            "index": 9,
+            "ordinal": 10,
+            "rva": 0,
+            "names": [],
+            "executable": false,
+            "zero_RVA_hole": true,
+            "forwarder": null,
+            "EAT_field_offset": 1630
+          },
+          {
+            "index": 10,
+            "ordinal": 11,
+            "rva": 0,
+            "names": [],
+            "executable": false,
+            "zero_RVA_hole": true,
+            "forwarder": null,
+            "EAT_field_offset": 1634
+          },
+          {
+            "index": 11,
+            "ordinal": 12,
+            "rva": 4112,
+            "names": [
+              "beta"
+            ],
+            "executable": true,
+            "zero_RVA_hole": false,
+            "forwarder": null,
+            "EAT_field_offset": 1638
+          },
+          {
+            "index": 12,
+            "ordinal": 13,
+            "rva": 8379,
+            "names": [
+              "forwarded"
+            ],
+            "executable": false,
+            "zero_RVA_hole": false,
+            "forwarder": "_KERNEL32.GetCurrentProcessId",
+            "EAT_field_offset": 1642
+          }
+        ],
+        "all_unique_executable_export_RVAs": [
+          4096,
+          4112,
+          4128
+        ],
+        "names_by_executable_RVA": {
+          "0x1000": [
+            "alias_alpha",
+            "alpha"
+          ],
+          "0x1020": [],
+          "0x1010": [
+            "beta"
+          ]
+        },
+        "expected_executable_function_roots": 3,
+        "sections": [
+          {
+            "name": ".text",
+            "rva": 4096,
+            "virtual_size": 38,
+            "raw_size": 512,
+            "raw_offset": 1024,
+            "flags": 1610612768
+          },
+          {
+            "name": ".rdata",
+            "rva": 8192,
+            "virtual_size": 217,
+            "raw_size": 512,
+            "raw_offset": 1536,
+            "flags": 1073741888
+          },
+          {
+            "name": ".data",
+            "rva": 12288,
+            "virtual_size": 4,
+            "raw_size": 512,
+            "raw_offset": 2048,
+            "flags": 3221225536
+          }
+        ]
+      },
+      "pipeline_exit": 0,
+      "baseline_class": "pristine_pinned_upstream",
+      "manual_model_or_prototype_input": false,
+      "function_selection": false,
+      "models": [
+        {
+          "mode": "quick",
+          "artifact": {
+            "file": "results/pristine-pinned-upstream/shared_ordinal_alias/quick-model.yml",
+            "bytes": 1780,
+            "sha256": "98ce30ffb79fbda286aad6dfa4190922052af328fc7aeba2ef17e626f9c8980a"
+          },
+          "function_count": 0,
+          "all_function_entries": []
+        },
+        {
+          "mode": "project",
+          "artifact": {
+            "file": "results/pristine-pinned-upstream/shared_ordinal_alias/project/revng.yml",
+            "bytes": 1780,
+            "sha256": "98ce30ffb79fbda286aad6dfa4190922052af328fc7aeba2ef17e626f9c8980a"
+          },
+          "function_count": 0,
+          "all_function_entries": []
+        }
+      ],
+      "archives": [
+        {
+          "mode": "quick",
+          "artifact": {
+            "file": "results/pristine-pinned-upstream/shared_ordinal_alias/quick.tar.gz",
+            "bytes": 10240,
+            "sha256": "85d82c4db4be830d36496f1dd1b35b045139298c706ae80682e42215590195ed"
+          },
+          "functions_C_bytes": 52,
+          "functions_C_sha256": "6360813eda4214abfcdc1fc15df604053548c7bd5f85ff449bf4935e4f38218c"
+        },
+        {
+          "mode": "project",
+          "artifact": {
+            "file": "results/pristine-pinned-upstream/shared_ordinal_alias/project/project.tar.gz",
+            "bytes": 10240,
+            "sha256": "9b8b6a380815abee31ae4aa8b2b858d4e0dfef8f62a42794988e9a365dd4d19c"
+          },
+          "functions_C_bytes": 52,
+          "functions_C_sha256": "6360813eda4214abfcdc1fc15df604053548c7bd5f85ff449bf4935e4f38218c"
+        }
+      ],
+      "classification": "reproduced_supported_path"
+    }
+  ],
+  "private_inputs": false,
+  "runtime_execution_performed": false,
+  "publication_approved": false
+}

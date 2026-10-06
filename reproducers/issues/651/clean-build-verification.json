@@ -1,0 +1,20 @@
+{
+  "source_sha256": "aee6128a15b3e0f82c2795f941f4b1ac7ef79779c4daccfe21b3fef92391d23f",
+  "build_script_sha256": "c4392e4841c38291c8333e832c3309858fd1d4a2aaf73aa3e4a808b7938ab5f6",
+  "results": [
+    {
+      "binary": "repro.dll",
+      "fresh_source_build_exit": 0,
+      "sha256": "23b5db4ff72600bd64e77319816a3869a86a295d49427dcf71fb1e0b2e5e36b8",
+      "equals_recorded_binary": true,
+      "private_identifiers_present": false
+    },
+    {
+      "binary": "repro-with-dwarf.dll",
+      "fresh_source_build_exit": 0,
+      "sha256": "25c276b3855b36eaac63806be69721274a9198e47122c0a2b30473dc0b78293b",
+      "equals_recorded_binary": true,
+      "private_identifiers_present": false
+    }
+  ]
+}

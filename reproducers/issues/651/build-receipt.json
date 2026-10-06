@@ -1,0 +1,45 @@
+{
+  "compiler_version": "Homebrew clang version 17.0.6\nTarget: arm64-apple-darwin25.1.0\nThread model: posix\nInstalledDir: /opt/homebrew/opt/llvm@17/bin\n",
+  "commands": [
+    {
+      "argv": [
+        "<LLVM_BIN>/clang",
+        "--target=i686-w64-windows-gnu",
+        "-O1",
+        "-std=gnu2x",
+        "-g",
+        "-gdwarf-4",
+        "-fdebug-compilation-dir=/repro",
+        "-ffreestanding",
+        "-fno-inline",
+        "-fno-stack-protector",
+        "-ffile-prefix-map=<PACKAGE>/=/repro/",
+        "-fdebug-prefix-map=<PACKAGE>/=/repro/",
+        "-c",
+        "repro.c",
+        "-o",
+        "repro.obj"
+      ],
+      "exit": 0
+    },
+    {
+      "argv": [
+        "<LLVM_BIN>/lld-link",
+        "/DLL",
+        "/lldmingw",
+        "/Brepro",
+        "/ENTRY:DllMain@12",
+        "/NODEFAULTLIB",
+        "/SAFESEH:NO",
+        "/MACHINE:X86",
+        "/OUT:<PACKAGE>/repro.dll",
+        "<PACKAGE>/repro.obj"
+      ],
+      "exit": 0
+    }
+  ],
+  "independently_authored_source": true,
+  "private_source_fragments": false,
+  "source_sha256": "aee6128a15b3e0f82c2795f941f4b1ac7ef79779c4daccfe21b3fef92391d23f",
+  "binary_sha256": "23b5db4ff72600bd64e77319816a3869a86a295d49427dcf71fb1e0b2e5e36b8"
+}

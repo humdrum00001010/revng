@@ -1,0 +1,4 @@
+LIBRARY GDI32.dll
+EXPORTS
+CreateDIBSection@24
+CreatePalette@4

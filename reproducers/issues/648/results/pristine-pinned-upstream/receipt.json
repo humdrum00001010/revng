@@ -1,0 +1,681 @@
+{
+  "issue": 648,
+  "image": "revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+  "actual_image_id": "sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+  "baseline_class": "pristine_pinned_upstream",
+  "commands": [
+    {
+      "name": "image-identity",
+      "argv": [
+        "/usr/local/bin/docker",
+        "image",
+        "inspect",
+        "revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+        "--format",
+        "{{.Id}}"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "raw-whole-supported-path",
+      "argv": [
+        "/usr/local/bin/docker",
+        "run",
+        "--platform",
+        "linux/amd64",
+        "--network",
+        "none",
+        "--cpus",
+        "1",
+        "--memory",
+        "4g",
+        "--memory-swap",
+        "4g",
+        "--mount",
+        "type=bind,src=${CASE_DIR},dst=/case",
+        "--workdir",
+        "/case",
+        "--entrypoint",
+        "/bin/bash",
+        "revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+        "-lc",
+        "revng --version; revng quick artifact emit-recompilable-archive /case/build/raw.elf -o /case/results/pristine-pinned-upstream/raw/quick.tar.gz && revng quick analyze /case/build/raw.elf -o /case/results/pristine-pinned-upstream/raw/quick-model.yml"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "debug-whole-supported-path",
+      "argv": [
+        "/usr/local/bin/docker",
+        "run",
+        "--platform",
+        "linux/amd64",
+        "--network",
+        "none",
+        "--cpus",
+        "1",
+        "--memory",
+        "4g",
+        "--memory-swap",
+        "4g",
+        "--mount",
+        "type=bind,src=${CASE_DIR},dst=/case",
+        "--workdir",
+        "/case",
+        "--entrypoint",
+        "/bin/bash",
+        "revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+        "-lc",
+        "revng --version; revng quick artifact emit-recompilable-archive /case/build/debug.elf -o /case/results/pristine-pinned-upstream/debug/quick.tar.gz && revng quick analyze /case/build/debug.elf -o /case/results/pristine-pinned-upstream/debug/quick-model.yml"
+      ],
+      "exit": 0
+    }
+  ],
+  "cases": [
+    {
+      "fixture": "raw",
+      "binary": {
+        "file": "build/raw.elf",
+        "bytes": 1216,
+        "sha256": "c030c6b89ad838f979060159e6d99910f1291280979841ae9868d916edf466ae"
+      },
+      "pipeline_exit": 0,
+      "baseline_class": "pristine_pinned_upstream",
+      "private_inputs": false,
+      "manual_model_or_prototype_input": false,
+      "function_selection": false,
+      "direct_DLA_graph_or_IR_input": false,
+      "target_new_model_width_loss_proven": false,
+      "model_owned_distinct_aggregate_pointee_condition_proven": false,
+      "automatic_model": {
+        "file": "results/pristine-pinned-upstream/raw/quick-model.yml",
+        "bytes": 5434,
+        "sha256": "ff1329aaa8e50cba4b684518d19d19d2f008a4cf4ca9eaf7e3ec836508089b6c"
+      },
+      "all_function_count": 5,
+      "all_TypeDefinitions": [
+        {
+          "ID": 0,
+          "Kind": "StructDefinition",
+          "Size": 224,
+          "Fields": [
+            {
+              "Offset": 216,
+              "Name": "rodata",
+              "Type": {
+                "Kind": "DefinedType",
+                "Definition": "/TypeDefinitions/1-StructDefinition"
+              }
+            }
+          ]
+        },
+        {
+          "ID": 1,
+          "Kind": "StructDefinition",
+          "Size": 8
+        },
+        {
+          "ID": 2,
+          "Kind": "StructDefinition",
+          "Size": 228,
+          "CanContainCode": true,
+          "Fields": [
+            {
+              "Offset": 0,
+              "Name": "text",
+              "Type": {
+                "Kind": "DefinedType",
+                "Definition": "/TypeDefinitions/3-StructDefinition"
+              }
+            }
+          ]
+        },
+        {
+          "ID": 3,
+          "Kind": "StructDefinition",
+          "Size": 228,
+          "CanContainCode": true
+        },
+        {
+          "ID": 4,
+          "Kind": "StructDefinition",
+          "Size": 28,
+          "Fields": [
+            {
+              "Offset": 0,
+              "Name": "data",
+              "Type": {
+                "Kind": "DefinedType",
+                "Definition": "/TypeDefinitions/5-StructDefinition"
+              }
+            },
+            {
+              "Offset": 12,
+              "Name": "bss",
+              "Type": {
+                "Kind": "DefinedType",
+                "Definition": "/TypeDefinitions/6-StructDefinition"
+              }
+            }
+          ]
+        },
+        {
+          "ID": 5,
+          "Kind": "StructDefinition",
+          "Size": 8,
+          "Fields": [
+            {
+              "Offset": 0,
+              "Name": "target",
+              "Type": {
+                "Kind": "PrimitiveType",
+                "PrimitiveKind": "Generic",
+                "Size": 8
+              }
+            }
+          ]
+        },
+        {
+          "ID": 6,
+          "Kind": "StructDefinition",
+          "Size": 16,
+          "Fields": [
+            {
+              "Offset": 0,
+              "Name": "storage",
+              "Type": {
+                "Kind": "PrimitiveType",
+                "PrimitiveKind": "Generic",
+                "Size": 8
+              }
+            },
+            {
+              "Offset": 8,
+              "Name": "observation",
+              "Type": {
+                "Kind": "PrimitiveType",
+                "PrimitiveKind": "Generic",
+                "Size": 8
+              }
+            }
+          ]
+        },
+        {
+          "ID": 7,
+          "Kind": "RawFunctionDefinition",
+          "Architecture": "x86",
+          "ReturnValues": [
+            {
+              "Location": "eax_x86",
+              "Type": {
+                "Kind": "PrimitiveType",
+                "PrimitiveKind": "PointerOrNumber",
+                "Size": 4
+              }
+            },
+            {
+              "Location": "edx_x86",
+              "Type": {
+                "Kind": "PrimitiveType",
+                "PrimitiveKind": "PointerOrNumber",
+                "Size": 4
+              }
+            }
+          ],
+          "PreservedRegisters": [
+            "ebx_x86",
+            "esi_x86",
+            "edi_x86",
+            "ebp_x86"
+          ],
+          "FinalStackOffset": 4
+        },
+        {
+          "ID": 14,
+          "Kind": "StructDefinition",
+          "Size": 4
+        },
+        {
+          "ID": 15,
+          "Kind": "StructDefinition",
+          "Size": 4
+        },
+        {
+          "ID": 17,
+          "Kind": "StructDefinition",
+          "Size": 8
+        },
+        {
+          "ID": 18,
+          "Kind": "StructDefinition",
+          "Size": 56
+        },
+        {
+          "ID": 26,
+          "Kind": "CABIFunctionDefinition",
+          "ABI": "SystemV_x86",
+          "Arguments": [
+            {
+              "Index": 0,
+              "Type": {
+                "Kind": "PointerType",
+                "PointerSize": 4,
+                "PointeeType": {
+                  "Kind": "PrimitiveType",
+                  "PrimitiveKind": "Generic",
+                  "Size": 8
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ID": 27,
+          "Kind": "CABIFunctionDefinition",
+          "ABI": "SystemV_x86",
+          "ReturnType": {
+            "Kind": "PrimitiveType",
+            "PrimitiveKind": "Generic",
+            "Size": 4
+          },
+          "Arguments": [
+            {
+              "Index": 0,
+              "Type": {
+                "Kind": "DefinedType",
+                "Definition": "/TypeDefinitions/14-StructDefinition"
+              }
+            }
+          ]
+        },
+        {
+          "ID": 28,
+          "Kind": "CABIFunctionDefinition",
+          "ABI": "SystemV_x86",
+          "ReturnType": {
+            "Kind": "PrimitiveType",
+            "PrimitiveKind": "Generic",
+            "Size": 4
+          },
+          "Arguments": [
+            {
+              "Index": 0,
+              "Type": {
+                "Kind": "DefinedType",
+                "Definition": "/TypeDefinitions/15-StructDefinition"
+              }
+            }
+          ]
+        },
+        {
+          "ID": 29,
+          "Kind": "CABIFunctionDefinition",
+          "ABI": "SystemV_x86",
+          "Arguments": [
+            {
+              "Index": 0,
+              "Type": {
+                "Kind": "PointerType",
+                "PointerSize": 4,
+                "PointeeType": {
+                  "Kind": "PrimitiveType",
+                  "PrimitiveKind": "Generic",
+                  "Size": 8
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ID": 30,
+          "Kind": "CABIFunctionDefinition",
+          "ABI": "SystemV_x86"
+        }
+      ],
+      "classification": "not_reproduced",
+      "scope_note": "Supported C-to-binary pipeline completed. Inspect inferred pointer/scalar views; success alone does not establish that the direct-graph target condition occurred."
+    },
+    {
+      "fixture": "debug",
+      "binary": {
+        "file": "build/debug.elf",
+        "bytes": 2852,
+        "sha256": "3a38a477730b1d7314d764e736c60494b7588ac4ecbd93df091aaaf07f638b28"
+      },
+      "pipeline_exit": 0,
+      "baseline_class": "pristine_pinned_upstream",
+      "private_inputs": false,
+      "manual_model_or_prototype_input": false,
+      "function_selection": false,
+      "direct_DLA_graph_or_IR_input": false,
+      "target_new_model_width_loss_proven": false,
+      "model_owned_distinct_aggregate_pointee_condition_proven": false,
+      "automatic_model": {
+        "file": "results/pristine-pinned-upstream/debug/quick-model.yml",
+        "bytes": 6700,
+        "sha256": "3377206cad088f4fdc32d8f42cfc4aa78c7b71600511d7bce1150a0821f25394"
+      },
+      "all_function_count": 5,
+      "all_TypeDefinitions": [
+        {
+          "ID": 0,
+          "Kind": "StructDefinition",
+          "Size": 224,
+          "Fields": [
+            {
+              "Offset": 216,
+              "Name": "rodata",
+              "Type": {
+                "Kind": "DefinedType",
+                "Definition": "/TypeDefinitions/1-StructDefinition"
+              }
+            }
+          ]
+        },
+        {
+          "ID": 1,
+          "Kind": "StructDefinition",
+          "Size": 8
+        },
+        {
+          "ID": 2,
+          "Kind": "StructDefinition",
+          "Size": 228,
+          "CanContainCode": true,
+          "Fields": [
+            {
+              "Offset": 0,
+              "Name": "text",
+              "Type": {
+                "Kind": "DefinedType",
+                "Definition": "/TypeDefinitions/3-StructDefinition"
+              }
+            }
+          ]
+        },
+        {
+          "ID": 3,
+          "Kind": "StructDefinition",
+          "Size": 228,
+          "CanContainCode": true
+        },
+        {
+          "ID": 4,
+          "Kind": "StructDefinition",
+          "Size": 28,
+          "Fields": [
+            {
+              "Offset": 0,
+              "Name": "data",
+              "Type": {
+                "Kind": "DefinedType",
+                "Definition": "/TypeDefinitions/5-StructDefinition"
+              }
+            },
+            {
+              "Offset": 12,
+              "Name": "bss",
+              "Type": {
+                "Kind": "DefinedType",
+                "Definition": "/TypeDefinitions/6-StructDefinition"
+              }
+            }
+          ]
+        },
+        {
+          "ID": 5,
+          "Kind": "StructDefinition",
+          "Size": 8,
+          "Fields": [
+            {
+              "Offset": 0,
+              "Name": "target",
+              "Type": {
+                "Kind": "PrimitiveType",
+                "PrimitiveKind": "Generic",
+                "Size": 8
+              }
+            }
+          ]
+        },
+        {
+          "ID": 6,
+          "Kind": "StructDefinition",
+          "Size": 16,
+          "Fields": [
+            {
+              "Offset": 0,
+              "Name": "storage",
+              "Type": {
+                "Kind": "PrimitiveType",
+                "PrimitiveKind": "Generic",
+                "Size": 8
+              }
+            },
+            {
+              "Offset": 8,
+              "Name": "observation",
+              "Type": {
+                "Kind": "PrimitiveType",
+                "PrimitiveKind": "Generic",
+                "Size": 8
+              }
+            }
+          ]
+        },
+        {
+          "ID": 7,
+          "Kind": "RawFunctionDefinition",
+          "Architecture": "x86",
+          "ReturnValues": [
+            {
+              "Location": "eax_x86",
+              "Type": {
+                "Kind": "PrimitiveType",
+                "PrimitiveKind": "PointerOrNumber",
+                "Size": 4
+              }
+            },
+            {
+              "Location": "edx_x86",
+              "Type": {
+                "Kind": "PrimitiveType",
+                "PrimitiveKind": "PointerOrNumber",
+                "Size": 4
+              }
+            }
+          ],
+          "PreservedRegisters": [
+            "ebx_x86",
+            "esi_x86",
+            "edi_x86",
+            "ebp_x86"
+          ],
+          "FinalStackOffset": 4
+        },
+        {
+          "ID": 9,
+          "Kind": "StructDefinition",
+          "Name": "Small",
+          "Size": 4,
+          "Fields": [
+            {
+              "Offset": 0,
+              "Name": "value",
+              "Type": {
+                "Kind": "DefinedType",
+                "Definition": "/TypeDefinitions/10-TypedefDefinition"
+              }
+            }
+          ]
+        },
+        {
+          "ID": 10,
+          "Kind": "TypedefDefinition",
+          "Name": "u32",
+          "UnderlyingType": {
+            "Kind": "PrimitiveType",
+            "PrimitiveKind": "Unsigned",
+            "Size": 4
+          }
+        },
+        {
+          "ID": 11,
+          "Kind": "StructDefinition",
+          "Name": "Wide",
+          "Size": 8,
+          "Fields": [
+            {
+              "Offset": 0,
+              "Name": "value",
+              "Type": {
+                "Kind": "DefinedType",
+                "Definition": "/TypeDefinitions/10-TypedefDefinition"
+              }
+            },
+            {
+              "Offset": 4,
+              "Name": "extra",
+              "Type": {
+                "Kind": "DefinedType",
+                "Definition": "/TypeDefinitions/10-TypedefDefinition"
+              }
+            }
+          ]
+        },
+        {
+          "ID": 13,
+          "Kind": "UnionDefinition",
+          "Name": "Target",
+          "Fields": [
+            {
+              "Index": 0,
+              "Name": "small",
+              "Type": {
+                "Kind": "DefinedType",
+                "Definition": "/TypeDefinitions/9-StructDefinition"
+              }
+            },
+            {
+              "Index": 1,
+              "Name": "wide",
+              "Type": {
+                "Kind": "DefinedType",
+                "Definition": "/TypeDefinitions/11-StructDefinition"
+              }
+            }
+          ]
+        },
+        {
+          "ID": 16,
+          "Kind": "CABIFunctionDefinition",
+          "ABI": "SystemV_x86"
+        },
+        {
+          "ID": 22,
+          "Kind": "StructDefinition",
+          "Size": 4
+        },
+        {
+          "ID": 23,
+          "Kind": "StructDefinition",
+          "Size": 4
+        },
+        {
+          "ID": 25,
+          "Kind": "StructDefinition",
+          "Size": 8
+        },
+        {
+          "ID": 26,
+          "Kind": "StructDefinition",
+          "Size": 56
+        },
+        {
+          "ID": 34,
+          "Kind": "CABIFunctionDefinition",
+          "ABI": "SystemV_x86",
+          "Arguments": [
+            {
+              "Index": 0,
+              "Type": {
+                "Kind": "PointerType",
+                "PointerSize": 4,
+                "PointeeType": {
+                  "Kind": "PrimitiveType",
+                  "PrimitiveKind": "Generic",
+                  "Size": 8
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ID": 35,
+          "Kind": "CABIFunctionDefinition",
+          "ABI": "SystemV_x86",
+          "ReturnType": {
+            "Kind": "PrimitiveType",
+            "PrimitiveKind": "Generic",
+            "Size": 4
+          },
+          "Arguments": [
+            {
+              "Index": 0,
+              "Type": {
+                "Kind": "DefinedType",
+                "Definition": "/TypeDefinitions/22-StructDefinition"
+              }
+            }
+          ]
+        },
+        {
+          "ID": 36,
+          "Kind": "CABIFunctionDefinition",
+          "ABI": "SystemV_x86",
+          "ReturnType": {
+            "Kind": "PrimitiveType",
+            "PrimitiveKind": "Generic",
+            "Size": 4
+          },
+          "Arguments": [
+            {
+              "Index": 0,
+              "Type": {
+                "Kind": "DefinedType",
+                "Definition": "/TypeDefinitions/23-StructDefinition"
+              }
+            }
+          ]
+        },
+        {
+          "ID": 37,
+          "Kind": "CABIFunctionDefinition",
+          "ABI": "SystemV_x86",
+          "Arguments": [
+            {
+              "Index": 0,
+              "Type": {
+                "Kind": "PointerType",
+                "PointerSize": 4,
+                "PointeeType": {
+                  "Kind": "PrimitiveType",
+                  "PrimitiveKind": "Generic",
+                  "Size": 8
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "classification": "not_reproduced",
+      "scope_note": "Supported C-to-binary pipeline completed. Inspect inferred pointer/scalar views; success alone does not establish that the direct-graph target condition occurred."
+    }
+  ],
+  "source_report_existing_fix": "b482edd3d3b77e134bf21979c36f59e0a7502c95",
+  "source_report_existing_model_initialization_fix": "c634c39387932bc9f0267c0455c737cf281214c5",
+  "new_width_change_requires_separate_supported_binary_evidence": true,
+  "direct_graph_test_is_not_binary_reproduction": true,
+  "runtime_execution_performed": false,
+  "publication_approved": false
+}

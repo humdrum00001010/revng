@@ -1,0 +1,286 @@
+---
+Version: 10
+Architecture: x86
+OperatingSystem: Linux
+EntryPoint: "0x401190:Code_x86"
+DefaultABI: SystemV_x86
+DefaultPrototype:
+  Kind: DefinedType
+  Definition: "/TypeDefinitions/7-RawFunctionDefinition"
+Binaries:
+  - Index: 0
+    Hash: 3a38a477730b1d7314d764e736c60494b7588ac4ecbd93df091aaaf07f638b28
+    Size: 2852
+    CanonicalPath: '/case/build/debug.elf'
+Segments:
+  - Binary: "/Binaries/0"
+    StartAddress: "0x400000:Generic32"
+    VirtualSize: 224
+    FileSize: 224
+    IsReadable: true
+    Type:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/0-StructDefinition"
+  - Binary: "/Binaries/0"
+    StartAddress: "0x4010e0:Generic32"
+    VirtualSize: 228
+    StartOffset: 224
+    FileSize: 228
+    IsReadable: true
+    IsExecutable: true
+    Type:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/2-StructDefinition"
+  - Binary: "/Binaries/0"
+    StartAddress: "0x4021c4:Generic32"
+    VirtualSize: 28
+    StartOffset: 452
+    FileSize: 8
+    IsReadable: true
+    IsWriteable: true
+    Type:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/4-StructDefinition"
+Functions:
+  - Entry: "0x4010e0:Code_x86"
+    Name: scalar_view
+    Prototype:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/34-CABIFunctionDefinition"
+    ExportedNames:
+      - scalar_view
+  - Entry: "0x4010f0:Code_x86"
+    Name: small_target
+    Prototype:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/35-CABIFunctionDefinition"
+    ExportedNames:
+      - small_target
+  - Entry: "0x401100:Code_x86"
+    Name: wide_target
+    Prototype:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/36-CABIFunctionDefinition"
+    ExportedNames:
+      - wide_target
+  - Entry: "0x401110:Code_x86"
+    Name: overlapping_views
+    StackFrame:
+      Type:
+        Kind: DefinedType
+        Definition: "/TypeDefinitions/26-StructDefinition"
+    Prototype:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/37-CABIFunctionDefinition"
+    ExportedNames:
+      - overlapping_views
+  - Entry: "0x401190:Code_x86"
+    Name: _start
+    StackFrame:
+      Type:
+        Kind: DefinedType
+        Definition: "/TypeDefinitions/25-StructDefinition"
+    Prototype:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/16-CABIFunctionDefinition"
+    Attributes:
+      - NoReturn
+    ExportedNames:
+      - _start
+TypeDefinitions:
+  - ID: 0
+    Kind: StructDefinition
+    Size: 224
+    Fields:
+      - Offset: 216
+        Name: rodata
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/1-StructDefinition"
+  - ID: 1
+    Kind: StructDefinition
+    Size: 8
+  - ID: 2
+    Kind: StructDefinition
+    Size: 228
+    CanContainCode: true
+    Fields:
+      - Offset: 0
+        Name: text
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/3-StructDefinition"
+  - ID: 3
+    Kind: StructDefinition
+    Size: 228
+    CanContainCode: true
+  - ID: 4
+    Kind: StructDefinition
+    Size: 28
+    Fields:
+      - Offset: 0
+        Name: data
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/5-StructDefinition"
+      - Offset: 12
+        Name: bss
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/6-StructDefinition"
+  - ID: 5
+    Kind: StructDefinition
+    Size: 8
+    Fields:
+      - Offset: 0
+        Name: target
+        Type:
+          Kind: PrimitiveType
+          PrimitiveKind: Generic
+          Size: 8
+  - ID: 6
+    Kind: StructDefinition
+    Size: 16
+    Fields:
+      - Offset: 0
+        Name: storage
+        Type:
+          Kind: PrimitiveType
+          PrimitiveKind: Generic
+          Size: 8
+      - Offset: 8
+        Name: observation
+        Type:
+          Kind: PrimitiveType
+          PrimitiveKind: Generic
+          Size: 8
+  - ID: 7
+    Kind: RawFunctionDefinition
+    Architecture: x86
+    ReturnValues:
+      - Location: eax_x86
+        Type:
+          Kind: PrimitiveType
+          PrimitiveKind: PointerOrNumber
+          Size: 4
+      - Location: edx_x86
+        Type:
+          Kind: PrimitiveType
+          PrimitiveKind: PointerOrNumber
+          Size: 4
+    PreservedRegisters:
+      - ebx_x86
+      - esi_x86
+      - edi_x86
+      - ebp_x86
+    FinalStackOffset: 4
+  - ID: 9
+    Kind: StructDefinition
+    Name: Small
+    Size: 4
+    Fields:
+      - Offset: 0
+        Name: value
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/10-TypedefDefinition"
+  - ID: 10
+    Kind: TypedefDefinition
+    Name: u32
+    UnderlyingType:
+      Kind: PrimitiveType
+      PrimitiveKind: Unsigned
+      Size: 4
+  - ID: 11
+    Kind: StructDefinition
+    Name: Wide
+    Size: 8
+    Fields:
+      - Offset: 0
+        Name: value
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/10-TypedefDefinition"
+      - Offset: 4
+        Name: extra
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/10-TypedefDefinition"
+  - ID: 13
+    Kind: UnionDefinition
+    Name: Target
+    Fields:
+      - Index: 0
+        Name: small
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/9-StructDefinition"
+      - Index: 1
+        Name: wide
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/11-StructDefinition"
+  - ID: 16
+    Kind: CABIFunctionDefinition
+    ABI: SystemV_x86
+  - ID: 22
+    Kind: StructDefinition
+    Size: 4
+  - ID: 23
+    Kind: StructDefinition
+    Size: 4
+  - ID: 25
+    Kind: StructDefinition
+    Size: 8
+  - ID: 26
+    Kind: StructDefinition
+    Size: 56
+  - ID: 34
+    Kind: CABIFunctionDefinition
+    ABI: SystemV_x86
+    Arguments:
+      - Index: 0
+        Type:
+          Kind: PointerType
+          PointerSize: 4
+          PointeeType:
+            Kind: PrimitiveType
+            PrimitiveKind: Generic
+            Size: 8
+  - ID: 35
+    Kind: CABIFunctionDefinition
+    ABI: SystemV_x86
+    ReturnType:
+      Kind: PrimitiveType
+      PrimitiveKind: Generic
+      Size: 4
+    Arguments:
+      - Index: 0
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/22-StructDefinition"
+  - ID: 36
+    Kind: CABIFunctionDefinition
+    ABI: SystemV_x86
+    ReturnType:
+      Kind: PrimitiveType
+      PrimitiveKind: Generic
+      Size: 4
+    Arguments:
+      - Index: 0
+        Type:
+          Kind: DefinedType
+          Definition: "/TypeDefinitions/23-StructDefinition"
+  - ID: 37
+    Kind: CABIFunctionDefinition
+    ABI: SystemV_x86
+    Arguments:
+      - Index: 0
+        Type:
+          Kind: PointerType
+          PointerSize: 4
+          PointeeType:
+            Kind: PrimitiveType
+            PrimitiveKind: Generic
+            Size: 8
+...

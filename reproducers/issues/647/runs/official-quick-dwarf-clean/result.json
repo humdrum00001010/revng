@@ -1,0 +1,82 @@
+{
+  "issue": 647,
+  "image": "revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+  "binary_sha256": "1be38e720372216eb24df0d765f33d9e6d657239f799f6c0b761710d777d306e",
+  "complete_original_binary": true,
+  "manual_model_or_metadata_overrides": false,
+  "function_selectors": false,
+  "IR_or_Clift_inputs_used": false,
+  "commands": [
+    {
+      "stage": "quick",
+      "argv": [
+        "docker",
+        "run",
+        "--platform",
+        "linux/amd64",
+        "--network",
+        "none",
+        "--name",
+        "maintainer-repro-647-quick-1be38e7203-rf-clean",
+        "--cpus",
+        "1",
+        "--memory",
+        "4g",
+        "--memory-swap",
+        "4g",
+        "--mount",
+        "type=bind,src=<PACKAGE>/repro-with-dwarf.dll,dst=/inputs/repro.dll,readonly",
+        "--mount",
+        "type=bind,src=<PACKAGE>/runs/official-quick-dwarf-clean/project,dst=/work",
+        "--workdir",
+        "/work",
+        "revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+        "revng",
+        "quick",
+        "artifact",
+        "emit-recompilable-archive",
+        "/inputs/repro.dll",
+        "-o",
+        "recompilable.tar.gz"
+      ],
+      "exit": 0,
+      "state": {
+        "Status": "exited",
+        "Running": false,
+        "Paused": false,
+        "Restarting": false,
+        "OOMKilled": false,
+        "Dead": false,
+        "Pid": 0,
+        "ExitCode": 0,
+        "Error": "",
+        "StartedAt": "2026-10-06T10:40:06.965850635Z",
+        "FinishedAt": "2026-10-06T10:40:09.515683261Z"
+      }
+    },
+    {
+      "stage": "complete-C-to-COFF",
+      "argv": [
+        "<LLVM_BIN>/clang",
+        "--target=i686-w64-windows-gnu",
+        "-std=gnu2x",
+        "-ffreestanding",
+        "-O0",
+        "-I",
+        "<PACKAGE>/runs/official-quick-dwarf-clean/generated/decompiled",
+        "-c",
+        "<PACKAGE>/runs/official-quick-dwarf-clean/generated/decompiled/functions.c",
+        "-o",
+        "<PACKAGE>/runs/official-quick-dwarf-clean/whole.obj"
+      ],
+      "exit": 0
+    }
+  ],
+  "supported_pipeline": "revng quick artifact",
+  "generated_C_sha256": "9d698578be30bc61fdc029fbf56ee1ba038755ce7077dd15fe7f4a02500a1bf3",
+  "archive_sha256": "5c5e6497e08060545e56fa0686bf781f51c7a1fdbb0a5ef0655ee744877ba890",
+  "complete_generated_C_compile_exit": 0,
+  "undefined_symbols": [],
+  "classification": "not_reproduced",
+  "scope_of_classification": "This independently authored complete binary candidate on the normal pipeline only"
+}

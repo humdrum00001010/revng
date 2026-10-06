@@ -1,0 +1,22 @@
+
+<PACKAGE>/runs/official-quick-20261006-public-cli/program.elf:	file format elf32-i386
+
+Disassembly of section .text:
+
+004010e0 <configure_mxcsr>:
+  4010e0: 50                           	pushl	%eax
+  4010e1: 0f ae 54 24 08               	ldmxcsr	0x8(%esp)
+  4010e6: 0f ae 1c 24                  	stmxcsr	(%esp)
+  4010ea: 8b 04 24                     	movl	(%esp), %eax
+  4010ed: 59                           	popl	%ecx
+  4010ee: c3                           	retl
+  4010ef: 90                           	nop
+
+004010f0 <_start>:
+  4010f0: 83 ec 0c                     	subl	$0xc, %esp
+  4010f3: a1 14 21 40 00               	movl	0x402114, %eax
+  4010f8: 89 04 24                     	movl	%eax, (%esp)
+  4010fb: e8 e0 ff ff ff               	calll	0x4010e0 <configure_mxcsr>
+  401100: a3 18 21 40 00               	movl	%eax, 0x402118
+  401105: 66 66 2e 0f 1f 84 00 00 00 00 00     	nopw	%cs:(%eax,%eax)
+  401110: eb fe                        	jmp	0x401110 <_start+0x20>

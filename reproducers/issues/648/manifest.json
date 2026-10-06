@@ -1,0 +1,257 @@
+{
+  "issue": 648,
+  "public_source_and_independently_authored_binaries_only": true,
+  "private_identifier_scan_matches": [],
+  "artifacts": [
+    {
+      "file": "README.md",
+      "bytes": 4756,
+      "sha256": "326cedb9a93fdde2ee99b1e2b95adbe5d704c4780589bdd577addb439a765b3a"
+    },
+    {
+      "file": "build/build-receipt.json",
+      "bytes": 3345,
+      "sha256": "d13b160acf87095fdc1561bf7c59b008847c9eb8c1b983abc8649d05ae10f9bd"
+    },
+    {
+      "file": "build/clang-version.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "build/clang-version.stdout.log",
+      "bytes": 127,
+      "sha256": "cfcd9c9e851246b6ce35626221c1aac35ca617af05a51d7b7e2d6bce1ff23db8"
+    },
+    {
+      "file": "build/debug-all-headers-symbols.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "build/debug-all-headers-symbols.stdout.log",
+      "bytes": 5829,
+      "sha256": "15ac27f2345e686f62bc2fd2506b7432deb653c07bbd3158d6da69861053826b"
+    },
+    {
+      "file": "build/debug-compile.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "build/debug-compile.stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "build/debug-full-disassembly.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "build/debug-full-disassembly.stdout.log",
+      "bytes": 3293,
+      "sha256": "bc49f7e6ac342e11749d5be6838a19da0e901d9ee6c7fde5c1a823a59381196b"
+    },
+    {
+      "file": "build/debug-link-complete-ELF.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "build/debug-link-complete-ELF.stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "build/debug.elf",
+      "bytes": 2852,
+      "sha256": "3a38a477730b1d7314d764e736c60494b7588ac4ecbd93df091aaaf07f638b28"
+    },
+    {
+      "file": "build/debug.o",
+      "bytes": 3632,
+      "sha256": "a00df7e425caeedfd1b0f74215cfd328a7eb829c312d69751bf24c880712a5cf"
+    },
+    {
+      "file": "build/raw-all-headers-symbols.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "build/raw-all-headers-symbols.stdout.log",
+      "bytes": 4428,
+      "sha256": "a6daca231e3346220eb072e530e2b702f64f0186f967e59022916556a32bfb21"
+    },
+    {
+      "file": "build/raw-compile.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "build/raw-compile.stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "build/raw-full-disassembly.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "build/raw-full-disassembly.stdout.log",
+      "bytes": 3291,
+      "sha256": "1ad46baba4403cd78cb9e3cd24bd683c5cff9d2b4d88f7ce868f78a2e9557aee"
+    },
+    {
+      "file": "build/raw-link-complete-ELF.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "build/raw-link-complete-ELF.stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "build/raw.elf",
+      "bytes": 1216,
+      "sha256": "c030c6b89ad838f979060159e6d99910f1291280979841ae9868d916edf466ae"
+    },
+    {
+      "file": "build/raw.o",
+      "bytes": 1280,
+      "sha256": "3841a67ed48d941c7117ce72bbc6e0b9c39907b6ad40bd7a95a69ead19d03c9b"
+    },
+    {
+      "file": "build.py",
+      "bytes": 3204,
+      "sha256": "7c486f29a9a11a4685079747d301990b5e2c8b7d972df308c84551860a9b1575"
+    },
+    {
+      "file": "environment.json",
+      "bytes": 390,
+      "sha256": "86ca567774323424618d0a4fa9dfd1799410cf4fe1586c57d75b3cedd46bcc4b"
+    },
+    {
+      "file": "observed-signature.txt",
+      "bytes": 646,
+      "sha256": "83657e3f048167b20bb8e55e273b7cf18b7515ebedd63d68cf97d8cb67d23a83"
+    },
+    {
+      "file": "provenance/DLAMakeModelTypes.cpp",
+      "bytes": 19568,
+      "sha256": "dfdd10d17d7a68a7c2cc70a4cdcdb9af0c681ea6b1cfcb313d1f59a955c1112f"
+    },
+    {
+      "file": "provenance/MergePointeesOfPointerUnion.cpp",
+      "bytes": 16577,
+      "sha256": "45c694ac8fbb202867aafb366df3e757d457484fbc8b4decb62162f4a7200f60"
+    },
+    {
+      "file": "provenance/issue-and-latest-comments.json",
+      "bytes": 308,
+      "sha256": "cea4718c59cce1cdd89bb72d1644aae28e53ab38ec6164870dc507f97287e6c9"
+    },
+    {
+      "file": "provenance/public-source-snapshots.json",
+      "bytes": 663,
+      "sha256": "fc1621a5665510d19b35965ee7fdb30acbb1dee6a0e318f30a18d92415a416e5"
+    },
+    {
+      "file": "provenance/upstream-develop.json",
+      "bytes": 164,
+      "sha256": "4fa2eee3cfc6fe236e225ebb5b8d5947353bec0deb5459196096ed9fae461bc4"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/debug/functions.c",
+      "bytes": 5559,
+      "sha256": "26b36b9232281c20b923b2d1329feac82ffb009ec4206a939b87bcc34f78d18e"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/debug/quick-model.yml",
+      "bytes": 6700,
+      "sha256": "3377206cad088f4fdc32d8f42cfc4aa78c7b71600511d7bce1150a0821f25394"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/debug/quick.tar.gz",
+      "bytes": 10240,
+      "sha256": "d18e2ea0ca047415494776603124bb1bbab9ba92b7c6ba7e02e57f5caaffc236"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/debug/types-and-globals.h",
+      "bytes": 4439,
+      "sha256": "d64f16072712888f0686529bb69970e9fdc56097121151c454e7421bf9d9192f"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/debug-whole-supported-path.stderr.log",
+      "bytes": 132,
+      "sha256": "389753e3b65fc55c255cc5a737cc3e1db675b4d55668e6792eb9e9db3b3308bf"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/debug-whole-supported-path.stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/image-identity.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/image-identity.stdout.log",
+      "bytes": 72,
+      "sha256": "152d9dafd8265cd20b82df3dd5f1ebfcecd9b34f4c85a9159a0a3aacac84807c"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/raw/functions.c",
+      "bytes": 5559,
+      "sha256": "a6638ba03be4e0d3254eec65880c3aceb7cbaf3a3cac9ea9ad10dcb7df328ad1"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/raw/quick-model.yml",
+      "bytes": 5434,
+      "sha256": "ff1329aaa8e50cba4b684518d19d19d2f008a4cf4ca9eaf7e3ec836508089b6c"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/raw/quick.tar.gz",
+      "bytes": 10240,
+      "sha256": "9b972a0d0643a3449aad40728ea2b66623f3a2f3584adc592ef3c68cf5a661af"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/raw/types-and-globals.h",
+      "bytes": 4105,
+      "sha256": "4b97c58253ab3ce932441f3f5a7b34d7813a702b3a392b22c9db5a4c7ee41c59"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/raw-whole-supported-path.stderr.log",
+      "bytes": 132,
+      "sha256": "389753e3b65fc55c255cc5a737cc3e1db675b4d55668e6792eb9e9db3b3308bf"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/raw-whole-supported-path.stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "results/pristine-pinned-upstream/receipt.json",
+      "bytes": 18396,
+      "sha256": "cb5cf8964ea13fbbb990eede62cb208b629d1ea961aa0c0b178277520524b28a"
+    },
+    {
+      "file": "run.py",
+      "bytes": 5300,
+      "sha256": "ae2832f6030135b46fa82b800e3c4f6c5eb304d8ee90b9d402b04ec702a0ceba"
+    },
+    {
+      "file": "src/pointer_scalar_views.c",
+      "bytes": 1460,
+      "sha256": "feaa54b07165b0fea71422ddd8de99f7d0da20d8f52c747febdaba57384fc07b"
+    },
+    {
+      "file": "status.json",
+      "bytes": 689,
+      "sha256": "08b2ee73c129d1e9965951f8c03e0b2dbd4977051547ef9e7085abfcdd42bfff"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+Principal normal command:
+revng quick artifact emit-recompilable-archive build/debug.elf -o quick.tar.gz
+
+Complete authored i386 ELF, five function entries, source union storage8/pointer4.
+Observed pristine raw and debug command exit0; automatic model functions5.
+Storage remains generic64. Debug model retains Small4/Wide8 and Target union.
+The distinct model-owned overlapping pointer-union condition and resulting width8-to4 loss are not proven by these supported binary probes.
+Classification: not_reproduced
+Existing upstream assertion fix b482edd3 is separate from the proposed new model-width member-retention change. No binary A/B claim.

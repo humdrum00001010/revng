@@ -1,0 +1,13 @@
+/opt/homebrew/opt/llvm@17/bin/clang --version
+/opt/homebrew/opt/llvm@17/bin/ld.lld --version
+/opt/homebrew/opt/llvm@17/bin/llvm-readobj --version
+/opt/homebrew/opt/llvm@17/bin/llvm-objdump --version
+/opt/homebrew/opt/llvm@17/bin/clang --target=i386-unknown-linux-gnu -msse -O1 -g -ffreestanding -fno-stack-protector -fno-pic -fdebug-compilation-dir=/case -c source/program.c -o <PACKAGE>/runs/official-quick-20261006-public-cli/program.o
+/opt/homebrew/opt/llvm@17/bin/ld.lld -m elf_i386 --entry=_start --build-id=none -o <PACKAGE>/runs/official-quick-20261006-public-cli/program.elf <PACKAGE>/runs/official-quick-20261006-public-cli/program.o
+/opt/homebrew/opt/llvm@17/bin/llvm-readobj --file-headers --program-headers <PACKAGE>/runs/official-quick-20261006-public-cli/program.elf
+/opt/homebrew/opt/llvm@17/bin/llvm-objdump --disassemble <PACKAGE>/runs/official-quick-20261006-public-cli/program.elf
+docker image inspect revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce
+docker run --rm --platform linux/amd64 --network none --cpus 1 --memory 1g --memory-swap 1g revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce revng system-info
+docker run --rm --platform linux/amd64 --network none --cpus 1 --memory 1g --memory-swap 1g revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce revng opt --version
+docker run --platform linux/amd64 --network none --name public-repro-650-20261006T114547-40520 --cpus 1 --memory 4g --memory-swap 4g --mount type=bind,src=<PACKAGE>/runs/official-quick-20261006-public-cli/program.elf,dst=/inputs/program.elf,readonly --mount type=bind,src=<PACKAGE>/runs/official-quick-20261006-public-cli/project,dst=/work --workdir /work revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce revng quick artifact emit-recompilable-archive /inputs/program.elf -o recompilable.tar.gz
+docker inspect public-repro-650-20261006T114547-40520 --format '{{json .State}}'

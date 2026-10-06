@@ -1,0 +1,172 @@
+{
+  "schema": "revissue-public-case-manifest.v1",
+  "issue": 654,
+  "classification": "reproduced_supported_path_with_environment_control",
+  "review_only": true,
+  "uploaded": false,
+  "official_baseline": "revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+  "principal_supported_command": "revng quick artifact emit-recompilable-archive /fixture/public-test.dll -o /work/recompilable.tar.gz",
+  "environment_control_boundary": {
+    "required_for_recorded_baseline_failure": true,
+    "binary_alone_failure_claimed": false,
+    "control": "Linux C shared-library constructor loaded by LD_PRELOAD; anonymous PROT_NONE page at 0x8000, MAP_FIXED_NOREPLACE; verify/release 0x9000",
+    "allocator_or_revng_API_interposition": false,
+    "QEMU_or_model_modification_by_control": false,
+    "recorded_host": "macOS 26.1 arm64; Docker Linux aarch64 daemon; linux/amd64 via Rosetta",
+    "layout_unavailable_exit": 125
+  },
+  "observed_exits": {
+    "build-control": 0,
+    "official-baseline-natural": 0,
+    "official-baseline-controlled": 134,
+    "source-fixed-natural": 0,
+    "source-fixed-controlled": 0
+  },
+  "official_controlled_signature": "linux-user/i386/cpu_loop.c:453: env->idt.base != -1",
+  "fixed_image_comparison": {
+    "classification": "modified_producer_disclosed",
+    "image": "sha256:379998b7893a1c2f81d8a889d0c265ecbf11606eec569136835e635cb43a2f40",
+    "natural_exit": 0,
+    "controlled_exit": 0,
+    "generated_C_matches_official_baseline": false
+  },
+  "validation_source": "Completed self-check.json; no Docker rerun during packaging",
+  "script_packaging_change": "Generic workspace/home path check replaces a checkout-specific identifier; tested C/control/DLL and CLI command remain unchanged",
+  "authored_sources": [
+    {
+      "file": "public-test.c",
+      "sha256": "51c94f7f5d36068ed9e8ba41b827f363cf638c31f5752aa48e9716accb3fd1f6"
+    },
+    {
+      "file": "occupy-low-page.c",
+      "sha256": "2d5e694576ba1a1ae637a82c386348a8656fe008009226fc07323fd8edabdcb0"
+    }
+  ],
+  "binary_inputs": [
+    {
+      "file": "public-test.dll",
+      "sha256": "7b592d48fa2d49b4bd603ac14d21ba0db8bb71fb3e6d4a4fe177afd8279bf744"
+    },
+    {
+      "file": "occupy-low-page.so",
+      "sha256": "70ae0385a685c041be2206206a02f48983d83b126b521f2230e7da3f8d1e0245"
+    }
+  ],
+  "private_identifier_scan_matches": [],
+  "excluded_intermediates": [
+    "public-test.obj",
+    "stack.lib"
+  ],
+  "artifacts": [
+    {
+      "file": "README.md",
+      "bytes": 3249,
+      "sha256": "191eac05e4695aafe2172161ad4887b42b84ab576cc4a05b5da829a9f9141b3c"
+    },
+    {
+      "file": "build-control.sh",
+      "bytes": 237,
+      "sha256": "cf115af804ebf9f3cba493d7ceeff2bf27b5450d6afb132289ef7b5b7ef139ab"
+    },
+    {
+      "file": "build-public-dll.sh",
+      "bytes": 427,
+      "sha256": "0f8610ae01b1e60a9f5033e4b374c37f5537d28d5d0c7f3fde8a4772c08a071a"
+    },
+    {
+      "file": "checks.json",
+      "bytes": 986,
+      "sha256": "ad15950da8795344a519be2feb95cf5333d0fc55f46ae432cc4e4a25de391a3a"
+    },
+    {
+      "file": "logs/build-control.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "logs/build-control.stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "logs/official-baseline-controlled.stderr.log",
+      "bytes": 13607,
+      "sha256": "8843406eacc0c422112164bcde7cd58e3ac61138e77a6d3a84dc0964e7fc1a28"
+    },
+    {
+      "file": "logs/official-baseline-controlled.stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "logs/official-baseline-natural.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "logs/official-baseline-natural.stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "logs/source-fixed-controlled.stderr.log",
+      "bytes": 71,
+      "sha256": "61ab15c27a52e1b00f214463060e3837ce9776febefca20e564520425e666c73"
+    },
+    {
+      "file": "logs/source-fixed-controlled.stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "logs/source-fixed-natural.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "logs/source-fixed-natural.stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "occupy-low-page.c",
+      "bytes": 1645,
+      "sha256": "2d5e694576ba1a1ae637a82c386348a8656fe008009226fc07323fd8edabdcb0"
+    },
+    {
+      "file": "occupy-low-page.so",
+      "bytes": 6608,
+      "sha256": "70ae0385a685c041be2206206a02f48983d83b126b521f2230e7da3f8d1e0245"
+    },
+    {
+      "file": "profiles.json",
+      "bytes": 2697,
+      "sha256": "92aab4816e9918cb2c686c0338d0504992a5fa6bcdea10881dd5274046a68957"
+    },
+    {
+      "file": "public-test.c",
+      "bytes": 388,
+      "sha256": "51c94f7f5d36068ed9e8ba41b827f363cf638c31f5752aa48e9716accb3fd1f6"
+    },
+    {
+      "file": "public-test.dll",
+      "bytes": 2048,
+      "sha256": "7b592d48fa2d49b4bd603ac14d21ba0db8bb71fb3e6d4a4fe177afd8279bf744"
+    },
+    {
+      "file": "run-case.sh",
+      "bytes": 635,
+      "sha256": "1e213d8768a5a4c48a54d01d5cda4e09b0f1173d22d242efce08a0e8b0a20900"
+    },
+    {
+      "file": "self-check.json",
+      "bytes": 9828,
+      "sha256": "355b347248e14c8719418b309aee9afeceee7dd82bff12c4d476f3783cbccb45"
+    },
+    {
+      "file": "self-check.py",
+      "bytes": 7294,
+      "sha256": "cf88dedc36bfff98f0d6b3afd38c3d156547c16229a436bf1ab968eb37b64935"
+    }
+  ]
+}

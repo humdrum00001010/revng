@@ -1,0 +1,8 @@
+LIBRARY export_matrix
+EXPORTS
+  alpha @1
+  alias_alpha=alpha @2
+  ordinal_only @7 NONAME
+  exported_data @9 DATA
+  forwarded=KERNEL32.GetCurrentProcessId @13
+  beta @12

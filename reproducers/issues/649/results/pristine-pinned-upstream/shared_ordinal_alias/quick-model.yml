@@ -1,0 +1,75 @@
+---
+Version: 10
+Architecture: x86
+OperatingSystem: Windows
+DefaultABI: Microsoft_x86_cdecl
+DefaultPrototype:
+  Kind: DefinedType
+  Definition: "/TypeDefinitions/3-RawFunctionDefinition"
+Binaries:
+  - Index: 0
+    Hash: 4c9ae52a27491ac9f9682d410775f2d201c2c76c972575425d7055d022e64952
+    Size: 2560
+    CanonicalPath: '/case/build/shared_ordinal_alias.dll'
+Segments:
+  - Binary: "/Binaries/0"
+    StartAddress: "0x10001000:Generic32"
+    VirtualSize: 512
+    StartOffset: 1024
+    FileSize: 512
+    IsReadable: true
+    IsExecutable: true
+    Type:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/0-StructDefinition"
+  - Binary: "/Binaries/0"
+    StartAddress: "0x10002000:Generic32"
+    VirtualSize: 512
+    StartOffset: 1536
+    FileSize: 512
+    IsReadable: true
+    Type:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/1-StructDefinition"
+  - Binary: "/Binaries/0"
+    StartAddress: "0x10003000:Generic32"
+    VirtualSize: 512
+    StartOffset: 2048
+    FileSize: 512
+    IsReadable: true
+    IsWriteable: true
+    Type:
+      Kind: DefinedType
+      Definition: "/TypeDefinitions/2-StructDefinition"
+TypeDefinitions:
+  - ID: 0
+    Kind: StructDefinition
+    Size: 512
+    CanContainCode: true
+  - ID: 1
+    Kind: StructDefinition
+    Size: 512
+  - ID: 2
+    Kind: StructDefinition
+    Size: 512
+  - ID: 3
+    Kind: RawFunctionDefinition
+    Architecture: x86
+    ReturnValues:
+      - Location: eax_x86
+        Type:
+          Kind: PrimitiveType
+          PrimitiveKind: PointerOrNumber
+          Size: 4
+      - Location: edx_x86
+        Type:
+          Kind: PrimitiveType
+          PrimitiveKind: PointerOrNumber
+          Size: 4
+    PreservedRegisters:
+      - ebx_x86
+      - esi_x86
+      - edi_x86
+      - ebp_x86
+    FinalStackOffset: 4
+...

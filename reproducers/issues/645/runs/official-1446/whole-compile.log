@@ -1,0 +1,14 @@
+In file included from <PACKAGE>/runs/official-1446/generated/decompiled/functions.c:1:
+<PACKAGE>/runs/official-1446/generated/decompiled/types-and-globals.h:85:20: error: array has incomplete element type 'RGBQUAD' (aka 'struct tagRGBQUAD')
+   85 |   RGBQUAD bmiColors[1] _STARTS_AT(40);
+      |                    ^
+<PACKAGE>/runs/official-1446/generated/decompiled/types-and-globals.h:81:24: note: forward declaration of 'struct tagRGBQUAD'
+   81 | typedef struct _PACKED tagRGBQUAD tagRGBQUAD;
+      |                        ^
+<PACKAGE>/runs/official-1446/generated/decompiled/types-and-globals.h:112:27: error: array has incomplete element type 'PALETTEENTRY' (aka 'struct tagPALETTEENTRY')
+  112 |   PALETTEENTRY palPalEntry[1] _STARTS_AT(4);
+      |                           ^
+<PACKAGE>/runs/official-1446/generated/decompiled/types-and-globals.h:107:24: note: forward declaration of 'struct tagPALETTEENTRY'
+  107 | typedef struct _PACKED tagPALETTEENTRY tagPALETTEENTRY;
+      |                        ^
+2 errors generated.

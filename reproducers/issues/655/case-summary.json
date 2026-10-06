@@ -1,0 +1,37 @@
+{
+  "issue": 655,
+  "upstream_url": "https://github.com/revng/revng/issues/655",
+  "supported_binary_reproduction": false,
+  "classification": "not_reproduced",
+  "classification_scope": "These independently authored complete binary candidates; no global disproof",
+  "independently_authored_complete_C": true,
+  "private_fragments": false,
+  "source_sha256": "1240d022835c34f89f61854f27cfa5e1a59e504ab6d7f5be9c9050b5a5bc42ef",
+  "all_generated_C_unchanged_from_archives": true,
+  "known_private_identifier_scan": {
+    "findings": [],
+    "binary_files_included": true,
+    "archive_members_included": true
+  },
+  "cases": [
+    {
+      "receipt": "runs/official-quick-1446/result.json",
+      "classification": "not_reproduced",
+      "binary_sha256": "17a1031a18d4149c0a492d6e712b5b357cda9ebc9f86d08f957568631a5dd4ba",
+      "archive_sha256": "e632003b585ccc771322d2b679e65e35b2c9c58e3a981b58c144c4c9a9f02cb2",
+      "generated_C_sha256": "b08fae9ff77a109bc0a7fbaafc43261bfdf3da4b8ad3223874daf280fef0e495",
+      "complete_generated_C_compile_exit": 0,
+      "supported_pipeline": "revng quick artifact",
+      "terminal_stages": [
+        {
+          "stage": "quick",
+          "exit": 0
+        },
+        {
+          "stage": "complete-C-to-COFF",
+          "exit": 0
+        }
+      ]
+    }
+  ]
+}

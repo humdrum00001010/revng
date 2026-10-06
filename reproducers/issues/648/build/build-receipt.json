@@ -1,0 +1,151 @@
+{
+  "issue": 648,
+  "authorship": "independently authored complete C and native binary",
+  "private_inputs": false,
+  "manual_model_or_prototype_input": false,
+  "function_selection": false,
+  "direct_DLA_graph_or_IR_input": false,
+  "compiler_version": "Homebrew clang version 17.0.6\nTarget: arm64-apple-darwin25.1.0\nThread model: posix\nInstalledDir: /opt/homebrew/opt/llvm@17/bin\n",
+  "steps": [
+    {
+      "name": "clang-version",
+      "argv": [
+        "clang",
+        "--version"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "raw-compile",
+      "argv": [
+        "clang",
+        "--target=i386-linux-gnu",
+        "-O1",
+        "-fno-inline",
+        "-fno-strict-aliasing",
+        "-ffreestanding",
+        "-fno-stack-protector",
+        "-fno-pic",
+        "-fno-pie",
+        "-fno-asynchronous-unwind-tables",
+        "-c",
+        "src/pointer_scalar_views.c",
+        "-o",
+        "build/raw.o"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "raw-link-complete-ELF",
+      "argv": [
+        "ld.lld",
+        "-m",
+        "elf_i386",
+        "-e",
+        "_start",
+        "-o",
+        "build/raw.elf",
+        "build/raw.o"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "raw-all-headers-symbols",
+      "argv": [
+        "llvm-readobj",
+        "--file-headers",
+        "--sections",
+        "--symbols",
+        "build/raw.elf"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "raw-full-disassembly",
+      "argv": [
+        "llvm-objdump",
+        "-dr",
+        "build/raw.elf"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "debug-compile",
+      "argv": [
+        "clang",
+        "--target=i386-linux-gnu",
+        "-O1",
+        "-fno-inline",
+        "-fno-strict-aliasing",
+        "-ffreestanding",
+        "-fno-stack-protector",
+        "-fno-pic",
+        "-fno-pie",
+        "-fno-asynchronous-unwind-tables",
+        "-g",
+        "-gdwarf-4",
+        "-fdebug-compilation-dir=/source",
+        "-fdebug-prefix-map=${CASE_DIR}=/source",
+        "-c",
+        "src/pointer_scalar_views.c",
+        "-o",
+        "build/debug.o"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "debug-link-complete-ELF",
+      "argv": [
+        "ld.lld",
+        "-m",
+        "elf_i386",
+        "-e",
+        "_start",
+        "-o",
+        "build/debug.elf",
+        "build/debug.o"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "debug-all-headers-symbols",
+      "argv": [
+        "llvm-readobj",
+        "--file-headers",
+        "--sections",
+        "--symbols",
+        "build/debug.elf"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "debug-full-disassembly",
+      "argv": [
+        "llvm-objdump",
+        "-dr",
+        "build/debug.elf"
+      ],
+      "exit": 0
+    }
+  ],
+  "source": {
+    "file": "src/pointer_scalar_views.c",
+    "bytes": 1460,
+    "sha256": "feaa54b07165b0fea71422ddd8de99f7d0da20d8f52c747febdaba57384fc07b"
+  },
+  "binaries": [
+    {
+      "file": "build/raw.elf",
+      "bytes": 1216,
+      "sha256": "c030c6b89ad838f979060159e6d99910f1291280979841ae9868d916edf466ae"
+    },
+    {
+      "file": "build/debug.elf",
+      "bytes": 2852,
+      "sha256": "3a38a477730b1d7314d764e736c60494b7588ac4ecbd93df091aaaf07f638b28"
+    }
+  ],
+  "source_storage_width": 8,
+  "pointer_width": 4,
+  "models_must_be_generated_by_normal_binary_pipeline": true
+}

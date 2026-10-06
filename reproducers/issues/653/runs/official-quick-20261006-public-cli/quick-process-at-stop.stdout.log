@@ -1,0 +1,2 @@
+PID                 %CPU                ELAPSED             COMMAND
+9785                96.5                00:09               /run/rosetta/rosetta /revng/root/bin/python python /revng/root/bin/revng quick artifact emit-recompilable-archive /inputs/program.elf -o recompilable.tar.gz

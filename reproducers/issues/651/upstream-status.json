@@ -1,0 +1,14 @@
+{
+  "number": 651,
+  "title": "Clifter: use allocation extents for LLVM struct fields",
+  "state": "OPEN",
+  "stateReason": "",
+  "url": "https://github.com/revng/revng/issues/651",
+  "comments": [
+    {
+      "author": "pfez",
+      "url": "https://github.com/revng/revng/issues/651#issuecomment-6011875851",
+      "body": "The situation you reported should be guaranteed not to happen in the regular decompilation pipeline.\nSo I don't consider the bug report valid if you can only trigger this with synthetic IR fed directly to the Clifter.\nThe Clifter is not designed to translate any random LLVM IR to Clift. It assumes that IR comes from the revng decompilation pipeline.\nIf you have a case where a real executable binary fed into `revng quick artifact emit-recompilable-archive ${THE_BINARY}` triggers this, then we can talk.\n"
+    }
+  ]
+}

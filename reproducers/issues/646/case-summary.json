@@ -1,0 +1,38 @@
+{
+  "issue": 646,
+  "upstream_url": "https://github.com/revng/revng/issues/646",
+  "supported_binary_reproduction": false,
+  "classification": "intended_design",
+  "independently_authored_complete_C": true,
+  "private_fragments": false,
+  "all_generated_C_unchanged_from_archives": true,
+  "known_private_identifier_scan": {
+    "findings": [],
+    "binary_files_included": true,
+    "archive_members_included": true
+  },
+  "cases": [
+    {
+      "receipt": "runs/official-1446/result.json",
+      "classification": "reproduced",
+      "binary_sha256": "b81003b6e2d600ef6ded824b769efa20f1e2beca64400fdd7a3e8e185afc81da",
+      "generated_C_sha256": "a3954f263a58c06700b72e16d988c1d0855dc5a9ca194eeef5eda42d8f0c7e14",
+      "compile_exit": 0,
+      "pipeline": "revng project init then artifact",
+      "terminal_stages": [
+        {
+          "stage": "init",
+          "exit": 0
+        },
+        {
+          "stage": "archive",
+          "exit": 0
+        },
+        {
+          "stage": "complete-C-to-COFF",
+          "exit": 0
+        }
+      ]
+    }
+  ]
+}

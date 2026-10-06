@@ -1,0 +1,57 @@
+{
+  "compiler_version": "Homebrew clang version 17.0.6\nTarget: arm64-apple-darwin25.1.0\nThread model: posix\nInstalledDir: /opt/homebrew/opt/llvm@17/bin\n",
+  "commands": [
+    {
+      "argv": [
+        "<LLVM_BIN>/llvm-dlltool",
+        "-m",
+        "i386",
+        "-d",
+        "<PACKAGE>/gdi32.def",
+        "-l",
+        "<PACKAGE>/gdi32.lib",
+        "--kill-at"
+      ],
+      "exit": 0
+    },
+    {
+      "argv": [
+        "<LLVM_BIN>/clang",
+        "--target=i686-pc-windows-msvc",
+        "-O1",
+        "-g",
+        "-gdwarf-4",
+        "-fdebug-compilation-dir=/repro",
+        "-ffreestanding",
+        "-fno-inline",
+        "-fno-stack-protector",
+        "-ffile-prefix-map=<PACKAGE>/=/repro/",
+        "-fdebug-prefix-map=<PACKAGE>/=/repro/",
+        "-c",
+        "<PACKAGE>/repro.c",
+        "-o",
+        "<PACKAGE>/repro.obj"
+      ],
+      "exit": 0
+    },
+    {
+      "argv": [
+        "<LLVM_BIN>/lld-link",
+        "/DLL",
+        "/Brepro",
+        "/ENTRY:DllMain@12",
+        "/NODEFAULTLIB",
+        "/SAFESEH:NO",
+        "/MACHINE:X86",
+        "/OUT:<PACKAGE>/repro.dll",
+        "<PACKAGE>/repro.obj",
+        "<PACKAGE>/gdi32.lib"
+      ],
+      "exit": 0
+    }
+  ],
+  "independently_authored_source": true,
+  "private_source_fragments": false,
+  "source_sha256": "1b8d45fd0d0f94943ef55bf32fa26c59d7b69bf97b0be178dc02f066a8d4f193",
+  "binary_sha256": "80ded741d3ca17b87a803827c63b3716095482fabf3c8db9e9e20f50f380baea"
+}

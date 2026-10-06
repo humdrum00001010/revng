@@ -1,0 +1,107 @@
+{
+  "issue": 649,
+  "authorship": "independently authored complete C and PE export table fixtures",
+  "private_inputs": false,
+  "manual_model_or_prototype_input": false,
+  "function_selection": false,
+  "compiler_version": "Homebrew clang version 17.0.6\nTarget: arm64-apple-darwin25.1.0\nThread model: posix\nInstalledDir: /opt/homebrew/opt/llvm@17/bin\n",
+  "steps": [
+    {
+      "name": "clang-version",
+      "argv": [
+        "clang",
+        "--version"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "compile",
+      "argv": [
+        "clang",
+        "--target=i686-pc-windows-msvc",
+        "-O2",
+        "-ffreestanding",
+        "-c",
+        "src/export_matrix.c",
+        "-o",
+        "build/export_matrix.obj"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "link-whole-DLL",
+      "argv": [
+        "lld-link",
+        "/DLL",
+        "/NOENTRY",
+        "/NODEFAULTLIB",
+        "/MACHINE:X86",
+        "/OPT:NOICF",
+        "/OPT:NOREF",
+        "/timestamp:0",
+        "/DEF:src/export_matrix.def",
+        "/OUT:build/export_matrix.dll",
+        "build/export_matrix.obj"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "export_matrix.dll-complete-PE",
+      "argv": [
+        "llvm-readobj",
+        "--file-headers",
+        "--sections",
+        "--coff-exports",
+        "build/export_matrix.dll"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "shared_ordinal_alias.dll-complete-PE",
+      "argv": [
+        "llvm-readobj",
+        "--file-headers",
+        "--sections",
+        "--coff-exports",
+        "build/shared_ordinal_alias.dll"
+      ],
+      "exit": 0
+    }
+  ],
+  "inputs": [
+    {
+      "file": "src/export_matrix.c",
+      "bytes": 183,
+      "sha256": "d59f0ed17f36700c95fda7b76561a256bb4a05d8724cea22a7190239f24c2bcd"
+    },
+    {
+      "file": "src/export_matrix.def",
+      "bytes": 169,
+      "sha256": "c19d1ae2e0e32d748ae263c6fcdeeffe6f7395d460956a7aebe894901934e3cd"
+    }
+  ],
+  "binaries": [
+    {
+      "file": "build/export_matrix.dll",
+      "bytes": 2560,
+      "sha256": "a7d30d11535ef8af6c25f6d4f85a0426acd2bbdd2c9d5f0a4786f6ee90fa910a"
+    },
+    {
+      "file": "build/shared_ordinal_alias.dll",
+      "bytes": 2560,
+      "sha256": "4c9ae52a27491ac9f9682d410775f2d201c2c76c972575425d7055d022e64952"
+    }
+  ],
+  "full_export_truth": [
+    {
+      "file": "build/export_matrix.truth.json",
+      "bytes": 3635,
+      "sha256": "801d7370c3648c5ce73cb63ec0cbcc667fc3c587e6333a9a4482e2915c8533e4"
+    },
+    {
+      "file": "build/shared_ordinal_alias.truth.json",
+      "bytes": 3626,
+      "sha256": "1d80478a1449316064b04873c1c75c15fcb81be781bfbf8bd018b689998b98fd"
+    }
+  ]
+}

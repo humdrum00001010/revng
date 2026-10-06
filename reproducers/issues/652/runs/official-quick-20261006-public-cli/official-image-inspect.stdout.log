@@ -1,0 +1,53 @@
+[
+    {
+        "Id": "sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+        "RepoTags": [
+            "revng/revng:latest"
+        ],
+        "RepoDigests": [
+            "revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce"
+        ],
+        "Created": "2026-09-12T01:05:39.125482529Z",
+        "Config": {
+            "Env": [
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/revng"
+            ],
+            "Cmd": [
+                "/bin/bash"
+            ],
+            "WorkingDir": "/revng",
+            "Labels": {
+                "io.buildah.version": "1.23.1",
+                "org.opencontainers.image.version": "22.04"
+            }
+        },
+        "Architecture": "amd64",
+        "Os": "linux",
+        "Size": 1127568014,
+        "RootFS": {
+            "Type": "layers",
+            "Layers": [
+                "sha256:ea16cace89338c84eb6bcb91a7efdfcae6838fff359efe951858227436486c34",
+                "sha256:983991ebd00b5abedfd5ffabeeeabcdc337a2a9b117e58e10c0dc48893bddf6b",
+                "sha256:60005f50fe67a91f9ac8fe4c63b98d90e4806177e93d1eccc15d77792ac6fa90",
+                "sha256:812981c620c6fe04cc871140edd09ca5439808a4727464c0cc6182c97af7e6ea",
+                "sha256:f46288b5b03ac2ab1b9831030fd49035e92bc40e395429a44d85914593a491cb"
+            ]
+        },
+        "Metadata": {
+            "LastTagTime": "2026-10-05T20:58:37.607576297Z"
+        },
+        "Descriptor": {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": "sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+            "size": 978
+        },
+        "Identity": {
+            "Pull": [
+                {
+                    "Repository": "docker.io/revng/revng"
+                }
+            ]
+        }
+    }
+]

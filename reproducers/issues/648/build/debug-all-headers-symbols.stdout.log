@@ -1,0 +1,347 @@
+
+File: build/debug.elf
+Format: elf32-i386
+Arch: i386
+AddressSize: 32bit
+LoadName: <Not found>
+ElfHeader {
+  Ident {
+    Magic: (7F 45 4C 46)
+    Class: 32-bit (0x1)
+    DataEncoding: LittleEndian (0x1)
+    FileVersion: 1
+    OS/ABI: SystemV (0x0)
+    ABIVersion: 0
+    Unused: (00 00 00 00 00 00 00)
+  }
+  Type: Executable (0x2)
+  Machine: EM_386 (0x3)
+  Version: 1
+  Entry: 0x401190
+  ProgramHeaderOffset: 0x34
+  SectionHeaderOffset: 0x8CC
+  Flags [ (0x0)
+  ]
+  HeaderSize: 52
+  ProgramHeaderEntrySize: 32
+  ProgramHeaderCount: 5
+  SectionHeaderEntrySize: 40
+  SectionHeaderCount: 15
+  StringTableSectionIndex: 13
+}
+Sections [
+  Section {
+    Index: 0
+    Name:  (0)
+    Type: SHT_NULL (0x0)
+    Flags [ (0x0)
+    ]
+    Address: 0x0
+    Offset: 0x0
+    Size: 0
+    Link: 0
+    Info: 0
+    AddressAlignment: 0
+    EntrySize: 0
+  }
+  Section {
+    Index: 1
+    Name: .rodata (1)
+    Type: SHT_PROGBITS (0x1)
+    Flags [ (0x12)
+      SHF_ALLOC (0x2)
+      SHF_MERGE (0x10)
+    ]
+    Address: 0x4000D8
+    Offset: 0xD8
+    Size: 8
+    Link: 0
+    Info: 0
+    AddressAlignment: 8
+    EntrySize: 8
+  }
+  Section {
+    Index: 2
+    Name: .text (9)
+    Type: SHT_PROGBITS (0x1)
+    Flags [ (0x6)
+      SHF_ALLOC (0x2)
+      SHF_EXECINSTR (0x4)
+    ]
+    Address: 0x4010E0
+    Offset: 0xE0
+    Size: 228
+    Link: 0
+    Info: 0
+    AddressAlignment: 16
+    EntrySize: 0
+  }
+  Section {
+    Index: 3
+    Name: .data (15)
+    Type: SHT_PROGBITS (0x1)
+    Flags [ (0x3)
+      SHF_ALLOC (0x2)
+      SHF_WRITE (0x1)
+    ]
+    Address: 0x4021C4
+    Offset: 0x1C4
+    Size: 8
+    Link: 0
+    Info: 0
+    AddressAlignment: 4
+    EntrySize: 0
+  }
+  Section {
+    Index: 4
+    Name: .bss (21)
+    Type: SHT_NOBITS (0x8)
+    Flags [ (0x3)
+      SHF_ALLOC (0x2)
+      SHF_WRITE (0x1)
+    ]
+    Address: 0x4021D0
+    Offset: 0x1CC
+    Size: 16
+    Link: 0
+    Info: 0
+    AddressAlignment: 8
+    EntrySize: 0
+  }
+  Section {
+    Index: 5
+    Name: .debug_loc (26)
+    Type: SHT_PROGBITS (0x1)
+    Flags [ (0x0)
+    ]
+    Address: 0x0
+    Offset: 0x1CC
+    Size: 38
+    Link: 0
+    Info: 0
+    AddressAlignment: 1
+    EntrySize: 0
+  }
+  Section {
+    Index: 6
+    Name: .debug_abbrev (37)
+    Type: SHT_PROGBITS (0x1)
+    Flags [ (0x0)
+    ]
+    Address: 0x0
+    Offset: 0x1F2
+    Size: 226
+    Link: 0
+    Info: 0
+    AddressAlignment: 1
+    EntrySize: 0
+  }
+  Section {
+    Index: 7
+    Name: .debug_info (51)
+    Type: SHT_PROGBITS (0x1)
+    Flags [ (0x0)
+    ]
+    Address: 0x0
+    Offset: 0x2D4
+    Size: 528
+    Link: 0
+    Info: 0
+    AddressAlignment: 1
+    EntrySize: 0
+  }
+  Section {
+    Index: 8
+    Name: .debug_str (63)
+    Type: SHT_PROGBITS (0x1)
+    Flags [ (0x30)
+      SHF_MERGE (0x10)
+      SHF_STRINGS (0x20)
+    ]
+    Address: 0x0
+    Offset: 0x4E4
+    Size: 239
+    Link: 0
+    Info: 0
+    AddressAlignment: 1
+    EntrySize: 1
+  }
+  Section {
+    Index: 9
+    Name: .comment (74)
+    Type: SHT_PROGBITS (0x1)
+    Flags [ (0x30)
+      SHF_MERGE (0x10)
+      SHF_STRINGS (0x20)
+    ]
+    Address: 0x0
+    Offset: 0x5D3
+    Size: 59
+    Link: 0
+    Info: 0
+    AddressAlignment: 1
+    EntrySize: 1
+  }
+  Section {
+    Index: 10
+    Name: .debug_frame (83)
+    Type: SHT_PROGBITS (0x1)
+    Flags [ (0x0)
+    ]
+    Address: 0x0
+    Offset: 0x610
+    Size: 120
+    Link: 0
+    Info: 0
+    AddressAlignment: 4
+    EntrySize: 0
+  }
+  Section {
+    Index: 11
+    Name: .debug_line (96)
+    Type: SHT_PROGBITS (0x1)
+    Flags [ (0x0)
+    ]
+    Address: 0x0
+    Offset: 0x688
+    Size: 171
+    Link: 0
+    Info: 0
+    AddressAlignment: 1
+    EntrySize: 0
+  }
+  Section {
+    Index: 12
+    Name: .symtab (108)
+    Type: SHT_SYMTAB (0x2)
+    Flags [ (0x0)
+    ]
+    Address: 0x0
+    Offset: 0x734
+    Size: 160
+    Link: 14
+    Info: 5
+    AddressAlignment: 4
+    EntrySize: 16
+  }
+  Section {
+    Index: 13
+    Name: .shstrtab (116)
+    Type: SHT_STRTAB (0x3)
+    Flags [ (0x0)
+    ]
+    Address: 0x0
+    Offset: 0x7D4
+    Size: 134
+    Link: 0
+    Info: 0
+    AddressAlignment: 1
+    EntrySize: 0
+  }
+  Section {
+    Index: 14
+    Name: .strtab (126)
+    Type: SHT_STRTAB (0x3)
+    Flags [ (0x0)
+    ]
+    Address: 0x0
+    Offset: 0x85A
+    Size: 113
+    Link: 0
+    Info: 0
+    AddressAlignment: 1
+    EntrySize: 0
+  }
+]
+Symbols [
+  Symbol {
+    Name:  (0)
+    Value: 0x0
+    Size: 0
+    Binding: Local (0x0)
+    Type: None (0x0)
+    Other: 0
+    Section: Undefined (0x0)
+  }
+  Symbol {
+    Name: pointer_scalar_views.c (1)
+    Value: 0x0
+    Size: 0
+    Binding: Local (0x0)
+    Type: File (0x4)
+    Other: 0
+    Section: Absolute (0xFFF1)
+  }
+  Symbol {
+    Name: storage (24)
+    Value: 0x4021D0
+    Size: 8
+    Binding: Local (0x0)
+    Type: Object (0x1)
+    Other: 0
+    Section: .bss (0x4)
+  }
+  Symbol {
+    Name: target (32)
+    Value: 0x4021C4
+    Size: 8
+    Binding: Local (0x0)
+    Type: Object (0x1)
+    Other: 0
+    Section: .data (0x3)
+  }
+  Symbol {
+    Name: observation (39)
+    Value: 0x4021D8
+    Size: 8
+    Binding: Local (0x0)
+    Type: Object (0x1)
+    Other: 0
+    Section: .bss (0x4)
+  }
+  Symbol {
+    Name: scalar_view (51)
+    Value: 0x4010E0
+    Size: 7
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0x2)
+  }
+  Symbol {
+    Name: small_target (63)
+    Value: 0x4010F0
+    Size: 7
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0x2)
+  }
+  Symbol {
+    Name: wide_target (76)
+    Value: 0x401100
+    Size: 10
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0x2)
+  }
+  Symbol {
+    Name: overlapping_views (88)
+    Value: 0x401110
+    Size: 113
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0x2)
+  }
+  Symbol {
+    Name: _start (106)
+    Value: 0x401190
+    Size: 52
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Other: 0
+    Section: .text (0x2)
+  }
+]

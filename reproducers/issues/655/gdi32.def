@@ -1,0 +1,3 @@
+LIBRARY GDI32.dll
+EXPORTS
+CreateFontIndirectW@4

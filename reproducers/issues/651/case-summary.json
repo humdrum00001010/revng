@@ -1,0 +1,56 @@
+{
+  "issue": 651,
+  "upstream_url": "https://github.com/revng/revng/issues/651",
+  "supported_binary_reproduction": false,
+  "classification": "not_reproduced",
+  "classification_scope": "These independently authored complete binary candidates; no global disproof",
+  "independently_authored_complete_C": true,
+  "private_fragments": false,
+  "source_sha256": "aee6128a15b3e0f82c2795f941f4b1ac7ef79779c4daccfe21b3fef92391d23f",
+  "all_generated_C_unchanged_from_archives": true,
+  "known_private_identifier_scan": {
+    "findings": [],
+    "binary_files_included": true,
+    "archive_members_included": true
+  },
+  "cases": [
+    {
+      "receipt": "runs/official-quick-1446/result.json",
+      "classification": "not_reproduced",
+      "binary_sha256": "23b5db4ff72600bd64e77319816a3869a86a295d49427dcf71fb1e0b2e5e36b8",
+      "archive_sha256": "c31b032e7fba69ae49f38008e87c52c013154de31eff20e5792019a89f28d9da",
+      "generated_C_sha256": "500d773709078fb947b2eaa20a3cbdbf29c322994cf00793ce5fe7b34f8a0a8e",
+      "complete_generated_C_compile_exit": 0,
+      "supported_pipeline": "revng quick artifact",
+      "terminal_stages": [
+        {
+          "stage": "quick",
+          "exit": 0
+        },
+        {
+          "stage": "complete-C-to-COFF",
+          "exit": 0
+        }
+      ]
+    },
+    {
+      "receipt": "runs/official-quick-dwarf/result.json",
+      "classification": "not_reproduced",
+      "binary_sha256": "25c276b3855b36eaac63806be69721274a9198e47122c0a2b30473dc0b78293b",
+      "archive_sha256": "8c7b6efb33659b78530e73adf103a8d108f7327993976471ab92c84e24dfb73b",
+      "generated_C_sha256": "abd8ad392a83f0ae65b981d99fd461cac7e3b09e07e605900fb37d5d74ca3972",
+      "complete_generated_C_compile_exit": 0,
+      "supported_pipeline": "revng quick artifact",
+      "terminal_stages": [
+        {
+          "stage": "quick",
+          "exit": 0
+        },
+        {
+          "stage": "complete-C-to-COFF",
+          "exit": 0
+        }
+      ]
+    }
+  ]
+}

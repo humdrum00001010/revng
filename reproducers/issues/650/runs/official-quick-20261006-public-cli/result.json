@@ -1,0 +1,289 @@
+{
+  "IR_or_Clift_inputs_used": false,
+  "archive_created": true,
+  "archive_sha256": "be20174738aaee91595c234242a2b9f47e00e112d2df68d7d8fb53be77531eab",
+  "binary_unchanged": true,
+  "build_tools": {
+    "clang": {
+      "path": "/opt/homebrew/opt/llvm@17/bin/clang",
+      "sha256": "945326f96f74cfdde4c7f148881cb02b9f8778dee83990f3b116cafbfd3864db"
+    },
+    "ld.lld": {
+      "path": "/opt/homebrew/opt/llvm@17/bin/ld.lld",
+      "sha256": "25001201f3a0c2fa9fbe973b5ef5d15f31e3f2be46c495a688e708548f99647e"
+    },
+    "llvm-objdump": {
+      "path": "/opt/homebrew/opt/llvm@17/bin/llvm-objdump",
+      "sha256": "d327314012b0ec795fbe5f502c9bdc64d28298538a20eb9a3b85e5ffaf07fe2c"
+    },
+    "llvm-readobj": {
+      "path": "/opt/homebrew/opt/llvm@17/bin/llvm-readobj",
+      "sha256": "c31dff3ce6ab3cc71f1f55648c222659395e907b6d0698e4ff38a038659efaed"
+    }
+  },
+  "classification": "not_reproduced",
+  "classification_scope": "Whether the reported post-inline GEP verifier failure occurs on this complete public binary through the normal command",
+  "commands": [
+    {
+      "argv": [
+        "/opt/homebrew/opt/llvm@17/bin/clang",
+        "--version"
+      ],
+      "cwd": "<PACKAGE>",
+      "exit_code": 0,
+      "stage": "clang-version",
+      "started_at": "2026-10-06T11:45:44.632312+00:00"
+    },
+    {
+      "argv": [
+        "/opt/homebrew/opt/llvm@17/bin/ld.lld",
+        "--version"
+      ],
+      "cwd": "<PACKAGE>",
+      "exit_code": 0,
+      "stage": "ld.lld-version",
+      "started_at": "2026-10-06T11:45:44.650165+00:00"
+    },
+    {
+      "argv": [
+        "/opt/homebrew/opt/llvm@17/bin/llvm-readobj",
+        "--version"
+      ],
+      "cwd": "<PACKAGE>",
+      "exit_code": 0,
+      "stage": "llvm-readobj-version",
+      "started_at": "2026-10-06T11:45:44.671167+00:00"
+    },
+    {
+      "argv": [
+        "/opt/homebrew/opt/llvm@17/bin/llvm-objdump",
+        "--version"
+      ],
+      "cwd": "<PACKAGE>",
+      "exit_code": 0,
+      "stage": "llvm-objdump-version",
+      "started_at": "2026-10-06T11:45:44.681216+00:00"
+    },
+    {
+      "argv": [
+        "/opt/homebrew/opt/llvm@17/bin/clang",
+        "--target=i386-unknown-linux-gnu",
+        "-msse",
+        "-O1",
+        "-g",
+        "-ffreestanding",
+        "-fno-stack-protector",
+        "-fno-pic",
+        "-fdebug-compilation-dir=/case",
+        "-c",
+        "source/program.c",
+        "-o",
+        "<PACKAGE>/runs/official-quick-20261006-public-cli/program.o"
+      ],
+      "cwd": "<PACKAGE>",
+      "exit_code": 0,
+      "stage": "build",
+      "started_at": "2026-10-06T11:45:44.691904+00:00"
+    },
+    {
+      "argv": [
+        "/opt/homebrew/opt/llvm@17/bin/ld.lld",
+        "-m",
+        "elf_i386",
+        "--entry=_start",
+        "--build-id=none",
+        "-o",
+        "<PACKAGE>/runs/official-quick-20261006-public-cli/program.elf",
+        "<PACKAGE>/runs/official-quick-20261006-public-cli/program.o"
+      ],
+      "cwd": "<PACKAGE>",
+      "exit_code": 0,
+      "stage": "link",
+      "started_at": "2026-10-06T11:45:44.710771+00:00"
+    },
+    {
+      "argv": [
+        "/opt/homebrew/opt/llvm@17/bin/llvm-readobj",
+        "--file-headers",
+        "--program-headers",
+        "<PACKAGE>/runs/official-quick-20261006-public-cli/program.elf"
+      ],
+      "cwd": "<PACKAGE>",
+      "exit_code": 0,
+      "stage": "binary-format",
+      "started_at": "2026-10-06T11:45:44.732727+00:00"
+    },
+    {
+      "argv": [
+        "/opt/homebrew/opt/llvm@17/bin/llvm-objdump",
+        "--disassemble",
+        "<PACKAGE>/runs/official-quick-20261006-public-cli/program.elf"
+      ],
+      "cwd": "<PACKAGE>",
+      "exit_code": 0,
+      "stage": "binary-disassembly",
+      "started_at": "2026-10-06T11:45:44.742491+00:00"
+    },
+    {
+      "argv": [
+        "docker",
+        "image",
+        "inspect",
+        "revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce"
+      ],
+      "cwd": "<PACKAGE>",
+      "exit_code": 0,
+      "stage": "official-image-inspect",
+      "started_at": "2026-10-06T11:45:44.751930+00:00"
+    },
+    {
+      "argv": [
+        "docker",
+        "run",
+        "--rm",
+        "--platform",
+        "linux/amd64",
+        "--network",
+        "none",
+        "--cpus",
+        "1",
+        "--memory",
+        "1g",
+        "--memory-swap",
+        "1g",
+        "revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+        "revng",
+        "system-info"
+      ],
+      "cwd": "<PACKAGE>",
+      "exit_code": 0,
+      "stage": "revng-system-info",
+      "started_at": "2026-10-06T11:45:44.790185+00:00"
+    },
+    {
+      "argv": [
+        "docker",
+        "run",
+        "--rm",
+        "--platform",
+        "linux/amd64",
+        "--network",
+        "none",
+        "--cpus",
+        "1",
+        "--memory",
+        "1g",
+        "--memory-swap",
+        "1g",
+        "revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+        "revng",
+        "opt",
+        "--version"
+      ],
+      "cwd": "<PACKAGE>",
+      "exit_code": 0,
+      "stage": "revng-opt-version",
+      "started_at": "2026-10-06T11:45:46.195295+00:00"
+    },
+    {
+      "argv": [
+        "docker",
+        "run",
+        "--platform",
+        "linux/amd64",
+        "--network",
+        "none",
+        "--name",
+        "public-repro-650-20261006T114547-40520",
+        "--cpus",
+        "1",
+        "--memory",
+        "4g",
+        "--memory-swap",
+        "4g",
+        "--mount",
+        "type=bind,src=<PACKAGE>/runs/official-quick-20261006-public-cli/program.elf,dst=/inputs/program.elf,readonly",
+        "--mount",
+        "type=bind,src=<PACKAGE>/runs/official-quick-20261006-public-cli/project,dst=/work",
+        "--workdir",
+        "/work",
+        "revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+        "revng",
+        "quick",
+        "artifact",
+        "emit-recompilable-archive",
+        "/inputs/program.elf",
+        "-o",
+        "recompilable.tar.gz"
+      ],
+      "cwd": "<PACKAGE>",
+      "exit_code": 0,
+      "stage": "quick",
+      "started_at": "2026-10-06T11:45:47.756060+00:00"
+    },
+    {
+      "argv": [
+        "docker",
+        "inspect",
+        "public-repro-650-20261006T114547-40520",
+        "--format",
+        "{{json .State}}"
+      ],
+      "cwd": "<PACKAGE>",
+      "exit_code": 0,
+      "stage": "quick-terminal-state",
+      "started_at": "2026-10-06T11:45:50.780893+00:00"
+    }
+  ],
+  "complete_independently_authored_executable": true,
+  "container_name": "public-repro-650-20261006T114547-40520",
+  "container_terminal_state": {
+    "Dead": false,
+    "Error": "",
+    "ExitCode": 0,
+    "FinishedAt": "2026-10-06T11:45:50.303078043Z",
+    "OOMKilled": false,
+    "Paused": false,
+    "Pid": 0,
+    "Restarting": false,
+    "Running": false,
+    "StartedAt": "2026-10-06T11:45:47.8162875Z",
+    "Status": "exited"
+  },
+  "executable": "runs/official-quick-20261006-public-cli/program.elf",
+  "executable_sha256": "ecd89f488cfa49bfa7919ca7a2726ecfe6bc51ebf77984a9fdbe7870648c0b93",
+  "function_selectors": false,
+  "helper_module_modifications": false,
+  "issue": 650,
+  "model_or_metadata_overrides": false,
+  "observer_stop_reason": null,
+  "official_image": "revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+  "official_revng_component": "linux-x86-64/revng/optimized/ba8cdb0278084da07b2655f19d1e5f1ce2ebbbdf_bd576c8c818d26e9f88eaeda137c929c5f852e20.tar.xz",
+  "public_copy_path_normalization": {
+    "meaning": "Root directory of this public packet",
+    "original_local_receipt_preserved": true,
+    "placeholder": "<PACKAGE>",
+    "scope": "Only absolute host package paths; official in-container argv is unchanged"
+  },
+  "public_source": "source/program.c",
+  "public_source_sha256": "61099895ad934ceecab4baa3cf6f94085d327bdca01ef8a806a2d4bce2c27e8e",
+  "quick_elapsed_seconds": 3.024,
+  "quick_exit_code": 0,
+  "quick_started_at": "2026-10-06T11:45:47.756060+00:00",
+  "quick_stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "quick_stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "quick_timeout_seconds": 300,
+  "revng_command": [
+    "revng",
+    "quick",
+    "artifact",
+    "emit-recompilable-archive",
+    "/inputs/program.elf",
+    "-o",
+    "recompilable.tar.gz"
+  ],
+  "source_unchanged": true,
+  "specific_issue_650_pointer_dependency_cause_established": false,
+  "supported_pipeline": "revng quick artifact emit-recompilable-archive",
+  "verifier_failure_reproduced": false
+}

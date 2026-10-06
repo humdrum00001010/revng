@@ -1,0 +1,4 @@
+Homebrew clang version 17.0.6
+Target: arm64-apple-darwin25.1.0
+Thread model: posix
+InstalledDir: /opt/homebrew/opt/llvm@17/bin

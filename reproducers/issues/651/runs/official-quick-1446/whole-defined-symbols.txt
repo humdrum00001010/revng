@@ -1,0 +1,10 @@
+00000001 a @feat.00
+00000000 T _function_0x10001000_Code_x86
+00000b20 T _function_0x10001020_Code_x86
+00000b90 T _function_0x10001050_Code_x86
+00000bd0 T _function_0x10001060_Code_x86
+00000400 B _segment_0
+00000000 B _segment_1
+00000600 B _segment_2
+00000200 B _segment_3
+00000800 B _segment_4

@@ -1,0 +1,10 @@
+{
+  "host_OS": "Darwin",
+  "host_OS_release": "25.1.0",
+  "host_CPU_architecture": "arm64",
+  "compiler_target": "i686-pc-windows-msvc",
+  "producer_platform": "linux/amd64",
+  "compiler_major_minor": "Clang/LLD17.0.6",
+  "pristine_image_digest": "sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+  "pristine_revng_revision": "ba8cdb0278084da07b2655f19d1e5f1ce2ebbbdf"
+}
