@@ -30,3 +30,9 @@ included.
 Negative results apply only to the included candidates. Direct LLVM/Clift
 fixtures are not treated as proof that the normal binary pipeline reaches a
 reported defect.
+
+Maintainer updates have been posted to all eleven issue threads. Issues 645,
+649, 653, and 654 remain open; issue 646 was already closed as intended design;
+issues 647, 648, 650, 651, 652, and 655 were closed after their public binary
+candidates failed to reproduce the reported condition. No pull request was
+opened.

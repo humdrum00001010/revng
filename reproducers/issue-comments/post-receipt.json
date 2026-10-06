@@ -1,0 +1,18 @@
+{
+  "repository": "revng/revng",
+  "reproducer_commit": "61e6d575cc4c93bf7b2b0a6d39009dc0e814d235",
+  "pull_request_created": false,
+  "results": [
+    {"issue": 645, "comment_id": 6015835121, "comment_url": "https://github.com/revng/revng/issues/645#issuecomment-6015835121", "state": "open"},
+    {"issue": 646, "comment_id": 6015835637, "comment_url": "https://github.com/revng/revng/issues/646#issuecomment-6015835637", "state": "closed", "state_reason": "completed"},
+    {"issue": 647, "comment_id": 6015836120, "comment_url": "https://github.com/revng/revng/issues/647#issuecomment-6015836120", "state": "closed", "state_reason": "not_planned"},
+    {"issue": 648, "comment_id": 6015836894, "comment_url": "https://github.com/revng/revng/issues/648#issuecomment-6015836894", "state": "closed", "state_reason": "not_planned"},
+    {"issue": 649, "comment_id": 6015837625, "comment_url": "https://github.com/revng/revng/issues/649#issuecomment-6015837625", "state": "open"},
+    {"issue": 650, "comment_id": 6015838072, "comment_url": "https://github.com/revng/revng/issues/650#issuecomment-6015838072", "state": "closed", "state_reason": "not_planned"},
+    {"issue": 651, "comment_id": 6015838826, "comment_url": "https://github.com/revng/revng/issues/651#issuecomment-6015838826", "state": "closed", "state_reason": "not_planned"},
+    {"issue": 652, "comment_id": 6015839621, "comment_url": "https://github.com/revng/revng/issues/652#issuecomment-6015839621", "state": "closed", "state_reason": "not_planned"},
+    {"issue": 653, "comment_id": 6015840376, "comment_url": "https://github.com/revng/revng/issues/653#issuecomment-6015840376", "state": "open"},
+    {"issue": 654, "comment_id": 6015840892, "comment_url": "https://github.com/revng/revng/issues/654#issuecomment-6015840892", "state": "open"},
+    {"issue": 655, "comment_id": 6015841380, "comment_url": "https://github.com/revng/revng/issues/655#issuecomment-6015841380", "state": "closed", "state_reason": "not_planned"}
+  ]
+}
