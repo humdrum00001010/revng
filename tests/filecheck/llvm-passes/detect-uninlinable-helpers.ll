@@ -55,7 +55,7 @@ default:
 ;
 ; (3) `conditional` from a `getelementptr` indexed by an argument
 ; (no switch on a runtime-memory load on the chain). The kernel
-; treats GEP indices as critical operands too.
+; treats both the GEP index and its base pointer as critical operands.
 ;
 define ptr @helper_conditional_gep(i64 %idx, ptr %base) section "revng_inline" {
 entry:
@@ -120,7 +120,49 @@ entry:
 }
 ; CHECK-NOT: define {{.*}}@helper_recursive_b{{.*}}section "revng_inline"
 
+; Local GEP bases do not become constant by specializing arguments.
+define i8 @helper_never_local_gep(i8 %x) section "revng_inline" {
+entry:
+  %storage = alloca [2 x i8]
+  %element = getelementptr [2 x i8], ptr %storage, i64 0, i64 1
+  store i8 %x, ptr %element
+  %value = load i8, ptr %element
+  ret i8 %value
+}
+; CHECK-NOT: define {{.*}}@helper_never_local_gep{{.*}}section "revng_inline"
+
+; A loop index is runtime even if its initial value and increment are constant.
+define ptr @helper_never_loop_gep(ptr %base) section "revng_inline" {
+entry:
+  br label %loop
+loop:
+  %index = phi i64 [ 0, %entry ], [ %next, %loop ]
+  %element = getelementptr i8, ptr %base, i64 %index
+  %next = add i64 %index, 1
+  %again = icmp ult i64 %next, 4
+  br i1 %again, label %loop, label %exit
+exit:
+  ret ptr %element
+}
+; CHECK-NOT: define {{.*}}@helper_never_loop_gep{{.*}}section "revng_inline"
+
+; A phi with the same incoming value adds no runtime control dependency.
+define ptr @helper_common_phi_gep(ptr %base, i64 %index, i1 %condition) section "revng_inline" {
+entry:
+  br i1 %condition, label %left, label %right
+left:
+  br label %merge
+right:
+  br label %merge
+merge:
+  %common = phi i64 [ %index, %left ], [ %index, %right ]
+  %element = getelementptr i8, ptr %base, i64 %common
+  ret ptr %element
+}
+; CHECK: define ptr @helper_common_phi_gep(ptr %base, i64 %index, i1 %condition) section "revng_inline" !revng.inline.policy ![[COMMON_PHI:[0-9]+]]
+
 ; Checks for the metadata shapes themselves.
 ; CHECK-DAG: ![[ALWAYS]] = !{i2 0}
 ; CHECK-DAG: ![[COND_SWITCH]] = !{i3 2}
-; CHECK-DAG: ![[COND_GEP]] = !{i3 1}
+; CHECK-DAG: ![[COND_GEP]] = !{i3 3}
+; CHECK-DAG: ![[COMMON_PHI]] = !{i4 3}

@@ -6,14 +6,11 @@
 #include "llvm/ADT/SCCIterator.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Analysis/CallGraph.h"
-#include "llvm/IR/Argument.h"
 #include "llvm/IR/Function.h"
-#include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Pass.h"
 
-#include "revng/ADT/Queue.h"
 #include "revng/HelperInliningAnalyses/DetectUninlinableHelpers.h"
 #include "revng/Support/Assert.h"
 #include "revng/Support/Debug.h"
@@ -22,66 +19,6 @@
 using namespace llvm;
 
 static Logger Log("detect-uninlinable-helpers");
-
-namespace DetectUninlinableHelpers {
-
-bool isPointerToConstantGlobal(const Value *Pointer) {
-  const Value *Stripped = Pointer->stripPointerCasts();
-  const auto *Global = dyn_cast<GlobalVariable>(Stripped);
-  return Global != nullptr and Global->isConstant();
-}
-
-std::optional<BitVector> computeCriticalArgumentsFor(const Function &Helper) {
-
-  // A `Function` declaration has no body to inline, so it cannot be inlined at
-  // any call site.
-  if (Helper.isDeclaration())
-    return std::nullopt;
-
-  // Seed the backward worklist with every critical operand: the condition of
-  // every `switch` and the index operands of every `getelementptr`. Done in a
-  // single pass over the function.
-  OnceQueue<const Value *> Worklist;
-  for (const BasicBlock &BB : Helper) {
-    for (const Instruction &I : BB) {
-      if (const auto *GEP = dyn_cast<GetElementPtrInst>(&I))
-        for (const auto &Index : GEP->indices())
-          Worklist.insert(Index);
-    }
-
-    if (const auto *Switch = dyn_cast<SwitchInst>(BB.getTerminator()))
-      Worklist.insert(Switch->getCondition());
-  }
-
-  BitVector Critical(Helper.arg_size(), false);
-
-  // Backward dataflow walk: for every `Value` reached, classify it.
-  while (not Worklist.empty()) {
-    const Value *V = Worklist.pop();
-
-    if (const auto *Arg = dyn_cast<Argument>(V)) {
-
-      // A formal parameter has been reached, so this argument is critical.
-      Critical.set(Arg->getArgNo());
-    } else if (const auto *Load = dyn_cast<LoadInst>(V)) {
-
-      // Loads from a constant global are fine: the loaded value is statically
-      // known. Anything else is a load from runtime memory and we have to
-      // give up — the helper cannot be inlined at any call site.
-      if (not isPointerToConstantGlobal(Load->getPointerOperand()))
-        return std::nullopt;
-    } else if (const auto *I = dyn_cast<Instruction>(V)) {
-
-      // Any other instruction. Enqueue its operands to keep walking back.
-      for (const Use &U : I->operands())
-        Worklist.insert(U.get());
-    }
-  }
-
-  return Critical;
-}
-
-} // namespace DetectUninlinableHelpers
 
 namespace {
 

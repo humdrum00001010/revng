@@ -6,6 +6,7 @@
 #include <system_error>
 
 #include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/Support/CommandLine.h"
@@ -14,6 +15,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 
+#include "revng/HelperInliningAnalyses/DetectUninlinableHelpers.h"
 #include "revng/InlineHelpers/InlineHelpers.h"
 #include "revng/Support/CommandLine.h"
 #include "revng/Support/Debug.h"
@@ -80,6 +82,10 @@ public:
   void run(Function *F);
 
 private:
+  // Only isolated functions change during this pass. Prepared helper bodies
+  // stay immutable, so share their revalidated policies across all callers.
+  mutable DenseMap<const Function *, std::optional<BitVector>> PreparedPolicies;
+
   void doInline(CallInst *Call) const;
   bool doInline(Function *F) const;
   CallInst *getCallToInline(Instruction *I) const;
@@ -95,6 +101,21 @@ bool InlineHelpers::shouldInline(const CallInst *Call) const {
     return false;
 
   InliningPolicy P = deserializeInliningPolicy(*Callee);
+
+  // The static policy predates helper preparation, which can inline other
+  // helpers and introduce new critical operands. Revalidate the body we will
+  // actually inline, preserving the original opaque helper boundary when a
+  // new critical operand depends on runtime memory.
+  auto [It, Inserted] = PreparedPolicies.try_emplace(Callee);
+  if (Inserted)
+    It->second = DetectUninlinableHelpers::computeCriticalArgumentsFor(*Callee);
+  if (not It->second.has_value()) {
+    revng_log(Log,
+              "skip " << Callee->getName()
+                      << ": prepared body has no safe inlining policy");
+    return false;
+  }
+  P.CriticalArguments |= *It->second;
   const BitVector &Critical = P.CriticalArguments;
 
   if (Critical.none()) {
@@ -197,9 +218,9 @@ void inlineHelpers(llvm::Module &M) {
       Isolated.push_back(&F);
 
   llvm::Task T(Isolated.size(), "Inline helpers");
+  InlineHelpers IH;
   for (Function *F : Isolated) {
     T.advance(F->getName());
-    InlineHelpers IH;
     IH.run(F);
   }
 }

@@ -9,8 +9,9 @@
 #include "llvm/Pass.h"
 
 /// Inline every `revng_inline` helper at its call site in the `Isolated`
-/// functions, where the critical arguments are constant at the call site. Does
-/// not link helper bodies (use `LinkHelpersToInlinePass` first) and does not
+/// functions, where both the static policy and the prepared body's critical
+/// operands permit specialization at the call site. Does not link helper
+/// bodies (use `LinkHelpersToInlinePass` first) and does not
 /// delete inlined helper bodies (use `DeleteHelperBodiesPass` once at the end
 /// of the pipeline).
 void inlineHelpers(llvm::Module &M);

@@ -1581,14 +1581,16 @@ void linkFunctionModules(std::unique_ptr<llvm::Module> &&Source,
 /// renders the value as a positive integer always.
 /// The lower bits are the bitmask: a set bit means that argument is critical
 /// and must be `isa<Constant>` at the call site for the helper to be inlinable.
-/// A zero value means the helper is always inlinable.
+/// A zero value imposes no static argument constraints. Consumers also check
+/// the prepared helper body, since preparation can inline other helpers after
+/// this metadata has been computed.
 inline constexpr llvm::StringLiteral InliningPolicyMetadataKey = "revng.inline."
                                                                  "policy";
 
 /// In-memory form of `revng.inline.policy`. `CriticalArguments` is sized to
 /// the helper's formal-parameter count and lists the set of arguments which
 /// must be `isa<Constant>` at the call site for inlining; an empty bit vector
-/// means the helper is always inlinable.
+/// means there are no static argument constraints.
 struct InliningPolicy {
   llvm::BitVector CriticalArguments;
 };
