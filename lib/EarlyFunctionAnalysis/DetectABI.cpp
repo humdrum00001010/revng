@@ -53,6 +53,8 @@
 #include "revng/Support/NewPC.h"
 #include "revng/Support/OpaqueRegisterUser.h"
 
+#include "RecordRegisters.h"
+
 using namespace llvm;
 using namespace llvm::cl;
 
@@ -216,8 +218,6 @@ private:
   void propagatePrototypesInFunction(model::Function &Function);
 
 private:
-  void recordRegisters(const efa::CSVSet &CSVs, auto Inserter);
-
   CSVSet computePreservedCSVs(const CSVSet &ClobberedRegisters) const;
 
   TrackingSortedVector<model::Register::Values>
@@ -807,35 +807,6 @@ static bool isDynamicFunctionStub(const SortedVector<efa::BasicBlock> &CFG) {
   return false;
 }
 
-void DetectABI::recordRegisters(const efa::CSVSet &CSVs, auto Inserter) {
-  // For each register, find its highest used CSV and limit the potential size
-  // of the register based on it.
-  //
-  // For example, if only one CSV of a `zmm0` register is used, we can actually
-  // type it as `generic64_t` instead of `generic512_t`, which is a lot nicer
-  // to work with!
-  std::map<model::Register::Values, uint64_t> ConfirmedByteCounts;
-  for (auto *CSV : CSVs) {
-    model::Register::Portion Portion(CSV->getName(), Binary->Architecture());
-    if (Portion.Register == model::Register::Invalid)
-      continue;
-
-    uint64_t &Bytes = ConfirmedByteCounts[Portion.Register];
-    Bytes = std::max(Bytes, Portion.StartOffset + Portion.Size);
-  }
-
-  for (auto [Register, ByteCount] : ConfirmedByteCounts) {
-    revng_assert(model::Register::getSize(Register) >= ByteCount);
-
-    namespace PK = model::PrimitiveKind;
-    auto Type = model::PrimitiveType::makeNextPowerOfTwo(PK::Generic,
-                                                         ByteCount);
-    revng_assert(model::Register::getSize(Register) >= *Type->size());
-
-    Inserter.emplace(Register).Type() = std::move(Type);
-  }
-}
-
 void DetectABI::finalizeModel() {
   using namespace model;
 
@@ -861,8 +832,10 @@ void DetectABI::finalizeModel() {
 
     // Record arguments and return values
     recordRegisters(Summary.ABIResults.ArgumentsRegisters,
+                    Binary->Architecture(),
                     Prototype.Arguments().batch_insert());
     recordRegisters(Summary.ABIResults.ReturnValuesRegisters,
+                    Binary->Architecture(),
                     Prototype.ReturnValues().batch_insert());
 
     // Preserved registers
@@ -1047,8 +1020,10 @@ DetectABI::buildPrototypeForIndirectCall(const FunctionSummary &CallerSummary,
     Found = true;
 
     recordRegisters(CallSites.ArgumentsRegisters,
+                    Binary->Architecture(),
                     Prototype.Arguments().batch_insert());
     recordRegisters(CallSites.ReturnValuesRegisters,
+                    Binary->Architecture(),
                     Prototype.ReturnValues().batch_insert());
   }
   revng_assert(Found);

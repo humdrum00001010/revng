@@ -343,6 +343,26 @@ set_tests_properties(test_register_state_deductions PROPERTIES LABELS
                                                                "unit;abi")
 
 #
+# test_detect_abi_registers
+#
+
+revng_add_test_executable(test_detect_abi_registers
+                          "${SRC}/DetectABIRegisters.cpp")
+target_compile_definitions(test_detect_abi_registers
+                           PRIVATE "BOOST_TEST_DYN_LINK=1")
+target_include_directories(test_detect_abi_registers
+                           PRIVATE "${CMAKE_SOURCE_DIR}" "${Boost_INCLUDE_DIRS}")
+target_link_libraries(
+  test_detect_abi_registers
+  revngModel
+  revngSupport
+  revngUnitTestHelpers
+  Boost::unit_test_framework
+  ${LLVM_LIBRARIES})
+revng_add_test(NAME test_detect_abi_registers COMMAND test_detect_abi_registers)
+set_tests_properties(test_detect_abi_registers PROPERTIES LABELS "unit;abi")
+
+#
 # test_location_infrastructure
 #
 
