@@ -156,6 +156,13 @@ struct TerminalBranchHoistingPattern
   matchAndRewrite(BranchOpInterface Branch,
                   mlir::PatternRewriter &Rewriter) const override {
 
+    // Hoisting can expose a directly terminal operation at the end of the
+    // selected region. It must not precede an existing non-label statement.
+    if (mlir::Operation *Next = Branch->getNextNode()) {
+      if (not mlir::isa<AssignLabelOp>(Next))
+        return mlir::failure();
+    }
+
     llvm::SmallVector<RegionWeight> Weights;
     for (mlir::Region &R : Branch.getBranchRegions()) {
       if (isIndirectlyFallthrough(R))
