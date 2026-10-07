@@ -84,6 +84,29 @@ set_tests_properties(test_function_isolation PROPERTIES LABELS
                                                        "unit;isolation")
 
 #
+# test_segregate_stack_accesses
+#
+
+revng_add_test_executable(test_segregate_stack_accesses
+                          "${SRC}/SegregateStackAccesses.cpp")
+target_compile_definitions(test_segregate_stack_accesses
+                           PRIVATE "BOOST_TEST_DYN_LINK=1")
+target_include_directories(test_segregate_stack_accesses
+                           PRIVATE "${CMAKE_SOURCE_DIR}")
+target_link_libraries(
+  test_segregate_stack_accesses
+  revngPromoteStackPointer
+  revngABI
+  revngModel
+  revngSupport
+  revngUnitTestHelpers
+  Boost::unit_test_framework
+  ${LLVM_LIBRARIES})
+revng_add_test(NAME test_segregate_stack_accesses
+               COMMAND test_segregate_stack_accesses)
+set_tests_properties(test_segregate_stack_accesses PROPERTIES LABELS "unit")
+
+#
 # test_advancedvalueinfo
 #
 

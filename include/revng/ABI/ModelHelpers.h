@@ -120,7 +120,16 @@ layoutToLLVMFunctionType(llvm::LLVMContext &Context,
     // We have a RawFunctionDefinition returning things over multiple
     // registers
     revng_assert(Layout.returnValueRegisterCount() > 1);
-    auto Types = toLLVMTypes(Context, Layout.returnValueRegisters());
+    // Preserve the register portions used by enforce-abi, including partial
+    // vector registers. Using the full architectural register width here
+    // would turn an xmm-sized value into a full zmm-sized value.
+    SmallVector<model::Register::Portion> Registers;
+    for (const Layout::ReturnValue &ReturnValue : Layout.ReturnValues) {
+      revng_assert(ReturnValue.Registers.size() == 1);
+      Registers.emplace_back(ReturnValue.Registers[0],
+                             *ReturnValue.Type->size());
+    }
+    auto Types = toLLVMTypes(Context, Registers);
     ReturnType = StructType::get(Context, Types, true);
   } break;
 
