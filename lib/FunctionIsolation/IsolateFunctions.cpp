@@ -37,6 +37,7 @@
 #include "revng/EarlyFunctionAnalysis/FunctionEdgeBase.h"
 #include "revng/EarlyFunctionAnalysis/FunctionSummaryOracle.h"
 #include "revng/EarlyFunctionAnalysis/Outliner.h"
+#include "revng/EarlyFunctionAnalysis/TemporaryOpaqueFunction.h"
 #include "revng/FunctionIsolation/IsolateFunctions.h"
 #include "revng/Model/Architecture.h"
 #include "revng/Model/Binary.h"
@@ -199,11 +200,20 @@ class CallIsolatedFunction : public efa::CallHandler {
 private:
   revng::pypeline::piperuns::Isolate &IP;
   const efa::ControlFlowGraph &FM;
+  TemporaryOpaqueFunction CallMarker;
 
 public:
   CallIsolatedFunction(revng::pypeline::piperuns::Isolate &IP,
-                       const efa::ControlFlowGraph &FM) :
-    IP(IP), FM(FM) {}
+                       const efa::ControlFlowGraph &FM,
+                       llvm::Module &M) :
+    IP(IP),
+    FM(FM),
+    CallMarker(createFunctionType<void, char *, char *>(M.getContext()),
+               "isolated_call_marker",
+               &M) {
+    // These calls must survive any pruning performed while inlining.
+    CallMarker.get()->setMemoryEffects(MemoryEffects::unknown());
+  }
 
 public:
   void handleCall(MetaAddress CallerBlock,
@@ -217,7 +227,7 @@ public:
     revng_assert(MaybeFSO == std::nullopt,
                  "FSO is expensive to compute for CFT but is not used, "
                  "is there maybe a way to avoid it?");
-    handleCall(Builder, Callee, SymbolNamePointer);
+    markCall(Builder, Callee, SymbolNamePointer);
   }
 
   void handlePostNoReturn(revng::IRBuilder &Builder,
@@ -233,10 +243,50 @@ public:
                           llvm::Value *SymbolNamePointer) final {
     revng_assert(SymbolNamePointer != nullptr);
     if (not isa<ConstantPointerNull>(SymbolNamePointer))
-      handleCall(Builder, MetaAddress::invalid(), SymbolNamePointer);
+      markCall(Builder, MetaAddress::invalid(), SymbolNamePointer);
+  }
+
+  void emitCalls(llvm::Function &F) {
+    // The outliner also invokes this handler while constructing functions to
+    // inline. Their blocks only acquire the IDs in FM during inlining, so
+    // resolve the call edges after outlining is complete. The markers are
+    // cloned along with the calls, including when an inlinee is used twice.
+    // As in CFGAnalyzer::outline, restore jump-target block boundaries that
+    // LLVM inlining may have merged.
+    if (std::optional NewPC = NewPCHelper.get(*F.getParent())) {
+      for (auto Call : NewPC->callersIn(&F)) {
+        auto *BB = Call.call()->getParent();
+        if (startsBasicBlock(Call) and BB->getFirstNonPHI() != Call.call())
+          BB->splitBasicBlock(Call.call());
+      }
+    }
+
+    for (BasicBlock &BB : F) {
+      for (Instruction &I : make_early_inc_range(BB)) {
+        if (auto *Call = getCallTo(&I, CallMarker.get())) {
+          revng::IRBuilder Builder(Call);
+          MetaAddress Callee = MetaAddress::fromValue(Call->getArgOperand(0));
+          handleCall(Builder, Callee, Call->getArgOperand(1));
+          Call->eraseFromParent();
+        }
+      }
+    }
   }
 
 private:
+  void markCall(revng::IRBuilder &Builder,
+                MetaAddress Callee,
+                llvm::Value *SymbolNamePointer) {
+    BasicBlock *BB = Builder.GetInsertBlock();
+    revng_assert(not BB->empty());
+    auto InsertPoint = Builder.GetInsertPoint();
+    Instruction *Old = InsertPoint == BB->end() ? &BB->back() : &*InsertPoint;
+    auto *Call = Builder.CreateCall(CallMarker.get(),
+                                    { Callee.toValue(BB->getModule()),
+                                      SymbolNamePointer });
+    Call->setDebugLoc(Old->getDebugLoc());
+  }
+
   void handleCall(revng::IRBuilder &Builder,
                   MetaAddress Callee,
                   llvm::Value *SymbolNamePointer) {
@@ -660,9 +710,11 @@ Function *Isolate::isolateFunction(const efa::ControlFlowGraph &FM) {
   IsolatedFunctionsMap[Entry] = F;
 
   // Outline the function (later on we'll steal its body and move it into F)
-  CallIsolatedFunction CallHandler(*this, FM);
+  CallIsolatedFunction CallHandler(*this, FM, *ClonedModule);
   FunctionOutliner Outliner(*ClonedModule, Binary, *RootF, *Globals);
   efa::OutlinedFunction Outlined = Outliner.outline(Entry, &CallHandler);
+
+  CallHandler.emitCalls(*Outlined.Function);
 
   handleUnexpectedPCCloned(Outlined);
 

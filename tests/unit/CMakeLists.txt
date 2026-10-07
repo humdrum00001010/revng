@@ -61,6 +61,29 @@ revng_add_test(NAME test_irhelpers COMMAND test_irhelpers)
 set_tests_properties(test_irhelpers PROPERTIES LABELS "unit")
 
 #
+# test_function_isolation
+#
+
+revng_add_test_executable(test_function_isolation
+                          "${SRC}/FunctionIsolation.cpp")
+target_compile_definitions(test_function_isolation
+                           PRIVATE "BOOST_TEST_DYN_LINK=1")
+target_include_directories(test_function_isolation
+                           PRIVATE "${CMAKE_SOURCE_DIR}")
+target_link_libraries(
+  test_function_isolation
+  revngFunctionIsolation
+  revngEarlyFunctionAnalysis
+  revngModel
+  revngSupport
+  revngUnitTestHelpers
+  Boost::unit_test_framework
+  ${LLVM_LIBRARIES})
+revng_add_test(NAME test_function_isolation COMMAND test_function_isolation)
+set_tests_properties(test_function_isolation PROPERTIES LABELS
+                                                       "unit;isolation")
+
+#
 # test_advancedvalueinfo
 #
 
