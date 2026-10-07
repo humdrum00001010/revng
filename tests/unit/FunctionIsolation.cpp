@@ -63,7 +63,7 @@ BOOST_AUTO_TEST_CASE(CallInsideFunctionInlinedTwice) {
   AddGlobal(model::Architecture::getPCCSVName(Binary.Architecture()), 64);
   auto StackPointer = model::Architecture::getStackPointer(Binary
                                                              .Architecture());
-  AddGlobal(model::Register::getCSVName(StackPointer), 64);
+  AddGlobal(model::Register::singleCSVName(StackPointer), 64);
   AddGlobal("pc_epoch", 32);
   AddGlobal("pc_address_space", 16);
   AddGlobal("pc_type", 16);
