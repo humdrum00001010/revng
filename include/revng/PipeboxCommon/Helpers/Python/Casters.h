@@ -4,6 +4,9 @@
 // This file is distributed under the MIT License. See LICENSE.md for details.
 //
 
+#include <string>
+#include <unordered_map>
+
 #include "nanobind/nanobind.h"
 
 #include "llvm/ADT/StringRef.h"
@@ -57,15 +60,37 @@ struct type_caster<revng::pypeline::PipeOutput> {
                          cleanup_list *Cleanup) {
     using namespace revng::pypeline;
     using namespace revng::pypeline::helpers::python;
-    using ODCaster = make_caster<ObjectDependencies>;
     using CIDCaster = make_caster<CustomInvalidationData>;
 
     nanobind::object PipeDependenciesCls = importObject("revng.pypeline.task."
                                                         "pipe."
                                                         "PipeDependencies");
-    nanobind::object Dependencies = steal(ODCaster::from_cpp(Value.Dependencies,
-                                                             Policy,
-                                                             Cleanup));
+    // Dependency records repeat immutable object IDs and model paths. Share
+    // their Python values while preserving every record and its order.
+    std::unordered_map<ObjectID, nanobind::object> Objects;
+    std::unordered_map<std::string, nanobind::object> Paths;
+    nanobind::list Dependencies;
+    for (auto &ArgumentDependencies : Value.Dependencies) {
+      nanobind::list Argument;
+      for (auto &[Object, Path] : ArgumentDependencies) {
+        auto [ObjectIt, NewObject] = Objects.try_emplace(Object);
+        if (NewObject)
+          ObjectIt->second = nanobind::cast(Object, rv_policy::copy);
+
+        auto [PathIt, NewPath] = Paths.try_emplace(Path);
+        if (NewPath)
+          PathIt->second = nanobind::str(Path.data(), Path.size());
+
+        Argument.append(nanobind::make_tuple(ObjectIt->second, PathIt->second));
+
+        // Value owns the native input. Release consumed strings as Python
+        // records grow, rather than keeping both representations until return.
+        std::string{}.swap(Path);
+      }
+      Dependencies.append(Argument);
+      ObjectDependencies::value_type{}.swap(ArgumentDependencies);
+    }
+    ObjectDependencies{}.swap(Value.Dependencies);
     nanobind::object
       CustomInvalidation = steal(CIDCaster::from_cpp(Value.CustomInvalidation,
                                                      Policy,

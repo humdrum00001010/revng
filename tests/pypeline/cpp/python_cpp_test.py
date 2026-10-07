@@ -4,7 +4,9 @@
 # This file is distributed under the MIT License. See LICENSE.md for details.
 #
 
+import gc
 import sys
+import warnings
 from collections.abc import Buffer
 
 import yaml
@@ -21,7 +23,7 @@ from revng.pypeline.runner_context import RunnerContext
 from revng.pypeline.schedule.scheduled_task import SavepointScheduledTask
 from revng.pypeline.storage.memory import InMemoryStorageProvider
 from revng.pypeline.storage.storage_provider import ContainerLocation
-from revng.pypeline.task.pipe import Pipe
+from revng.pypeline.task.pipe import Pipe, PipeDependencies
 from revng.pypeline.task.requests import Requests
 from revng.pypeline.task.savepoint import SavePoint
 from revng.pypeline.task.task import TaskArgument, TaskArgumentAccess
@@ -32,7 +34,7 @@ def check_names(ext):
     """Check that _pipebox has all the classes we expect it to have"""
 
     # Names that we know are always present in `_pipebox`
-    known_names = ("Buffer", "initialize")
+    known_names = ("Buffer", "initialize", "make_test_pipe_output")
 
     names = [
         x for x in dir(ext) if not ((x.startswith("__") and x.endswith("__")) or x in known_names)
@@ -60,6 +62,99 @@ def compare_dicts(dict1: dict[ObjectID, Buffer], dict2: dict[ObjectID, Buffer]):
     assert dict1.keys() == dict2.keys()
     for key in dict1.keys():
         assert memoryview(dict1[key]) == memoryview(dict2[key])
+
+
+def check_pipe_output(ext):
+    """Exercise the native PipeOutput caster, including shared value ownership."""
+    empty = ext.make_test_pipe_output(True)
+    assert isinstance(empty, PipeDependencies)
+    assert type(empty.dependencies) is list
+    assert empty.dependencies == []
+    assert empty.custom_invalidation == []
+
+    objectid_cls = get_singleton(ObjectID)
+    root = objectid_cls.root()
+    function = objectid_cls.deserialize("/function/0x400000:Code_x86_64")
+    type_definition = objectid_cls.deserialize("/type-definition/1001-StructDefinition")
+    first_path = "/TypeDefinitions/1001-StructDefinition/Fields/0/Comment"
+    second_path = "/Functions/0x400000:Code_x86_64/Comments/0/Body"
+    expected = [
+        [
+            (root, first_path),
+            (function, second_path),
+            (root, second_path),
+            (function, first_path),
+            (root, first_path),
+        ],
+        [],
+        [
+            (function, second_path),
+            (root, first_path),
+            (type_definition, ""),
+            (type_definition, first_path),
+        ],
+    ]
+    result = ext.make_test_pipe_output(False)
+    assert isinstance(result, PipeDependencies)
+    dependencies = result.dependencies
+    assert type(dependencies) is list
+    assert all(type(chunk) is list for chunk in dependencies)
+    assert all(type(pair) is tuple and len(pair) == 2 for chunk in dependencies for pair in chunk)
+    assert all(
+        isinstance(object_, ObjectID) and type(path) is str
+        for chunk in dependencies
+        for object_, path in chunk
+    )
+    # Equality checks order, duplicate multiplicity, empty chunks and empty paths.
+    assert dependencies == expected
+    assert hash(dependencies[0][1][0]) == hash(function)
+    # An initialized ObjectID cannot replace its native key through its constructor.
+    pooled_function = dependencies[0][1][0]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        try:
+            pooled_function.__init__()
+        except TypeError:
+            pass
+        else:
+            raise AssertionError("An existing ObjectID was reinitialized")
+    assert pooled_function.serialize() == function.serialize()
+    assert hash(pooled_function) == hash(function)
+
+    # Pool immutable values across interleaved pairs and across container chunks.
+    assert dependencies[0][0][0] is dependencies[0][2][0] is dependencies[0][4][0]
+    assert dependencies[0][0][0] is dependencies[2][1][0]
+    assert dependencies[0][1][0] is dependencies[0][3][0] is dependencies[2][0][0]
+    assert dependencies[2][2][0] is dependencies[2][3][0]
+    assert dependencies[0][0][1] is dependencies[0][3][1] is dependencies[0][4][1]
+    assert dependencies[0][0][1] is dependencies[2][1][1] is dependencies[2][3][1]
+    assert dependencies[0][1][1] is dependencies[0][2][1] is dependencies[2][0][1]
+
+    assert type(result.custom_invalidation) is list
+    assert all(type(chunk) is list for chunk in result.custom_invalidation)
+    assert all(
+        type(pair) is tuple and len(pair) == 2
+        for chunk in result.custom_invalidation
+        for pair in chunk
+    )
+    assert [
+        [(object_, bytes(buffer)) for object_, buffer in chunk]
+        for chunk in result.custom_invalidation
+    ] == [[], [(function, b"\x00a\x00\xff")], []]
+
+    retained_dependency = dependencies[0][3]
+    retained_type = dependencies[2][2][0]
+    retained_custom = result.custom_invalidation[1][0]
+    del dependencies
+    del result
+    gc.collect()
+    assert retained_dependency == (function, first_path)
+    assert retained_dependency[0].serialize() == "/function/0x400000:Code_x86_64"
+    assert hash(retained_dependency[0]) == hash(function)
+    assert retained_dependency[1] == first_path
+    assert retained_type.serialize() == "/type-definition/1001-StructDefinition"
+    assert retained_custom[0] == function
+    assert bytes(retained_custom[1]) == b"\x00a\x00\xff"
 
 
 def check_pipeline():
@@ -210,6 +305,7 @@ def main():
     ext.initialize(set(), [])
     initialize_pypeline()
     check_names(ext)
+    check_pipe_output(ext)
     check_pipeline()
     check_simple_pipeline()
 
