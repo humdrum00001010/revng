@@ -819,6 +819,9 @@ private:
   mlir::Value emitImplicitBitcast(mlir::Location Loc,
                                   mlir::Value Value,
                                   mlir::Type TargetType) {
+    // The target may describe a const object, such as a function parameter,
+    // but a bitcast produces an unqualified value. Keep pointee qualifiers.
+    TargetType = removeConst(TargetType);
     mlir::Type SourceType = Value.getType();
 
     if (SourceType == TargetType)

@@ -489,6 +489,20 @@ target_link_libraries(
 add_test(NAME test_clift_type COMMAND test_clift_type)
 
 #
+# test_clifter
+#
+
+revng_add_test_executable(test_clifter "${SRC}/Clifter.cpp")
+target_compile_definitions(test_clifter PRIVATE "BOOST_TEST_DYN_LINK=1")
+target_include_directories(test_clifter PRIVATE "${CMAKE_SOURCE_DIR}"
+                                                "${Boost_INCLUDE_DIRS}")
+target_link_libraries(test_clifter revngClifter revngClift revngModel
+                      revngUnitTestHelpers Boost::unit_test_framework
+                      ${LLVM_LIBRARIES})
+revng_add_test(NAME test_clifter COMMAND test_clifter)
+set_tests_properties(test_clifter PROPERTIES LABELS "unit;clifter")
+
+#
 # test_statement_comment_placement
 #
 
