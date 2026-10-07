@@ -4,6 +4,7 @@
 
 #include "llvm/Object/COFF.h"
 #include "llvm/Object/ObjectFile.h"
+#include "llvm/Support/Endian.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -54,6 +55,7 @@ public:
   Error import(const ImporterOptions &Options);
 
 private:
+  Error checkCLRRuntimeHeader();
   Error parseSectionsHeaders();
   /// Parse static symbols from the file.
   void parseSymbols();
@@ -70,6 +72,46 @@ private:
   void recordDelayImportedFunctions(DelayDirectoryRef &I,
                                     ImportedSymbolRange Range);
 };
+
+Error PECOFFImporter::checkCLRRuntimeHeader() {
+  const data_directory *Directory = TheBinary.ObjectFile
+                                     .getDataDirectory(COFF::CLR_RUNTIME_HEADER);
+  if (Directory == nullptr or Directory->RelativeVirtualAddress == 0)
+    return Error::success();
+
+  // IMAGE_COR20_HEADER has a fixed 72-byte prefix. Check both the directory
+  // and the file-backed section before reading its size or flags.
+  constexpr uint32_t MinimumHeaderSize = 72;
+  if (Directory->Size < MinimumHeaderSize)
+    return revng::createError("Invalid CLR runtime header: directory is too "
+                              "small");
+
+  ArrayRef<uint8_t> Header;
+  if (Error E = TheBinary.ObjectFile
+                  .getRvaAndSizeAsBytes(Directory->RelativeVirtualAddress,
+                                       MinimumHeaderSize,
+                                       Header))
+    return E;
+
+  uint32_t HeaderSize = support::endian::read32le(Header.data());
+  if (HeaderSize < MinimumHeaderSize or HeaderSize > Directory->Size)
+    return revng::createError("Invalid CLR runtime header: inconsistent size");
+
+  if (Error E = TheBinary.ObjectFile
+                  .getRvaAndSizeAsBytes(Directory->RelativeVirtualAddress,
+                                       HeaderSize,
+                                       Header))
+    return E;
+
+  constexpr uint32_t ILOnly = 1;
+  uint32_t Flags = support::endian::read32le(Header.data() + 16);
+  if (Flags & ILOnly)
+    return revng::createError("Pure managed CLR images (COMIMAGE_FLAGS_ILONLY) "
+                              "are not supported: revng analyzes native "
+                              "machine code and does not decompile managed IL");
+
+  return Error::success();
+}
 
 Error PECOFFImporter::parseSectionsHeaders() {
   using namespace model;
@@ -391,6 +433,9 @@ void PECOFFImporter::parseDelayImportedSymbols() {
 }
 
 Error PECOFFImporter::import(const ImporterOptions &Options) {
+  if (Error E = checkCLRRuntimeHeader())
+    return E;
+
   if (Error E = parseSectionsHeaders())
     return E;
 
