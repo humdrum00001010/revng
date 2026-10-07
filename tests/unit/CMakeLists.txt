@@ -84,6 +84,23 @@ set_tests_properties(test_function_isolation PROPERTIES LABELS
                                                        "unit;isolation")
 
 #
+# test_promote_global_to_local_vars
+#
+
+revng_add_test_executable(test_promote_global_to_local_vars
+                          "${SRC}/PromoteGlobalToLocalVars.cpp")
+target_compile_definitions(test_promote_global_to_local_vars
+                           PRIVATE "BOOST_TEST_DYN_LINK=1")
+target_include_directories(test_promote_global_to_local_vars
+                           PRIVATE "${CMAKE_SOURCE_DIR}")
+target_link_libraries(
+  test_promote_global_to_local_vars revngEarlyFunctionAnalysis revngSupport
+  revngUnitTestHelpers Boost::unit_test_framework LLVMAsmParser ${LLVM_LIBRARIES})
+revng_add_test(NAME test_promote_global_to_local_vars
+               COMMAND test_promote_global_to_local_vars)
+set_tests_properties(test_promote_global_to_local_vars PROPERTIES LABELS "unit")
+
+#
 # test_segregate_stack_accesses
 #
 

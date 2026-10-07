@@ -1104,52 +1104,25 @@ inline bool replaceAllUsesInFunctionWith(llvm::Function *F,
 
   bool Changed = false;
 
-  SmallPtrSet<ConstantExpr *, 8> OldUserConstExprs;
-  auto UI = Old->use_begin();
-  auto E = Old->use_end();
-  while (UI != E) {
-    Use &U = *UI;
-    ++UI;
-
-    if (auto *I = dyn_cast<Instruction>(U.getUser())) {
-      if (I->getFunction() == F) {
-        U.set(New);
-        Changed = true;
-      }
-    } else if (auto *CE = dyn_cast<ConstantExpr>(U.getUser())) {
-      // We can't convert ConstantExprs to Instructions while iterating on Old
-      // uses. This would create new uses of Old (the new Instructions generated
-      // by converting the ConstantExprs to Instructions) while iterating on Old
-      // uses, so the trick with pre-incrementing the iterators used above would
-      // not be enough to guard us from iterator invalidation.
-      // We store ConstantExpr uses in a helper vector and process them later.
-      if (CE->isCast())
-        OldUserConstExprs.insert(CE);
-    }
-  }
-
-  // Iterate on all ConstantExpr that use Old.
-  for (ConstantExpr *OldUserCE : OldUserConstExprs) {
-    // For each ConstantExpr that uses Old, we are interested in its uses in F,
-    // so we iterate on all uses of OldUserCE, looking for uses in Instructions
-    // that are in F.
-    // When we find one, we cannot directly substitute the use of Old in
-    // OldUserCE, because that is a constant expression that might be used
-    // somewhere else, possibly outside of F.
-    // What we do instead is to create an Instruction in F that is equivalent to
-    // OldUserCE, and substitute Old with New only in that instruction.
-    auto CEIt = OldUserCE->use_begin();
-    auto CEEnd = OldUserCE->use_end();
-    for (; CEIt != CEEnd;) {
-      Use &CEUse = *CEIt;
-      ++CEIt;
-      auto *CEInstrUser = dyn_cast<Instruction>(CEUse.getUser());
-      if (CEInstrUser and CEInstrUser->getFunction() == F) {
-        Instruction *CastInst = OldUserCE->getAsInstruction();
-        CastInst->replaceUsesOfWith(Old, New);
-        CastInst->insertBefore(CEInstrUser);
-        CEUse.set(CastInst);
-        Changed = true;
+  // Visit only the requested function: Old and its constant-expression users
+  // can have uses throughout a large module.
+  for (BasicBlock &BB : *F) {
+    for (Instruction &I : BB) {
+      for (Use &U : I.operands()) {
+        if (U.get() == Old) {
+          U.set(New);
+          Changed = true;
+        } else if (auto *CE = dyn_cast<ConstantExpr>(U.get())) {
+          if (CE->isCast() and CE->getOperand(0) == Old) {
+            // Preserve the shared constant expression and materialize a cast
+            // for this local use, replacing Old only in the new instruction.
+            Instruction *CastInst = CE->getAsInstruction();
+            CastInst->replaceUsesOfWith(Old, New);
+            CastInst->insertBefore(&I);
+            U.set(CastInst);
+            Changed = true;
+          }
+        }
       }
     }
   }

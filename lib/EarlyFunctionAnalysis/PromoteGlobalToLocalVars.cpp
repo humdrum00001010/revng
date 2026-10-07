@@ -38,13 +38,41 @@ PromoteGlobalToLocalPass::run(llvm::Function &F,
 
   revng::IRBuilder Builder(&F.getEntryBlock().front());
 
-  // Create an equivalent local variable, replace all the uses of the CSV.
+  // Create an equivalent local variable for each CSV.
   for (GlobalVariable *CSV : toSortedByName(llvm::make_first_range(CSVMap))) {
     auto *CSVTy = CSV->getValueType();
     auto *Alloca = Builder.CreateAlloca(CSVTy, nullptr, CSV->getName());
-    replaceAllUsesInFunctionWith(&F, CSV, Alloca);
-
     CSVMap[CSV] = Alloca;
+  }
+
+  // Rewrite operands in this function instead of scanning the module-wide use
+  // list of each CSV, which is shared by all the outlined functions.
+  for (auto &BB : F) {
+    for (auto &I : BB) {
+      for (Use &U : I.operands()) {
+        Value *Operand = U.get();
+        auto *Cast = dyn_cast<ConstantExpr>(Operand);
+        if (Cast != nullptr and Cast->isCast())
+          Operand = Cast->getOperand(0);
+
+        auto *CSV = dyn_cast<GlobalVariable>(Operand);
+        auto It = CSVMap.find(CSV);
+        if (It == CSVMap.end())
+          continue;
+
+        if (Cast != nullptr) {
+          // Constant expressions can be shared with other functions.
+          // Materialize a separate cast for this use before replacing its CSV
+          // operand.
+          Instruction *CastInst = Cast->getAsInstruction();
+          CastInst->replaceUsesOfWith(CSV, It->second);
+          CastInst->insertBefore(&I);
+          U.set(CastInst);
+        } else {
+          U.set(It->second);
+        }
+      }
+    }
   }
 
   // Load all the CSVs and store their value onto the local variables.
