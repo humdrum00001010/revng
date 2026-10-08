@@ -1,0 +1,53 @@
+{
+  "source": {
+    "path": "repro.c",
+    "bytes": 112,
+    "sha256": "5fcc0d51cd81de0ab40b9f98e11d0a8e6018c3a1adc3be28b94871676e9fc5fa"
+  },
+  "binary": {
+    "path": "repro.dll",
+    "bytes": 5055,
+    "sha256": "33ae4cfe16a47d5f79620695e2c7836e41654880597fb9667e2387b361b102fb",
+    "format": "PE32 i386 DLL",
+    "entry_rva": "0x1000",
+    "sole_export": "pointer_cycle"
+  },
+  "build": {
+    "compiler": "Homebrew clang 23.1.2",
+    "target": "i686-w64-windows-gnu",
+    "linker": "GNU ld 2.47.20260726 for i686-w64-mingw32",
+    "optimization": "O0"
+  },
+  "verified_runs": [
+    {
+      "runtime": "revng develop 8bb7bac912ae6f7e2a8f51973aa329f1b5323001",
+      "image": "sha256:4a4eb6829a33e157a92f7934854d8df4285dd36159df93551cc7cd6028478029",
+      "verify_exit_code": 134,
+      "assertion": "TS.verifyPointerDAG() and TS.verifyDAG() and TS.verifyUnions()"
+    },
+    {
+      "runtime": "pinned public revng image",
+      "image": "revng/revng@sha256:1446ae6f9ba9f2f907af69bb6c3954093327dc0e515fad76f1de8610df4a0fce",
+      "verify_exit_code": 134,
+      "assertion": "TS.verifyPointerDAG() and TS.verifyDAG() and TS.verifyUnions()"
+    },
+    {
+      "runtime": "revng develop 8bb7bac912ae6f7e2a8f51973aa329f1b5323001",
+      "mode": "plain quick command, 256 MiB memory and swap limit",
+      "exit_code": 137,
+      "oom_killed": true
+    }
+  ],
+  "graph_boundary": {
+    "generating_pass": "MergePointeesOfPointerUnion",
+    "before_pointer_edges": ["13 -> 20", "20 -> 26", "27 -> 13", "32 -> 26"],
+    "merged_pointees": [13, 26],
+    "after_pointer_scc": [13, 20],
+    "after_pointer_edges": ["13 -> 20", "20 -> 13"]
+  },
+  "negative_controls": [
+    {"change": "remove one pointer load", "verify_exit_code": 0},
+    {"change": "remove the final store", "verify_exit_code": 0},
+    {"change": "collapse the statements into one expression", "verify_exit_code": 0}
+  ]
+}
