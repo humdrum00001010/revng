@@ -385,6 +385,9 @@ class LocalStorageProvider(StorageProvider):
         self._model_type = get_singleton(Model)  # type: ignore[type-abstract]
 
         self._connection = sqlite3.connect(db_path, autocommit=False)
+        # Give dependency indexes a lazy 64 MiB page cache target.
+        # SQLite page and allocator overhead also adds to process memory.
+        self._connection.execute("PRAGMA cache_size=-65536")
         self._init_tables()
         self.epoch = self._get_epoch()
 
