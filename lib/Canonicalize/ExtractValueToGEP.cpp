@@ -6,6 +6,7 @@
 
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/Pass.h"
@@ -33,36 +34,40 @@ public:
   }
 };
 
-/// Fold an extraction whose aggregate is a constant into the constant field.
+/// Resolve an extraction to the value already occupying the selected field.
 ///
 /// The rest of the pass turns an extraction into a load from the `alloca`
-/// holding the aggregate, which needs an instruction producing it. When the
-/// aggregate has been folded into a constant there is no such instruction, but
-/// the extraction still has to go: `OpaqueExtractValue` is opaque to LLVM, so
-/// nothing else ever removes it, and the stages downstream of this pass have no
-/// case for it at all.
-static bool foldConstantExtractions(llvm::Function &F) {
+/// holding the aggregate. Constants need no such storage, and an `insertvalue`
+/// chain can also select a scalar directly. In particular, optimizations of
+/// overflow intrinsics can leave a runtime result inserted into a constant
+/// aggregate. Spilling that aggregate leaves an `insertvalue` for Clifter,
+/// which does not import aggregate construction. Preserve the selected SSA
+/// value, including poison, instead of materializing the aggregate.
+static bool foldResolvableExtractions(llvm::Function &F) {
   SmallVector<Instruction *, 8> Folded;
+  SmallVector<WeakTrackingVH, 8> Aggregates;
 
   for (Instruction &I : llvm::instructions(F)) {
-    Constant *Field = nullptr;
+    Value *Aggregate = nullptr;
+    Value *Field = nullptr;
 
     if (auto *EV = dyn_cast<ExtractValueInst>(&I)) {
-      // Only a single index, as in the rewriting below.
-      if (EV->getNumIndices() != 1)
-        continue;
-      auto *Aggregate = dyn_cast<Constant>(EV->getAggregateOperand());
-      if (Aggregate != nullptr)
-        Field = Aggregate->getAggregateElement(EV->getIndices()[0]);
+      Aggregate = EV->getAggregateOperand();
+      Field = FindInsertedValue(Aggregate, EV->getIndices());
     } else if (auto *
                  OpaqueEV = getCallToTagged(&I,
                                             FunctionTags::OpaqueExtractValue)) {
       // An `OpaqueExtractValue` always carries exactly one index.
-      auto *Aggregate = dyn_cast<Constant>(OpaqueEV->getArgOperand(0));
+      Aggregate = OpaqueEV->getArgOperand(0);
       const auto *Index = cast<ConstantInt>(OpaqueEV->getArgOperand(1));
-      if (Aggregate != nullptr
-          and Index->getValue().ule(std::numeric_limits<unsigned>::max()))
-        Field = Aggregate->getAggregateElement(unsigned(Index->getZExtValue()));
+      if (Index->getValue().ule(std::numeric_limits<unsigned>::max())) {
+        unsigned FieldIndex = Index->getZExtValue();
+        // Unlike extractvalue, an opaque call does not validate its index.
+        if (ExtractValueInst::getIndexedType(Aggregate->getType(),
+                                             { FieldIndex })
+            != nullptr)
+          Field = FindInsertedValue(Aggregate, { FieldIndex });
+      }
     } else {
       continue;
     }
@@ -72,10 +77,16 @@ static bool foldConstantExtractions(llvm::Function &F) {
 
     I.replaceAllUsesWith(Field);
     Folded.push_back(&I);
+    if (isa<Instruction>(Aggregate))
+      Aggregates.push_back(Aggregate);
   }
 
   for (Instruction *I : Folded)
     I->eraseFromParent();
+
+  // A dead construction would otherwise be imported as an expression
+  // statement. Some constructions still have unresolved users; keep those.
+  RecursivelyDeleteTriviallyDeadInstructionsPermissive(Aggregates);
 
   return not Folded.empty();
 }
@@ -102,7 +113,7 @@ static auto getStructValuedInstructions(llvm::Function &F) {
 }
 
 bool ExtractValueToGEPPass::runOnFunction(llvm::Function &F) {
-  bool Changed = foldConstantExtractions(F);
+  bool Changed = foldResolvableExtractions(F);
 
   SmallVector<Instruction *> StructValues = getStructValuedInstructions(F);
   if (StructValues.empty())

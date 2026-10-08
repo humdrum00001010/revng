@@ -105,3 +105,155 @@ define void @plain_from_constant() {
   store i16 %f1, ptr null
   ret void
 }
+
+; An optimized overflow result can retain a runtime field while its overflow
+; bit is constant. Resolve both fields before creating aggregate storage, and
+; remove the construction once its extraction users have disappeared.
+;
+; CHECK-LABEL: define void @opaque_from_insertvalue
+; CHECK-NOT: alloca
+; CHECK-NOT: insertvalue
+; CHECK-NOT: @OpaqueExtractvalue
+; CHECK: store i32 %value, ptr null
+; CHECK: store i1 false, ptr null
+; CHECK-NEXT: ret void
+define void @opaque_from_insertvalue(i32 %value) {
+  %aggregate = insertvalue { i32, i1 } { i32 poison, i1 false }, i32 %value, 0
+  %f0 = call i32 @OpaqueExtractvalue({ i32, i1 } %aggregate, i64 0)
+  %f1 = call i1 @OpaqueExtractvalue.1({ i32, i1 } %aggregate, i64 1)
+  store i32 %f0, ptr null
+  store i1 %f1, ptr null
+  ret void
+}
+
+; Replacing one poison field does not define a different poison field.
+;
+; CHECK-LABEL: define void @opaque_preserves_other_poison
+; CHECK-NOT: alloca
+; CHECK-NOT: insertvalue
+; CHECK-NOT: @OpaqueExtractvalue
+; CHECK: store i32 %value, ptr null
+; CHECK: store i1 poison, ptr null
+; CHECK-NEXT: ret void
+define void @opaque_preserves_other_poison(i32 %value) {
+  %aggregate = insertvalue { i32, i1 } poison, i32 %value, 0
+  %f0 = call i32 @OpaqueExtractvalue({ i32, i1 } %aggregate, i64 0)
+  %f1 = call i1 @OpaqueExtractvalue.1({ i32, i1 } %aggregate, i64 1)
+  store i32 %f0, ptr null
+  store i1 %f1, ptr null
+  ret void
+}
+
+; The latest write wins, disjoint writes are skipped, and untouched fields
+; keep the value supplied by the base aggregate.
+;
+; CHECK-LABEL: define void @plain_multiple_insertions
+; CHECK-NOT: alloca
+; CHECK-NOT: insertvalue
+; CHECK-NOT: extractvalue
+; CHECK: store i32 %last, ptr null
+; CHECK: store i16 9, ptr null
+; CHECK: store i32 %other, ptr null
+; CHECK-NEXT: ret void
+define void @plain_multiple_insertions(i32 %first, i32 %last, i32 %other) {
+  %a = insertvalue { i32, i16, i32 } { i32 7, i16 9, i32 11 }, i32 %first, 0
+  %b = insertvalue { i32, i16, i32 } %a, i32 %other, 2
+  %c = insertvalue { i32, i16, i32 } %b, i32 %last, 0
+  %f0 = extractvalue { i32, i16, i32 } %c, 0
+  %f1 = extractvalue { i32, i16, i32 } %c, 1
+  %f2 = extractvalue { i32, i16, i32 } %c, 2
+  store i32 %f0, ptr null
+  store i16 %f1, ptr null
+  store i32 %f2, ptr null
+  ret void
+}
+
+; A nested extraction follows a prefix insertion and then the selected inner
+; field. An intervening insertion into a disjoint outer field has no effect.
+;
+; CHECK-LABEL: define void @plain_nested_prefix
+; CHECK-NOT: alloca
+; CHECK-NOT: insertvalue
+; CHECK-NOT: extractvalue
+; CHECK: store i32 %value, ptr null
+; CHECK: store i16 13, ptr null
+; CHECK: store i32 %other, ptr null
+; CHECK-NEXT: ret void
+define void @plain_nested_prefix(i32 %value, i32 %other) {
+  %inner = insertvalue { i32, i16 } { i32 poison, i16 13 }, i32 %value, 0
+  %a = insertvalue { { i32, i16 }, i32 } poison, { i32, i16 } %inner, 0
+  %b = insertvalue { { i32, i16 }, i32 } %a, i32 %other, 1
+  %f00 = extractvalue { { i32, i16 }, i32 } %b, 0, 0
+  %f01 = extractvalue { { i32, i16 }, i32 } %b, 0, 1
+  %f1 = extractvalue { { i32, i16 }, i32 } %b, 1
+  store i32 %f00, ptr null
+  store i16 %f01, ptr null
+  store i32 %f1, ptr null
+  ret void
+}
+
+; Nested writes to a sibling field must also leave the selected field alone.
+;
+; CHECK-LABEL: define void @plain_nested_disjoint
+; CHECK-NOT: alloca
+; CHECK-NOT: insertvalue
+; CHECK-NOT: extractvalue
+; CHECK: store i32 %last, ptr null
+; CHECK: store i16 13, ptr null
+; CHECK-NEXT: ret void
+define void @plain_nested_disjoint(i32 %first, i32 %last, i32 %other) {
+  %a = insertvalue { { i32, i16 }, i32 } { { i32, i16 } { i32 7, i16 13 }, i32 17 }, i32 %first, 0, 0
+  %b = insertvalue { { i32, i16 }, i32 } %a, i32 %other, 1
+  %c = insertvalue { { i32, i16 }, i32 } %b, i32 %last, 0, 0
+  %f00 = extractvalue { { i32, i16 }, i32 } %c, 0, 0
+  %f01 = extractvalue { { i32, i16 }, i32 } %c, 0, 1
+  store i32 %f00, ptr null
+  store i16 %f01, ptr null
+  ret void
+}
+
+declare { i32, i32 } @unknown_struct()
+
+; A field obtained from an unknown producer cannot be replaced by an insertion
+; into another field. Keep the existing materialization for the unresolved
+; extraction, while resolving the field that was explicitly written.
+;
+; CHECK-LABEL: define void @unresolved_field
+; CHECK: [[UNKNOWN_STORAGE:%[a-zA-Z0-9_]+]] = alloca { i32, i32 }
+; CHECK: %unknown = call { i32, i32 } @unknown_struct()
+; CHECK: %aggregate = insertvalue { i32, i32 } %unknown, i32 %value, 0
+; CHECK: store { i32, i32 } %aggregate, ptr [[UNKNOWN_STORAGE]]
+; CHECK: [[UNKNOWN_GEP:%[a-zA-Z0-9_]+]] = getelementptr i8, ptr [[UNKNOWN_STORAGE]], i64 4
+; CHECK: [[UNKNOWN_FIELD:%[a-zA-Z0-9_]+]] = load i32, ptr [[UNKNOWN_GEP]]
+; CHECK: store i32 %value, ptr null
+; CHECK: store i32 [[UNKNOWN_FIELD]], ptr null
+define void @unresolved_field(i32 %value) {
+  %unknown = call { i32, i32 } @unknown_struct()
+  %aggregate = insertvalue { i32, i32 } %unknown, i32 %value, 0
+  %f0 = extractvalue { i32, i32 } %aggregate, 0
+  %f1 = extractvalue { i32, i32 } %aggregate, 1
+  store i32 %f0, ptr null
+  store i32 %f1, ptr null
+  ret void
+}
+
+; Opaque calls do not validate aggregate indices as extractvalue does. Leave
+; invalid indices unchanged rather than invoking the resolver with bad indices.
+;
+; CHECK-LABEL: define void @opaque_invalid_indices
+; CHECK-NOT: alloca
+; CHECK: %out_of_bounds = call i32 @OpaqueExtractvalue({ i32, i1 } { i32 7, i1 false }, i64 2)
+; CHECK: %negative = call i32 @OpaqueExtractvalue({ i32, i1 } { i32 7, i1 false }, i64 {{(-1|u0xffffffffffffffff)}})
+; CHECK: %maximum = call i32 @OpaqueExtractvalue({ i32, i1 } { i32 7, i1 false }, i64 {{(4294967295|u0xffffffff)}})
+; CHECK: store i32 %out_of_bounds, ptr null
+; CHECK: store i32 %negative, ptr null
+; CHECK: store i32 %maximum, ptr null
+define void @opaque_invalid_indices() {
+  %out_of_bounds = call i32 @OpaqueExtractvalue({ i32, i1 } { i32 7, i1 false }, i64 2)
+  %negative = call i32 @OpaqueExtractvalue({ i32, i1 } { i32 7, i1 false }, i64 -1)
+  %maximum = call i32 @OpaqueExtractvalue({ i32, i1 } { i32 7, i1 false }, i64 4294967295)
+  store i32 %out_of_bounds, ptr null
+  store i32 %negative, ptr null
+  store i32 %maximum, ptr null
+  ret void
+}
