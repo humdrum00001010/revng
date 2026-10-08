@@ -18,6 +18,13 @@
     "linker": "GNU ld 2.47.20260726 for i686-w64-mingw32",
     "optimization": "O0"
   },
+  "default_reproduction": {
+    "command": "revng quick artifact emit-recompilable-archive /input/repro.dll -o /output/recompilable.tar.gz",
+    "extra_revng_arguments": [],
+    "memory_limit_mib": 256,
+    "exit_code": 137,
+    "oom_killed": true
+  },
   "verified_runs": [
     {
       "runtime": "revng develop 8bb7bac912ae6f7e2a8f51973aa329f1b5323001",

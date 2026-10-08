@@ -12,11 +12,22 @@ void pointer_cycle(unsigned *slot) {
 
 ## Reproduce
 
-Run the bounded reproducer with Docker:
+Run the reproducer with Docker:
 
 ```sh
 ./reproduce.sh
 ```
+
+The default mode invokes the supported rev.ng command without analysis,
+logger, model, or function-selection options:
+
+```sh
+revng quick artifact emit-recompilable-archive \
+  /input/repro.dll -o /output/recompilable.tar.gz
+```
+
+The script limits the container to 256 MiB and confirms that this command exits
+137 with `OOMKilled=true`.
 
 The script defaults to the pinned public rev.ng image recorded in
 `results.json`. To use a locally built `develop` image:
@@ -25,11 +36,10 @@ The script defaults to the pinned public rev.ng image recorded in
 IMAGE=your-revng-develop-image ./reproduce.sh
 ```
 
-The underlying supported CLI command is:
+For a bounded diagnostic that names the broken invariant, run:
 
 ```sh
-revng quick artifact emit-recompilable-archive \
-  /input/repro.dll -o /tmp/recompilable.tar.gz -- --debug-log=verify
+./reproduce.sh verify
 ```
 
 It exits 134 at the existing DLA invariant:
@@ -38,10 +48,9 @@ It exits 134 at the existing DLA invariant:
 TS.verifyPointerDAG() and TS.verifyDAG() and TS.verifyUnions()
 ```
 
-`--debug-log=verify` enables the existing invariant checks and bounds the
-failure before recursive model construction consumes memory. With the same
-DLL and no logger argument, a 256 MiB, no-swap run exits 137 with
-`OOMKilled=true`.
+That mode forwards `--debug-log=verify` to the native phase. It enables the
+existing invariant checks and bounds the failure before recursive model
+construction consumes memory.
 
 ## Cause boundary
 
