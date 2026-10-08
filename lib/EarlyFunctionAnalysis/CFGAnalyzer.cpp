@@ -185,20 +185,32 @@ OutlinedFunction CFGAnalyzer::outline(const MetaAddress &Entry) {
 
   OutlinedFunction Result = Outliner.outline(Entry, &Summarizer);
 
+  // Outlining must not revisit stubs already prepared for ABI analysis: their
+  // CSV prologue may precede newpc, and splitting it would change their CFG.
+  // Root jump targets already begin with newpc (RootFunction checks this).
+  SmallVector<CallInst *, 16> PreCallHooks;
+  SmallVector<CallBase *, 16> JumpTargets;
+  revng_assert(NewPCHelper.get(M).has_value());
+  for (Instruction &I : instructions(Result.Function.get())) {
+    if (CallInst *Call = getCallTo(&I, PreCallHook.get()))
+      PreCallHooks.push_back(Call);
+    if (auto Call = NewPCHelper.getCall(&I);
+        Call.has_value() and startsBasicBlock(*Call))
+      JumpTargets.push_back(Call->call());
+  }
+
   // Make sure we start a new block before a PreCallHook
   auto IsFirst = [](llvm::Instruction *I) {
     return I->getParent()->getFirstNonPHI() == I;
   };
-  for (llvm::CallBase *Call : callers(PreCallHook.get()))
+  for (CallInst *Call : PreCallHooks)
     if (not IsFirst(Call))
       Call->getParent()->splitBasicBlock(Call);
 
   // Make sure we start a new block for each jump target
-  std::optional NewPC = NewPCHelper.get(M);
-  revng_assert(NewPC.has_value());
-  for (IRHelperCall<NewPCArgument> Call : NewPC->callers())
-    if (startsBasicBlock(Call) and not IsFirst(Call.call()))
-      Call.call()->getParent()->splitBasicBlock(Call.call());
+  for (CallBase *Call : JumpTargets)
+    if (not IsFirst(Call))
+      Call->getParent()->splitBasicBlock(Call);
 
   return Result;
 }

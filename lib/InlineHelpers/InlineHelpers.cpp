@@ -75,23 +75,6 @@ char InlineHelpersLegacyPass::ID = 0;
 using Register = RegisterPass<InlineHelpersLegacyPass>;
 static Register X("inline-helpers", "Inline Helpers Pass", true, true);
 
-class InlineHelpers {
-public:
-  InlineHelpers() = default;
-
-  void run(Function *F);
-
-private:
-  // Only isolated functions change during this pass. Prepared helper bodies
-  // stay immutable, so share their revalidated policies across all callers.
-  mutable DenseMap<const Function *, std::optional<BitVector>> PreparedPolicies;
-
-  void doInline(CallInst *Call) const;
-  bool doInline(Function *F) const;
-  CallInst *getCallToInline(Instruction *I) const;
-  bool shouldInline(const CallInst *Call) const;
-};
-
 bool InlineHelpers::shouldInline(const CallInst *Call) const {
   const Function *Callee = getCalledFunction(Call);
   if (Callee == nullptr)

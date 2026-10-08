@@ -439,39 +439,6 @@ void DetectABI::preliminaryFunctionAnalysis() {
   }
 }
 
-namespace {
-
-/// Run a function pipeline on the outlined stubs, and on nothing else.
-///
-/// The module still holds `root` and the helpers. The analysis never looks at
-/// them and the rest of the pipeline needs them intact, so they are left alone.
-/// `InlineHelpersPass` picks the functions it inlines into the same way, and by
-/// this point the stubs are the only thing wearing the tag.
-class IsolatedOnlyPass : public llvm::PassInfoMixin<IsolatedOnlyPass> {
-private:
-  llvm::FunctionPassManager FPM;
-
-public:
-  explicit IsolatedOnlyPass(llvm::FunctionPassManager &&FPM) :
-    FPM(std::move(FPM)) {}
-
-public:
-  llvm::PreservedAnalyses run(llvm::Module &M,
-                              llvm::ModuleAnalysisManager &MAM) {
-    using namespace llvm;
-    auto &FAM = MAM.getResult<FunctionAnalysisManagerModuleProxy>(M)
-                  .getManager();
-
-    for (Function &F : M)
-      if (FunctionTags::Isolated.isTagOf(&F))
-        FPM.run(F, FAM);
-
-    return PreservedAnalyses::none();
-  }
-};
-
-} // namespace
-
 /// Inline the helpers, then say what the CSVs are for and let the standard
 /// machinery simplify the ones the analysis ignores.
 ///
@@ -479,9 +446,14 @@ public:
 /// callee could be watching. As a local it is ordinary memory, and `mem2reg`
 /// both deletes the stores nobody reads and turns the ones somebody does read
 /// into plain SSA edges.
-static void prepareFunctions(llvm::Module &M,
-                             model::Architecture::Values Architecture) {
+static void prepareFunction(llvm::Function &F,
+                            model::Architecture::Values Architecture,
+                            InlineHelpers &Helpers) {
   using namespace llvm;
+
+  // Helpers remain immutable throughout ABI detection. Reuse their policies,
+  // but inline only into the new stub, leaving root and earlier stubs alone.
+  Helpers.run(&F);
 
   LoopAnalysisManager LAM;
   FunctionAnalysisManager FAM;
@@ -495,6 +467,7 @@ static void prepareFunctions(llvm::Module &M,
   PB.registerLoopAnalyses(LAM);
   PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 
+  SmallVector<WeakVH> Loads;
   FunctionPassManager FPM;
 
   // A sub-register write reads the register back in order to preserve what it
@@ -505,7 +478,6 @@ static void prepareFunctions(llvm::Module &M,
 
   // Give the copy of a value the CSV the original went to, while both stores
   // are still there to be seen.
-  SmallVector<WeakVH> Loads;
   FPM.addPass(ChainCSVWritesPass(Loads));
 
   // `mem2reg` rather than SROA: the CSVs are scalars, so promotion is all that
@@ -519,17 +491,7 @@ static void prepareFunctions(llvm::Module &M,
   FPM.addPass(PromoteGlobalToLocalPass(IsNotARegister));
   FPM.addPass(PromotePass());
 
-  ModulePassManager MPM;
-
-  // Inline `revng_inline`-tagged helper calls so the ABI dataflow analysis can
-  // observe the helpers' register reads and writes directly. Helpers whose
-  // per-call critical arguments are not LLVM constants here survive un-inlined
-  // and are consumed as opaque calls by the analysis.
-  MPM.addPass(InlineHelpersPass());
-
-  MPM.addPass(IsolatedOnlyPass(std::move(FPM)));
-
-  MPM.run(M, MAM);
+  FPM.run(F, FAM);
 
   // A write nobody uses is gone by now, and the load it lent to the copy of its
   // value is left without a reader. Drop it, or the write it reads would look
@@ -542,50 +504,36 @@ static void prepareFunctions(llvm::Module &M,
     if (auto *Load = cast_or_null<LoadInst>(Chained);
         Load != nullptr and Load->use_empty())
       Load->eraseFromParent();
-
-  // The outlined stubs live in the module, so a single dump captures them all,
-  // as the analysis is about to read them.
-  if (not DumpPostInline.empty())
-    dumpModule(&M, DumpPostInline.c_str());
 }
 
 void DetectABI::analyzeABI() {
   revng_log(Log, "Running ABI analyses");
   LoggerIndent Indent(Log);
 
-  llvm::Task Task(3, "analyzeABI");
+  llvm::Task Task(2, "analyzeABI");
   std::map<MetaAddress, std::unique_ptr<OutlinedFunction>> Functions;
+  InlineHelpers Helpers;
 
-  // Create all temporary functions
-  Task.advance("Create temporary functions");
+  // Keep only one unprepared stub alive at a time. The oracle is unchanged
+  // until the fixed-point loop below, so outlining sees the same summaries
+  // for every function. All prepared stubs remain available to that loop.
+  Task.advance("Outline and prepare functions");
   for (model::Function &Function : Binary->Functions()) {
     const MetaAddress &Entry = Function.Entry();
     auto NewFunction = std::make_unique<OutlinedFunction>(Analyzer
                                                             .outline(Entry));
+    llvm::Function *F = NewFunction->Function.get();
+    FunctionTags::Isolated.addTo(F);
+    if (DebugNames)
+      F->setName(llvmName(Function));
+    prepareFunction(*F, Binary->Architecture(), Helpers);
     Functions[Function.Entry()] = std::move(NewFunction);
   }
 
-  // `InlineHelpersPass` only inlines into `Isolated` functions, so we tag the
-  // outlined stubs as such. These stubs are temporary and are discarded with
-  // the cloned module once the analysis ends, so the tag never escapes. The
-  // tag is also what keeps the rest of the pipeline below off `root` and the
-  // helpers.
-  for (auto &[Entry, OutlinedFn] : Functions)
-    FunctionTags::Isolated.addTo(OutlinedFn->Function.get());
-
-  // When `--debug-names` is set, rename each outlined stub from the
-  // metaaddress-based identifier to its source-symbol name, using the same
-  // `llvmName` scheme as the rest of the pipeline. Done before anything runs,
-  // so that whatever a pass logs or dumps says the same names.
-  if (DebugNames) {
-    for (auto &[Entry, OutlinedFn] : Functions) {
-      llvm::Function *F = OutlinedFn->Function.get();
-      F->setName(llvmName(Binary->Functions().at(Entry)));
-    }
-  }
-
-  Task.advance("Prepare the functions");
-  prepareFunctions(M, Binary->Architecture());
+  // Preserve the diagnostic boundary: the module contains every prepared
+  // stub immediately before the fixed-point analysis reads them.
+  if (not DumpPostInline.empty())
+    dumpModule(&M, DumpPostInline.c_str());
 
   // Push this into analyzeFunction
   OpaqueRegisterUser RegisterUser(&M);

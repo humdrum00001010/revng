@@ -74,6 +74,7 @@ target_link_libraries(
   test_function_isolation
   revngFunctionIsolation
   revngEarlyFunctionAnalysis
+  revngBasicAnalyses
   revngModel
   revngSupport
   revngUnitTestHelpers

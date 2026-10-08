@@ -10,8 +10,12 @@ bool init_unit_test();
 
 #include "llvm/IR/InstIterator.h"
 
+#include "revng/BasicAnalyses/CSVGlobals.h"
+#include "revng/BasicAnalyses/RootFunction.h"
+#include "revng/EarlyFunctionAnalysis/CFGAnalyzer.h"
 #include "revng/EarlyFunctionAnalysis/CallEdge.h"
 #include "revng/EarlyFunctionAnalysis/FunctionEdge.h"
+#include "revng/EarlyFunctionAnalysis/FunctionSummaryOracle.h"
 #include "revng/FunctionIsolation/IsolateFunctions.h"
 #include "revng/Model/IRHelpers.h"
 #include "revng/Support/BlockType.h"
@@ -20,6 +24,120 @@ bool init_unit_test();
 
 using namespace llvm;
 using namespace revng::pypeline;
+
+BOOST_AUTO_TEST_CASE(OutliningLeavesPreparedSiblingAndRootUnchanged) {
+  Model TheModel;
+  model::Binary &Binary = *TheModel.get();
+  Binary.Architecture() = model::Architecture::x86_64;
+  MetaAddress Entry(0x1000, MetaAddressType::Code_x86_64);
+  MetaAddress SiblingEntry(0x2000, MetaAddressType::Code_x86_64);
+  Binary.Functions()[Entry];
+
+  LLVMRootContainer Input;
+  Module &M = Input.getModule();
+  LLVMContext &Context = M.getContext();
+  M.setDataLayout("e-m:e-i64:64-f80:128-n8:16:32:64-S128");
+  M.setTargetTriple("x86_64-pc-linux-gnu");
+  auto AddGlobal = [&](StringRef Name, unsigned Bits) {
+    auto *Type = IntegerType::get(Context, Bits);
+    return new GlobalVariable(M,
+                              Type,
+                              false,
+                              GlobalValue::ExternalLinkage,
+                              ConstantInt::get(Type, 0),
+                              Name);
+  };
+  AddGlobal(model::Architecture::getPCCSVName(Binary.Architecture()), 64);
+  auto StackPointer = model::Architecture::getStackPointer(Binary
+                                                             .Architecture());
+  AddGlobal(model::Register::singleCSVName(StackPointer), 64);
+  AddGlobal("pc_epoch", 32);
+  AddGlobal("pc_address_space", 16);
+  AddGlobal("pc_type", 16);
+  GlobalVariable *CSV = AddGlobal("rax", 64);
+
+  auto *Void = Type::getVoidTy(Context);
+  auto *Pointer = Type::getInt8PtrTy(Context);
+  auto *I64 = Type::getInt64Ty(Context);
+  auto *NewPCType = FunctionType::get(Void,
+                                      { Pointer, I64, I64, Pointer },
+                                      false);
+  Function *NewPC = NewPCHelper
+                      .create(M, NewPCType, GlobalValue::ExternalLinkage)
+                      .function();
+  auto MarkPC =
+    [&](revng::IRBuilder &Builder, MetaAddress Address, MetaAddress Owner) {
+      Builder.CreateCall(NewPC,
+                         { BasicBlockID(Address).toValue(&M),
+                           Builder.getInt64(5),
+                           Builder.getInt64(1),
+                           Owner.toValue(&M) });
+    };
+  auto *Root = Function::Create(FunctionType::get(Void, false),
+                                GlobalValue::ExternalLinkage,
+                                "root",
+                                M);
+  auto AddBlock = [&](StringRef Name) {
+    return BasicBlock::Create(Context, Name, Root);
+  };
+  BasicBlock *Prologue = AddBlock("entry");
+  BasicBlock *Dispatcher = AddBlock("dispatcher");
+  BasicBlock *AnyPC = AddBlock("anypc");
+  BasicBlock *UnexpectedPC = AddBlock("unexpectedpc");
+  BasicBlock *Body = AddBlock("body");
+  BranchInst::Create(Dispatcher, Prologue);
+  setBlockType(BranchInst::Create(Body, Dispatcher),
+               BlockType::RootDispatcherBlock);
+  setBlockType(BranchInst::Create(Dispatcher, AnyPC), BlockType::AnyPCBlock);
+  setBlockType(BranchInst::Create(Dispatcher, UnexpectedPC),
+               BlockType::UnexpectedPCBlock);
+  revng::IRBuilder RootBuilder(Body);
+  MarkPC(RootBuilder, Entry, MetaAddress::invalid());
+  RootBuilder.CreateBr(AnyPC);
+
+  // CSV promotion introduces a prologue before an outlined stub's newpc.
+  // Outlining another entry must not split this already prepared CFG.
+  auto *Sibling = Function::Create(FunctionType::get(Void, false),
+                                   GlobalValue::ExternalLinkage,
+                                   "prepared_sibling",
+                                   M);
+  FunctionTags::Isolated.addTo(Sibling);
+  revng::IRBuilder SiblingBuilder(BasicBlock::Create(Context,
+                                                     "entry",
+                                                     Sibling));
+  SiblingBuilder.CreateLoad(CSV->getValueType(), CSV);
+  MarkPC(SiblingBuilder, SiblingEntry, SiblingEntry);
+  SiblingBuilder.CreateRetVoid();
+
+  auto Print = [](const Function &F) {
+    std::string Result;
+    raw_string_ostream OS(Result);
+    F.print(OS);
+    return Result;
+  };
+  std::string RootBefore = Print(*Root);
+  std::string SiblingBefore = Print(*Sibling);
+  RootFunction RootInfo(M);
+  CSVGlobals Globals(Binary, M);
+  efa::PrototypeImporter Importer{ efa::PrototypeImportLevel::None, M, {} };
+  efa::FunctionSummaryOracle Oracle(Binary, std::move(Importer));
+  Oracle.setDefault(efa::FunctionSummary());
+  Oracle.registerLocalFunction(Entry, efa::FunctionSummary());
+  efa::CFGAnalyzer Analyzer(M, RootInfo, Globals, TheModel.get(), Oracle);
+  auto Outlined = Analyzer.outline(Entry);
+
+  BOOST_CHECK_EQUAL(Print(*Root), RootBefore);
+  BOOST_CHECK_EQUAL(Print(*Sibling), SiblingBefore);
+  BOOST_CHECK_EQUAL(Sibling->size(), 1);
+  for (Instruction &I : instructions(Outlined.Function.get())) {
+    if (auto PC = NewPCHelper.getCall(&I); PC and startsBasicBlock(*PC))
+      BOOST_CHECK(&I == I.getParent()->getFirstNonPHI());
+    if (auto *Call = dyn_cast<CallInst>(&I);
+        Call != nullptr and Call->getCalledFunction() == Analyzer.preCallHook())
+      BOOST_CHECK(&I == I.getParent()->getFirstNonPHI());
+  }
+  revng::forceVerify(&M);
+}
 
 BOOST_AUTO_TEST_CASE(CallInsideFunctionInlinedTwice) {
   BOOST_TEST_CHECKPOINT("Create the synthetic model");
