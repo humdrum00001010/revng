@@ -532,6 +532,24 @@ target_link_libraries(
 add_test(NAME test_dla_steps COMMAND test_dla_steps)
 
 #
+# test_dla_model_types
+#
+
+revng_add_test_executable(test_dla_model_types "${SRC}/DLAModelTypes.cpp")
+target_compile_definitions(test_dla_model_types PRIVATE "BOOST_TEST_DYN_LINK=1")
+target_include_directories(test_dla_model_types PRIVATE "${CMAKE_SOURCE_DIR}"
+                                                      "${Boost_INCLUDE_DIRS}")
+target_link_libraries(
+  test_dla_model_types
+  revngDataLayoutAnalysis
+  revngModel
+  revngSupport
+  revngUnitTestHelpers
+  Boost::unit_test_framework
+  ${LLVM_LIBRARIES})
+add_test(NAME test_dla_model_types COMMAND test_dla_model_types)
+
+#
 # test_clift_type
 #
 

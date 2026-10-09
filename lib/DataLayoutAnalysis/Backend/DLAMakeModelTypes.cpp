@@ -7,6 +7,8 @@
 #include <limits>
 #include <variant>
 
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -133,6 +135,85 @@ static bool representsTypeDefinition(const LayoutTypeSystemNode *Node) {
 static const LTSN *getPointeeNode(const LTSN *PointerNode) {
   revng_assert(isPointerNode(PointerNode));
   return PointerNode->Successors.begin()->first;
+}
+
+using PointerNodes = llvm::DenseSet<const LTSN *>;
+
+/// Find complete scalar-pointer cycles, treating resolved nodes as terminals.
+/// Each scalar pointer has one successor, so a path that revisits one of its
+/// nodes identifies exactly one strongly connected component. Completed paths
+/// are shared across roots to avoid repeatedly traversing common tails.
+static PointerNodes findScalarPointerCycles(const LayoutTypeSystem &TS,
+                                            const PointerNodes &Terminals) {
+  PointerNodes Cyclic;
+  llvm::SmallVector<const LTSN *, 16> Path;
+  // An index marks a node on the current path; nullopt marks a completed
+  // path. Retain this state across roots, without clearing a map whose
+  // capacity can be much larger than the next path.
+  llvm::DenseMap<const LTSN *, std::optional<size_t>> State;
+  for (const LTSN *Root : llvm::nodes(&TS)) {
+    Path.clear();
+    const LTSN *Node = Root;
+    while (isPointerNode(Node) and not Terminals.contains(Node)) {
+      revng_assert(Node->Successors.size() == 1
+                   and isPointerEdge(*Node->Successors.begin()));
+      auto [It, New] = State.try_emplace(Node, Path.size());
+      if (not New) {
+        if (It->second.has_value())
+          Cyclic.insert(Path.begin() + *It->second, Path.end());
+        break;
+      }
+      Path.push_back(Node);
+      Node = getPointeeNode(Node);
+    }
+    for (const LTSN *Visited : Path)
+      State[Visited] = std::nullopt;
+  }
+  return Cyclic;
+}
+
+static PointerNodes
+resolveScalarPointerCycles(const LayoutTypeSystem &TS,
+                           NodeToUpcastableTypeMap &NodesToTypes,
+                           const TupleTree<model::Binary> &Model) {
+  PointerNodes Cyclic = findScalarPointerCycles(TS, {});
+  for (const LTSN *Node : Cyclic) {
+    revng_assert(Node->Size == getPointerSize(Model->Architecture()));
+    // PointerType owns its pointee. A pointer-only cycle therefore has no
+    // finite model representation. Resolve every member to void * before
+    // building entering chains, so the result does not depend on the root or
+    // traversal order. Existing definition anchors remain unaffected.
+    NodesToTypes[Node] = model::PointerType::
+      make(model::PrimitiveType::makeVoid(), Model->Architecture());
+  }
+  return Cyclic;
+}
+
+static bool
+verifyScalarResolutionGraph(const LayoutTypeSystem &TS,
+                            const NodeToUpcastableTypeMap &NodesToTypes,
+                            const PointerNodes &Resolved,
+                            model::Architecture::Values Architecture) {
+  PointerNodes Cyclic = findScalarPointerCycles(TS, {});
+  if (Cyclic.size() != Resolved.size())
+    return false;
+  for (const LTSN *Node : Cyclic) {
+    if (not Resolved.contains(Node)
+        or Node->Size != getPointerSize(Architecture))
+      return false;
+    const auto *Pointer = dyn_cast<model::PointerType>(NodesToTypes.at(Node)
+                                                         .get());
+    if (not Pointer or Pointer->PointerSize() != Node->Size)
+      return false;
+    const auto *Pointee = dyn_cast<model::PrimitiveType>(Pointer->PointeeType()
+                                                           .get());
+    if (not Pointee or Pointee->PrimitiveKind() != model::PrimitiveKind::Void)
+      return false;
+  }
+  // The scalar resolution graph must be acyclic after the explicitly
+  // resolved SCC members become terminals. Keep the global pointer-DAG
+  // verifier strict: this is the backend's narrower representability check.
+  return findScalarPointerCycles(TS, Resolved).empty();
 }
 
 static UpcastableType makeStructOrUnion(TupleTree<model::Binary> &Model,
@@ -319,7 +400,9 @@ static UpcastableType makeFieldType(const LTSN *FieldNode,
 }
 
 static void logEntry(const LayoutTypeSystem &TS,
-                     TupleTree<model::Binary> &Model) {
+                     TupleTree<model::Binary> &Model,
+                     const NodeToUpcastableTypeMap &NodesToTypes,
+                     const PointerNodes &Resolved) {
   if (Log.isEnabled())
     TS.dumpDotOnFile("before-make-model.dot");
 
@@ -328,16 +411,24 @@ static void logEntry(const LayoutTypeSystem &TS,
 
   if (VerifyLog.isEnabled()) {
     revng_assert(Model->verify(true));
-    revng_assert(TS.verifyPointerDAG() and TS.verifyDAG()
-                 and TS.verifyUnions());
+    revng_assert(TS.verifyDAG() and TS.verifyUnions());
+    revng_assert(verifyScalarResolutionGraph(TS,
+                                             NodesToTypes,
+                                             Resolved,
+                                             Model->Architecture()));
   }
 }
 
 static void logExit(const LayoutTypeSystem &TS,
-                    TupleTree<model::Binary> &Model) {
+                    TupleTree<model::Binary> &Model,
+                    const NodeToUpcastableTypeMap &NodesToTypes,
+                    const PointerNodes &Resolved) {
   if (VerifyLog.isEnabled()) {
-    revng_assert(TS.verifyPointerDAG() and TS.verifyDAG()
-                 and TS.verifyUnions());
+    revng_assert(TS.verifyDAG() and TS.verifyUnions());
+    revng_assert(verifyScalarResolutionGraph(TS,
+                                             NodesToTypes,
+                                             Resolved,
+                                             Model->Architecture()));
     revng_assert(Model->verify(true));
   }
 
@@ -495,9 +586,9 @@ static void makeScalars(const LayoutTypeSystem &TS,
 TypeMapT dla::makeModelTypes(const LayoutTypeSystem &TS,
                              const LayoutTypePtrVect &Values,
                              TupleTree<model::Binary> &Model) {
-  logEntry(TS, Model);
-
   NodeToUpcastableTypeMap NodesToTypes{ TS };
+  PointerNodes Resolved = resolveScalarPointerCycles(TS, NodesToTypes, Model);
+  logEntry(TS, Model, NodesToTypes, Resolved);
   makeTypeDefinitions(TS, NodesToTypes, Model);
   makeScalars(TS, NodesToTypes, Model);
 
@@ -525,7 +616,7 @@ TypeMapT dla::makeModelTypes(const LayoutTypeSystem &TS,
     }
   }
 
-  logExit(TS, Model);
+  logExit(TS, Model, NodesToTypes, Resolved);
 
   return mapLLVMValuesToModelTypes(TS, Values, NodesToTypes.types());
 }
