@@ -11,11 +11,12 @@ from collections.abc import Buffer
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, AsyncContextManager, Collection, Iterable, Mapping
+from typing import TYPE_CHECKING, Annotated, AsyncContextManager, Collection, Iterable, Iterator
+from typing import Mapping
 from urllib.parse import urlparse
 
 from revng.pypeline.container import ConfigurationId, ContainerID
-from revng.pypeline.model import Model, ModelDiff, ModelPathSet
+from revng.pypeline.model import Model, ModelDiff, ModelPath, ModelPathSet
 from revng.pypeline.object import ObjectID, ObjectSet
 from revng.pypeline.storage.notification_queue import LOCAL_QUEUE
 from revng.pypeline.task.pipe import ObjectDependencies, PipeCustomInvalidation
@@ -133,15 +134,52 @@ class SetModelResult:
 
 
 @dataclass
+class ObjectDependencyClasses:
+    """
+    Dependencies between the objects produced by a task and the model, with
+    the model paths that are read by exactly the same objects listed once, as
+    a class, and every object listing its classes (see
+    `revng.pypeline.task.pipe.DependencyClasses`). It stands for the same
+    (container, object, path) triples `ObjectDependencies` lists: `rows()`
+    gives them.
+    """
+
+    # The model paths, each once
+    paths: list[ModelPath]
+    # For each class, the indices in `paths` of the paths it is made of
+    classes: list[list[int]]
+    # The objects, each with the indices in `classes` of its classes
+    objects: list[tuple[ContainerID, ObjectID, list[int]]]
+
+    def empty(self) -> bool:
+        return len(self.objects) == 0
+
+    def rows(self) -> Iterator[tuple[ContainerID, ObjectID, ModelPath]]:
+        paths = self.paths
+        classes = self.classes
+        for container_id, object_id, class_indexes in self.objects:
+            for class_index in class_indexes:
+                for path_index in classes[class_index]:
+                    yield (container_id, object_id, paths[path_index])
+
+
+@dataclass
 class PipeDependencies:
     pipe_id: int
     savepoints_range: SavePointsRange
     configuration: ConfigurationId
     dependencies: ObjectDependencies
     custom_invalidation: PipeCustomInvalidation
+    # Further dependencies, in the form of classes. Only handed to a storage
+    # provider whose `supports_dependency_classes` says it takes them.
+    classes: ObjectDependencyClasses | None = None
 
     def empty(self) -> bool:
-        return len(self.dependencies) == 0 and not self.has_custom_invalidation()
+        return (
+            len(self.dependencies) == 0
+            and (self.classes is None or self.classes.empty())
+            and not self.has_custom_invalidation()
+        )
 
     def has_custom_invalidation(self):
         return not all(len(x) == 0 for x in self.custom_invalidation)
@@ -265,6 +303,13 @@ class StorageProvider(ABC):
         All the object **have to** be present, as one should call `get_available`
         first to check it.
         """
+
+    def supports_dependency_classes(self) -> bool:
+        """
+        Whether `add_objects` handles `PipeDependencies.classes`. If not, the
+        caller expands the classes into `PipeDependencies.dependencies`.
+        """
+        return False
 
     @abstractmethod
     def add_objects(

@@ -13,12 +13,18 @@
 #include "llvm/IR/Value.h"
 #include "llvm/Support/ManagedStatic.h"
 
+#include "revng/Support/AccessTracker.h"
 #include "revng/Support/Assert.h"
 #include "revng/Support/CommandLine.h"
 #include "revng/Support/Debug.h"
+#include "revng/Support/PipeFixes.h"
 
 namespace cl = llvm::cl;
 using llvm::Twine;
+
+revng::AccessLogs *revng::ActiveAccessLogs = nullptr;
+
+bool pipefix::DependencyClassesWanted = false;
 
 static cl::opt<unsigned> MaxLocationLength("debug-location-max-length",
                                            cl::desc("emit file and line number "

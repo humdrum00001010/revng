@@ -35,9 +35,32 @@ PipeCustomInvalidation = Annotated[
 
 
 @dataclass
+class DependencyClasses:
+    """
+    The dependencies of the objects produced by a Pipe in a form whose size
+    does not grow with the product of the objects and of what each one reads.
+
+    The model paths that are read by exactly the same objects form a class,
+    which is listed once; every object lists the classes it depends on. An
+    object depends on a path if the path is in one of its classes: expanding
+    the classes gives the pairs `PipeObjectDependencies` would hold.
+    """
+
+    # The model paths, each once
+    paths: list[ModelPath]
+    # For each class, the indices in `paths` of the paths it is made of
+    classes: list[list[int]]
+    # For the i-th container in the Pipe's signature, the objects produced,
+    # each with the indices in `classes` of the classes it depends on
+    arguments: list[list[tuple[ObjectID, list[int]]]]
+
+
+@dataclass
 class PipeDependencies:
     dependencies: PipeObjectDependencies
     custom_invalidation: PipeCustomInvalidation = field(default_factory=list)
+    # When set, the dependencies are here and `dependencies` holds no pair
+    classes: DependencyClasses | None = None
 
 
 ObjectDependencies = Annotated[

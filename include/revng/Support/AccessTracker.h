@@ -5,6 +5,7 @@
 //
 
 #include <cstdint>
+#include <vector>
 
 #include "llvm/ADT/StringRef.h"
 
@@ -15,6 +16,22 @@ void onFieldAccess(llvm::StringRef FieldName,
                    llvm::StringRef StructName) debug_function;
 
 namespace revng {
+
+class AccessTracker;
+
+/// Logs of the trackers that get marked, for consumers that want to visit only
+/// what was read instead of the whole tree (see TouchedTracking). Both are
+/// null unless such a consumer is active. Not thread safe, like the trackers.
+struct AccessLogs {
+  /// Trackers whose top bit went from clear to set
+  std::vector<AccessTracker *> Trackers;
+
+  /// Containers in which a key was looked up, identified by their `Exact`
+  /// tracker, logged once per container until its tracking is cleared
+  std::vector<const AccessTracker *> KeyLookups;
+};
+
+extern AccessLogs *ActiveAccessLogs;
 
 ///
 /// A AccessCounter is optimized std::stack<bool> that can contain up to 8
@@ -58,7 +75,19 @@ public:
     IsTracking = true;
   }
 
-  void access() { Counter |= (0x1 & IsTracking); }
+  void access() {
+    if (IsTracking and (Counter & 0x1) == 0) {
+      Counter |= 0x1;
+      if (ActiveAccessLogs != nullptr) [[unlikely]]
+        ActiveAccessLogs->Trackers.push_back(this);
+    }
+  }
+
+  /// Mark as read without logging: used to put back a mark that a partial
+  /// clear removed
+  void restoreMark() { Counter |= 0x1; }
+
+  void resumeTracking() { IsTracking = true; }
 
   void push() {
     bool HasLeadingZeroes = llvm::countLeadingZeros(Counter) != 0;

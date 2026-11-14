@@ -8,12 +8,14 @@ import enum
 from abc import ABC, abstractmethod
 from typing import Generator, cast
 
-from revng.pypeline.container import ConfigurationId, ContainerDeclaration, ContainerSet
+from revng.pypeline.container import ConfigurationId, ContainerDeclaration, ContainerID
+from revng.pypeline.container import ContainerSet
 from revng.pypeline.model import ReadOnlyModel
+from revng.pypeline.object import ObjectID
 from revng.pypeline.pipeline_node import PipelineConfiguration, PipelineNode
 from revng.pypeline.runner_context import RunnerContext
-from revng.pypeline.storage.storage_provider import PipeDependencies, StorageProvider
-from revng.pypeline.storage.storage_provider import StorageProviderFileProvider
+from revng.pypeline.storage.storage_provider import ObjectDependencyClasses, PipeDependencies
+from revng.pypeline.storage.storage_provider import StorageProvider, StorageProviderFileProvider
 from revng.pypeline.task.pipe import ObjectDependencies, Pipe
 from revng.pypeline.task.requests import Requests
 from revng.pypeline.task.savepoint import SavePoint
@@ -210,6 +212,28 @@ class PipeScheduledTask(ScheduledTask):
                         "invalidation data for a read-only container"
                     )
 
+        # The pipe might have reported the dependencies as classes of model
+        # paths instead of as pairs
+        classes: ObjectDependencyClasses | None = None
+        if pipe_output.classes is not None:
+            objects: list[tuple[ContainerID, ObjectID, list[int]]] = []
+            for index, entries in enumerate(pipe_output.classes.arguments):
+                container_type = task.signature()[index]
+                if container_type.access == TaskArgumentAccess.READ:
+                    assert len(entries) == 0, (
+                        "An read only container cannot produce new objects so it can't add "
+                        f"dependencies. For container {container_type.name} got dependencies "
+                        f"for {len(entries)} objects"
+                    )
+                name = self.node.bindings[index].name
+                objects.extend((name, obj, class_indexes) for obj, class_indexes in entries)
+            classes = ObjectDependencyClasses(
+                pipe_output.classes.paths, pipe_output.classes.classes, objects
+            )
+            if not self.storage_provider.supports_dependency_classes():
+                dependencies.extend(classes.rows())
+                classes = None
+
         assert self.node.savepoint_range is not None, "Savepoint range should be set for all Pipes"
         configuration_id: ConfigurationId = self.node.configuration_id(self.configuration)
         self.computed_dependencies = PipeDependencies(
@@ -218,6 +242,7 @@ class PipeScheduledTask(ScheduledTask):
             configuration_id,
             dependencies,
             pipe_output.custom_invalidation,
+            classes,
         )
 
 

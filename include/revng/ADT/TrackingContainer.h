@@ -74,19 +74,33 @@ private:
 
   mutable bool TrackingIsActive = false;
 
+  /// Whether this container already told the access logs that one of its keys
+  /// was looked up since its tracking was last cleared
+  mutable bool KeyLookupLogged = false;
+
 public:
   /// \defgroup Methods related to tracking
   /// @{
 
   void stopTracking() const { TrackingIsActive = false; }
+  void resumeTracking() const { TrackingIsActive = true; }
   void clearTracking() const {
     Exact.clear();
+    dropInspectedKeys();
+    TrackingIsActive = true;
+  }
+
+  /// Forget the keys that were looked up, in all layers, and nothing else
+  void dropInspectedKeys() const {
     NonExisting = {};
     NonExisting.push_back(TrackingSet());
     Existing = {};
     Existing.push_back(llvm::BitVector(Content.size()));
-    TrackingIsActive = true;
+    KeyLookupLogged = false;
   }
+
+  /// The address that identifies this container in the access logs
+  const AccessTracker *trackingIdentity() const { return &Exact; }
 
   TrackingResult getTrackingResult() const {
     TrackingResult ToReturn;
@@ -341,6 +355,7 @@ public:
 
     if (Quantity == 0) {
       NonExisting.back().insert(Key);
+      logKeyLookup();
     } else {
       markExistingKey(Key);
     }
@@ -352,8 +367,10 @@ public:
   value_type *tryGet(const key_type &Key) {
     auto Iter = Content.find(Key);
     if (Iter == Content.end()) {
-      if (TrackingIsActive)
+      if (TrackingIsActive) {
         NonExisting.back().insert(Key);
+        logKeyLookup();
+      }
       return nullptr;
     }
 
@@ -367,8 +384,10 @@ public:
 #endif
     auto Iter = Content.find(Key);
     if (Iter == Content.end()) {
-      if (TrackingIsActive)
+      if (TrackingIsActive) {
         NonExisting.back().insert(Key);
+        logKeyLookup();
+      }
       return nullptr;
     }
 
@@ -463,6 +482,15 @@ private:
     revng_assert(Existing.back().size() == Content.size());
 
     Existing.back()[std::distance(Content.begin(), Iter)] = true;
+    logKeyLookup();
+  }
+
+  void logKeyLookup() const {
+    if (not KeyLookupLogged) {
+      KeyLookupLogged = true;
+      if (ActiveAccessLogs != nullptr)
+        ActiveAccessLogs->KeyLookups.push_back(&Exact);
+    }
   }
 
   TrackingSet getNonExistingRequestedKeys() const {

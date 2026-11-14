@@ -26,7 +26,7 @@ from revng.pypeline.model import Model, ModelDiff, ModelPathSet
 from revng.pypeline.object import ObjectID
 from revng.pypeline.pipeline import Pipeline
 from revng.pypeline.task.pipe import PipeCustomInvalidation
-from revng.pypeline.utils import Locked, crypto_hash
+from revng.pypeline.utils import Locked, crypto_hash, fixes
 from revng.pypeline.utils.db_migrator import DBMigrator
 from revng.pypeline.utils.logger import pypeline_logger
 from revng.pypeline.utils.pipeline import get_pipeline_description
@@ -88,6 +88,10 @@ VALUES (?, ?, ?, ?, ?, ?)
 """
 
 PUT_DEPENDENCIES_QUERY = "REPLACE INTO dependencies VALUES (?, ?, ?, ?, ?, ?)"
+
+PUT_CLASS_PATH_QUERY = "INSERT INTO dependency_class_paths VALUES (?, ?)"
+
+PUT_CLASS_OBJECT_QUERY = "REPLACE INTO dependency_class_objects VALUES (?, ?, ?, ?, ?, ?)"
 
 # Invalidation queries, these takes care, given populated tables `model_paths`
 # and `additional_objects`, to remove all the applicable entries from the DB.
@@ -157,6 +161,133 @@ WHERE rowid in (
         AND dependencies.configuration_hash = invalidated_objects.configuration_hash
         AND dependencies.object_id = invalidated_objects.object_id
 );
+"""
+
+# The same selection as `INVALIDATE_QUERY`, arranged so that its cost follows
+# the number of objects involved instead of the product of the stored objects
+# and the matching dependency rows:
+# 1. The matching dependency rows are first reduced to the distinct
+#    (savepoint range, configuration, object) they name.
+# 2. For each of those, the stored objects are looked up through the index on
+#    `object_id` (the `CROSS JOIN` fixes that join order); the objects the root
+#    depends on through one of its children are a separate, small query.
+# 3. The dependency rows of the invalidated objects are found through the
+#    primary key of `dependencies`.
+INVALIDATE_QUERY_INDEXED = """
+CREATE TEMPORARY TABLE matched_dependencies_{uuid} AS
+    SELECT DISTINCT savepoint_id_start, savepoint_id_end, configuration_hash, object_id
+    FROM dependencies
+    WHERE dependencies.model_path IN (SELECT path FROM model_paths_{uuid})
+  UNION
+    SELECT savepoint_id_start, savepoint_id_end, configuration_hash, object_id
+    FROM additional_objects_{uuid};
+
+INSERT INTO invalidated_objects_{uuid}
+    SELECT objects.rowid
+    FROM matched_dependencies_{uuid} AS dependencies
+    CROSS JOIN objects INDEXED BY object_id_on_object
+    WHERE objects.object_id >= dependencies.object_id
+      AND objects.object_id <= CAST((dependencies.object_id || {objectid_mask}) AS BLOB)
+      AND objects.configuration_hash = dependencies.configuration_hash
+      AND objects.savepoint_id >= dependencies.savepoint_id_start
+      AND objects.savepoint_id <= dependencies.savepoint_id_end
+  UNION
+    SELECT objects.rowid
+    FROM objects INDEXED BY object_id_on_object
+    WHERE objects.object_id = x''
+      AND EXISTS (
+        SELECT 1
+        FROM matched_dependencies_{uuid} AS dependencies
+        WHERE dependencies.object_id != x''
+          AND objects.configuration_hash = dependencies.configuration_hash
+          AND objects.savepoint_id >= dependencies.savepoint_id_start
+          AND objects.savepoint_id <= dependencies.savepoint_id_end
+      );
+
+DROP TABLE matched_dependencies_{uuid};
+
+DELETE FROM dependencies
+WHERE (savepoint_id_start, container_id, configuration_hash, object_id) IN (
+    SELECT savepoint_id, container_id, configuration_hash, object_id
+    FROM objects
+    WHERE rowid IN (SELECT object_row_id FROM invalidated_objects_{uuid})
+);
+"""
+
+# `INVALIDATE_QUERY_INDEXED` for a database that also holds dependencies in the
+# form of classes (see the `v4` migration). The objects that depend on a
+# changed path through one of their classes are found from the path to the
+# classes it is in, and from those to the objects that list them; the rest is
+# as above. The classes that no object lists any longer are dropped.
+INVALIDATE_QUERY_CLASSES = """
+CREATE TEMPORARY TABLE matched_dependencies_{uuid} AS
+    SELECT DISTINCT savepoint_id_start, savepoint_id_end, configuration_hash, object_id
+    FROM dependencies
+    WHERE dependencies.model_path IN (SELECT path FROM model_paths_{uuid})
+  UNION
+    SELECT DISTINCT savepoint_id_start, savepoint_id_end, configuration_hash, object_id
+    FROM dependency_class_objects
+    WHERE class_id IN (
+        SELECT class_id
+        FROM dependency_class_paths
+        WHERE model_path IN (SELECT path FROM model_paths_{uuid})
+    )
+  UNION
+    SELECT savepoint_id_start, savepoint_id_end, configuration_hash, object_id
+    FROM additional_objects_{uuid};
+
+INSERT INTO invalidated_objects_{uuid}
+    SELECT objects.rowid
+    FROM matched_dependencies_{uuid} AS dependencies
+    CROSS JOIN objects INDEXED BY object_id_on_object
+    WHERE objects.object_id >= dependencies.object_id
+      AND objects.object_id <= CAST((dependencies.object_id || {objectid_mask}) AS BLOB)
+      AND objects.configuration_hash = dependencies.configuration_hash
+      AND objects.savepoint_id >= dependencies.savepoint_id_start
+      AND objects.savepoint_id <= dependencies.savepoint_id_end
+  UNION
+    SELECT objects.rowid
+    FROM objects INDEXED BY object_id_on_object
+    WHERE objects.object_id = x''
+      AND EXISTS (
+        SELECT 1
+        FROM matched_dependencies_{uuid} AS dependencies
+        WHERE dependencies.object_id != x''
+          AND objects.configuration_hash = dependencies.configuration_hash
+          AND objects.savepoint_id >= dependencies.savepoint_id_start
+          AND objects.savepoint_id <= dependencies.savepoint_id_end
+      );
+
+DROP TABLE matched_dependencies_{uuid};
+
+DELETE FROM dependencies
+WHERE (savepoint_id_start, container_id, configuration_hash, object_id) IN (
+    SELECT savepoint_id, container_id, configuration_hash, object_id
+    FROM objects
+    WHERE rowid IN (SELECT object_row_id FROM invalidated_objects_{uuid})
+);
+
+CREATE TEMPORARY TABLE released_classes_{uuid} AS
+    SELECT DISTINCT class_id
+    FROM dependency_class_objects
+    WHERE (savepoint_id_start, container_id, configuration_hash, object_id) IN (
+        SELECT savepoint_id, container_id, configuration_hash, object_id
+        FROM objects
+        WHERE rowid IN (SELECT object_row_id FROM invalidated_objects_{uuid})
+    );
+
+DELETE FROM dependency_class_objects
+WHERE (savepoint_id_start, container_id, configuration_hash, object_id) IN (
+    SELECT savepoint_id, container_id, configuration_hash, object_id
+    FROM objects
+    WHERE rowid IN (SELECT object_row_id FROM invalidated_objects_{uuid})
+);
+
+DELETE FROM dependency_class_paths
+WHERE class_id IN (SELECT class_id FROM released_classes_{uuid})
+  AND class_id NOT IN (SELECT class_id FROM dependency_class_objects);
+
+DROP TABLE released_classes_{uuid};
 """
 
 # Second part of `INVALIDATE_QUERY`, this is a separate variable due to a
@@ -324,6 +455,7 @@ class LocalStorageProviderFactory(StorageProviderFactory):
             model_path=temp_dir_path / model_name,
             cache_dir=temp_dir_path / "cache",
             pipeline_hash=pipeline_hash,
+            temporary=True,
         )
 
         return (storage_provider, temporary_dir)
@@ -377,7 +509,14 @@ class _MetadataUpdate(enum.Enum):
 class LocalStorageProvider(StorageProvider):
     """StorageProvider implementation with backing sqlite3 db"""
 
-    def __init__(self, db_path: str | Path, model_path: Path, cache_dir: Path, pipeline_hash: str):
+    def __init__(
+        self,
+        db_path: str | Path,
+        model_path: Path,
+        cache_dir: Path,
+        pipeline_hash: str,
+        temporary: bool = False,
+    ):
         check_kind_structure()
         self._model_path = model_path
         self._model_directory = self._model_path.parent.resolve()
@@ -388,6 +527,14 @@ class LocalStorageProvider(StorageProvider):
         # Give dependency indexes a lazy 64 MiB page cache target.
         # SQLite page and allocator overhead also adds to process memory.
         self._connection.execute("PRAGMA cache_size=-65536")
+        if temporary and fixes.enabled(fixes.TEMPORARY_DB_SETTINGS):
+            # The database is deleted when the command ends: what it holds
+            # does not have to survive a crash. Transactions still roll back.
+            # These two cannot be changed inside a transaction.
+            self._connection.autocommit = True
+            self._connection.execute("PRAGMA journal_mode=MEMORY")
+            self._connection.execute("PRAGMA synchronous=OFF")
+            self._connection.autocommit = False
         self._init_tables()
         self.epoch = self._get_epoch()
 
@@ -480,28 +627,100 @@ class LocalStorageProvider(StorageProvider):
         obj_id_type: type[ObjectID] = get_singleton(ObjectID)  # type: ignore[type-abstract]
         return {obj_id_type.from_bytes(x[0]): x[1] for x in result}
 
+    def supports_dependency_classes(self) -> bool:
+        return fixes.enabled(fixes.DEPENDENCY_CLASSES)
+
+    def _add_dependency_classes(self, cursor: sqlite3.Cursor, dependency: PipeDependencies):
+        classes = dependency.classes
+        assert classes is not None
+        if classes.empty():
+            return
+
+        # The classes get identifiers that follow the ones in use
+        cursor.execute("SELECT COALESCE(MAX(class_id), -1) + 1 FROM dependency_class_paths")
+        first_id: int = cursor.fetchone()[0]
+
+        # Only the classes some object lists are stored
+        used = sorted({index for _, _, indexes in classes.objects for index in indexes})
+        paths = classes.paths
+        cursor.executemany(
+            PUT_CLASS_PATH_QUERY,
+            (
+                (first_id + class_index, paths[path_index])
+                for class_index in used
+                for path_index in classes.classes[class_index]
+            ),
+        )
+
+        def object_rows():
+            start = dependency.savepoints_range.start
+            end = dependency.savepoints_range.end
+            configuration = dependency.configuration
+            for container_id, object_id, class_indexes in classes.objects:
+                check_object_id_supported_by_sql(object_id)
+                object_bytes = object_id.to_bytes()
+                for class_index in class_indexes:
+                    yield (
+                        start,
+                        end,
+                        container_id,
+                        configuration,
+                        object_bytes,
+                        first_id + class_index,
+                    )
+
+        cursor.executemany(PUT_CLASS_OBJECT_QUERY, object_rows())
+
     def add_objects(
         self,
         dependencies: list[PipeDependencies],
         objects: Mapping[ContainerLocation, Mapping[ObjectID, Buffer]],
     ) -> None:
+        batched = fixes.enabled(fixes.BATCHED_INSERTS)
+
+        def dependency_rows(dependency: PipeDependencies):
+            # The rows of an object come one after the other: convert its
+            # identifier once
+            last_object_id = None
+            last_bytes = None
+            for container_id, object_id, model_path in dependency.dependencies:
+                if object_id is not last_object_id:
+                    check_object_id_supported_by_sql(object_id)
+                    last_object_id = object_id
+                    last_bytes = object_id.to_bytes()
+                yield (
+                    dependency.savepoints_range.start,
+                    dependency.savepoints_range.end,
+                    container_id,
+                    dependency.configuration,
+                    last_bytes,
+                    model_path,
+                )
+
         with self._cursor() as cursor:
             # Save dependencies
             for dependency in dependencies:
                 # Save ordinary dependencies
-                for container_id, object_id, model_path in dependency.dependencies:
-                    check_object_id_supported_by_sql(object_id)
-                    cursor.execute(
-                        PUT_DEPENDENCIES_QUERY,
-                        (
-                            dependency.savepoints_range.start,
-                            dependency.savepoints_range.end,
-                            container_id,
-                            dependency.configuration,
-                            object_id.to_bytes(),
-                            model_path,
-                        ),
-                    )
+                if batched:
+                    cursor.executemany(PUT_DEPENDENCIES_QUERY, dependency_rows(dependency))
+                else:
+                    for container_id, object_id, model_path in dependency.dependencies:
+                        check_object_id_supported_by_sql(object_id)
+                        cursor.execute(
+                            PUT_DEPENDENCIES_QUERY,
+                            (
+                                dependency.savepoints_range.start,
+                                dependency.savepoints_range.end,
+                                container_id,
+                                dependency.configuration,
+                                object_id.to_bytes(),
+                                model_path,
+                            ),
+                        )
+
+                # Save the dependencies that come as classes
+                if dependency.classes is not None:
+                    self._add_dependency_classes(cursor, dependency)
 
                 # Save custom dependencies
                 for index, container_data in enumerate(dependency.custom_invalidation):
@@ -519,6 +738,23 @@ class LocalStorageProvider(StorageProvider):
 
             # Save objects
             for location, objects_set in objects.items():
+                if batched:
+                    cursor.executemany(
+                        PUT_QUERY,
+                        (
+                            (
+                                location.savepoint_id,
+                                location.container_id,
+                                location.configuration_id,
+                                object_id.to_bytes(),
+                                object_id.serialize(),
+                                bytes(content),
+                            )
+                            for object_id, content in objects_set.items()
+                        ),
+                    )
+                    continue
+
                 for object_id, content in objects_set.items():
                     cursor.execute(
                         PUT_QUERY,
@@ -555,8 +791,14 @@ class LocalStorageProvider(StorageProvider):
             #     invalidated. This is used internally by the queries.
             cursor.executescript(CREATE_TABLE_INVALIDATE.format(uuid=table_uuid))
             # Pour our input data into the temporary tables
-            for path in invalidation_list:
-                cursor.execute(f"REPLACE INTO model_paths_{table_uuid} VALUES (?)", (path,))
+            if fixes.enabled(fixes.BATCHED_INVALIDATION_INPUT):
+                cursor.executemany(
+                    f"REPLACE INTO model_paths_{table_uuid} VALUES (?)",
+                    ((path,) for path in invalidation_list),
+                )
+            else:
+                for path in invalidation_list:
+                    cursor.execute(f"REPLACE INTO model_paths_{table_uuid} VALUES (?)", (path,))
             for object_set in additional_objects:
                 for object_ in object_set.objects:
                     cursor.execute(
@@ -573,9 +815,14 @@ class LocalStorageProvider(StorageProvider):
             # Run the actual invalidation (see comment above the
             # `INVALIDATE_QUERY` for an explanation of how it selects the
             # objects to remove)
-            cursor.executescript(
-                INVALIDATE_QUERY.format(objectid_mask=_OBJECTID_MASK, uuid=table_uuid)
-            )
+            query = INVALIDATE_QUERY
+            if fixes.enabled(fixes.INDEXED_INVALIDATION):
+                query = INVALIDATE_QUERY_INDEXED
+            if self._has_dependency_classes(cursor):
+                # Whatever the switches say now, dependencies stored as classes
+                # have to be honored
+                query = INVALIDATE_QUERY_CLASSES
+            cursor.executescript(query.format(objectid_mask=_OBJECTID_MASK, uuid=table_uuid))
             # Due to a limitation of sqlite3 only `execute` returns rows,
             # whereas executescript does not
             cursor.execute(INVALIDATE_QUERY_2.format(uuid=table_uuid))
@@ -598,10 +845,17 @@ class LocalStorageProvider(StorageProvider):
             self._write_metadata(cursor, _MetadataUpdate.OBJECT_SAVE)
         return dict(invalidated)
 
+    @staticmethod
+    def _has_dependency_classes(cursor: sqlite3.Cursor) -> bool:
+        cursor.execute("SELECT EXISTS (SELECT 1 FROM dependency_class_objects)")
+        return bool(cursor.fetchone()[0])
+
     def prune_objects(self):
         with self._cursor() as cursor:
             cursor.execute("DELETE FROM objects")
             cursor.execute("DELETE FROM dependencies")
+            cursor.execute("DELETE FROM dependency_class_objects")
+            cursor.execute("DELETE FROM dependency_class_paths")
             cursor.execute("DELETE FROM custom_dependencies")
             self._write_metadata(cursor, _MetadataUpdate.OBJECT_SAVE)
 

@@ -90,12 +90,50 @@ struct type_caster<revng::pypeline::PipeOutput> {
       Dependencies.append(Argument);
       ObjectDependencies::value_type{}.swap(ArgumentDependencies);
     }
+    // The dependencies in the form of classes, if that is how they come
+    nanobind::object Classes = nanobind::none();
+    if (Value.Dependencies.Classes != nullptr) {
+      DependencyClasses &Source = *Value.Dependencies.Classes;
+
+      nanobind::list PathList;
+      for (std::string &Path : Source.Paths)
+        PathList.append(nanobind::str(Path.data(), Path.size()));
+
+      nanobind::list ClassList;
+      for (const std::vector<uint32_t> &Class : Source.Classes) {
+        nanobind::list Members;
+        for (uint32_t Index : Class)
+          Members.append(nanobind::int_(Index));
+        ClassList.append(Members);
+      }
+
+      nanobind::list Arguments;
+      for (std::vector<DependencyClasses::Entry> &Entries : Source.Arguments) {
+        nanobind::list Argument;
+        for (DependencyClasses::Entry &Entry : Entries) {
+          nanobind::list EntryClasses;
+          for (uint32_t Index : Entry.Classes)
+            EntryClasses.append(nanobind::int_(Index));
+          Argument.append(nanobind::make_tuple(nanobind::cast(Entry.Object,
+                                                              rv_policy::copy),
+                                               EntryClasses));
+        }
+        Arguments.append(Argument);
+      }
+
+      nanobind::object ClassesCls = importObject("revng.pypeline.task.pipe."
+                                                 "DependencyClasses");
+      Classes = ClassesCls(PathList, ClassList, Arguments);
+      Value.Dependencies.Classes.reset();
+    }
+
     ObjectDependencies{}.swap(Value.Dependencies);
     nanobind::object
       CustomInvalidation = steal(CIDCaster::from_cpp(Value.CustomInvalidation,
                                                      Policy,
                                                      Cleanup));
-    return PipeDependenciesCls(Dependencies, CustomInvalidation).release();
+    return PipeDependenciesCls(Dependencies, CustomInvalidation, Classes)
+      .release();
   }
 };
 

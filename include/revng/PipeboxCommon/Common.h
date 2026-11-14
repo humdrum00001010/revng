@@ -4,6 +4,10 @@
 // This file is distributed under the MIT License. See LICENSE.md for details.
 //
 
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "llvm/ADT/ArrayRef.h"
@@ -74,10 +78,41 @@ public:
   llvm::ArrayRef<char> data() const { return { Vector.data(), Vector.size() }; }
 };
 
+/// The dependencies of the objects produced by a pipe, in a form whose size
+/// does not grow with the product of the objects and of what each one reads.
+///
+/// Model paths that are read by exactly the same objects make up a class; a
+/// class is stored once, and each object lists the classes it depends on. An
+/// object depends on a path if the path is in one of its classes: expanding
+/// the classes gives back the (object, path) pairs.
+struct DependencyClasses {
+  struct Entry {
+    ObjectID Object;
+
+    /// Indices in Classes, sorted
+    std::vector<uint32_t> Classes;
+  };
+
+  /// The paths, each once
+  std::vector<ModelPath> Paths;
+
+  /// For each class, the indices in Paths of its paths, sorted
+  std::vector<std::vector<uint32_t>> Classes;
+
+  /// For the i-th container of the pipe, the objects produced
+  std::vector<std::vector<Entry>> Arguments;
+};
+
 /// Type used to return the dependencies of objects produced by a pipe
 /// The first index maps to the i-th container of the pipe
-using ObjectDependencies = std::vector<
-  std::vector<std::pair<ObjectID, ModelPath>>>;
+struct ObjectDependencies
+  : public std::vector<std::vector<std::pair<ObjectID, ModelPath>>> {
+  using Base = std::vector<std::vector<std::pair<ObjectID, ModelPath>>>;
+  using Base::Base;
+
+  /// If set, the dependencies are here and the vector holds no pair
+  std::shared_ptr<DependencyClasses> Classes;
+};
 
 /// Type used to return advanced invalidation data from a pipe run. Will be fed
 /// back to the pipe's `invalidate` function to determine if there are

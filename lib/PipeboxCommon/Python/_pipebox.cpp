@@ -19,6 +19,7 @@
 #include "revng/PipeboxCommon/Helpers/Python/Registry.h"
 #include "revng/PipeboxCommon/Model.h"
 #include "revng/Support/InitRevng.h"
+#include "revng/Support/PipeFixes.h"
 
 static std::map<int, sighandler_t> SavedSignals;
 
@@ -103,6 +104,10 @@ deserializeModel(llvm::ArrayRef<uint8_t> Input,
 }
 
 NB_MODULE(_pipebox, m) {
+  // The Python side knows what to do with dependencies handed over as classes
+  // (see revng::pypeline::DependencyClasses)
+  pipefix::DependencyClassesWanted = true;
+
   using namespace nanobind::literals;
   using namespace revng::pypeline::helpers::python;
 

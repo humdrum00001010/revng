@@ -475,6 +475,7 @@ set(REVNG_PYPELINE_MODULE_FILES
     revng/pypeline/storage/local_provider_migrations/v1.sql
     revng/pypeline/storage/local_provider_migrations/v2.sql
     revng/pypeline/storage/local_provider_migrations/v3.sql
+    revng/pypeline/storage/local_provider_migrations/v4.sql
     revng/pypeline/task/__init__.py
     revng/pypeline/task/pipe.py
     revng/pypeline/task/requests.py
@@ -486,6 +487,7 @@ set(REVNG_PYPELINE_MODULE_FILES
     revng/pypeline/utils/pipeline.py
     revng/pypeline/utils/registry.py
     revng/pypeline/utils/starlette.py
+    revng/pypeline/utils/fixes.py
     revng/pypeline/utils/logger.py
     revng/pypeline/utils/cabc.py
     revng/pypeline/utils/naming.py
