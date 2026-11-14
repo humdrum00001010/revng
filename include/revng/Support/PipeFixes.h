@@ -82,6 +82,15 @@ enum Values : unsigned {
   /// the square of the number of stores of that constant.
   ChainedAccessEquality = 12,
 
+  /// enforce-abi: a register kept in a single state variable is passed and
+  /// returned as an integer as wide as the register, while what is loaded
+  /// from, and stored to, the variable is as wide as the variable. For x87
+  /// `st0` (10 bytes) the variable is the 64-bit mantissa: extend what is
+  /// loaded and truncate what is stored, instead of building a call whose
+  /// argument does not have the type of the parameter (an assertion in LLVM)
+  /// and a store that is wider than the variable.
+  RegisterWidthInEnforceABI = 13,
+
   /// analyze-data-layout, two visits of the type system that start from
   /// every node (or every root) in turn and each time walk again whatever
   /// the earlier ones walked:

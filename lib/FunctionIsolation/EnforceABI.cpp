@@ -39,6 +39,7 @@
 #include "revng/Support/IRHelpers.h"
 #include "revng/Support/MetaAddress.h"
 #include "revng/Support/OpaqueFunctionsPool.h"
+#include "revng/Support/PipeFixes.h"
 
 using namespace llvm;
 
@@ -267,8 +268,25 @@ static Value *loadRegisterFromCSVs(revng::IRBuilder &Builder,
                                    const model::Register::Portion &Portion) {
   if (model::Register::getCSVCount(Portion.Register) == 1) {
     revng_assert(Portion.Size <= model::Register::getSize(Portion.Register));
-    for (model::Register::CSV &CSV : model::Register::getCSVs(Portion.Register))
-      return loadCSVOrUndef(Builder, CSV);
+    for (model::Register::CSV &CSV :
+         model::Register::getCSVs(Portion.Register)) {
+      Value *Loaded = loadCSVOrUndef(Builder, CSV);
+
+      // The variable can be narrower than the register it stands for: of the
+      // 10 bytes of x87 `st0` it holds the 64-bit mantissa (the exponent is in
+      // a variable of its own, which is not part of the description of the
+      // register). The parameter or return value this goes to has the width
+      // of the register (see toLLVMTypes).
+      if (pipefix::enabled(pipefix::RegisterWidthInEnforceABI)) {
+        uint64_t RegisterSize = model::Register::getSize(Portion.Register);
+        auto *RegisterType = IntegerType::get(Builder.getContext(),
+                                              8 * RegisterSize);
+        if (Loaded->getType() != RegisterType)
+          Loaded = Builder.CreateZExtOrTrunc(Loaded, RegisterType);
+      }
+
+      return Loaded;
+    }
   }
 
   uint64_t RealSize = llvm::PowerOf2Ceil(Portion.Size);
@@ -305,7 +323,17 @@ static void serializeRegisterInCSVs(revng::IRBuilder &Builder,
   if (model::Register::getCSVCount(Register) == 1) {
     revng_assert(SizeInBytes == model::Register::getSize(Register));
     for (model::Register::CSV &CSV : model::Register::getCSVs(Register)) {
-      Builder.CreateStore(WideValue, getCSVOrUndef(Builder.getModule(), CSV));
+      Value *Target = getCSVOrUndef(Builder.getModule(), CSV);
+
+      // See loadRegisterFromCSVs: store as many bytes as the variable has
+      Value *ToStore = WideValue;
+      if (pipefix::enabled(pipefix::RegisterWidthInEnforceABI))
+        if (auto *Variable = dyn_cast<GlobalVariable>(Target))
+          if (Variable->getValueType() != WideValue->getType())
+            ToStore = Builder.CreateZExtOrTrunc(WideValue,
+                                                Variable->getValueType());
+
+      Builder.CreateStore(ToStore, Target);
       return;
     }
   }
