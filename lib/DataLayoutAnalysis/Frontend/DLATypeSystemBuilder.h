@@ -13,6 +13,7 @@
 #include "revng/DataLayoutAnalysis/DLALayouts.h"
 #include "revng/DataLayoutAnalysis/DLATypeSystem.h"
 #include "revng/Model/Binary.h"
+#include "revng/Support/PipeFixes.h"
 
 #include "../FuncOrCallInst.h"
 
@@ -115,6 +116,17 @@ private:
   /// first `llvm::CallInst` found with that prototype,
   PrototypesMapT VisitedPrototypes;
 
+  /// See pipefix::ChainedAccessEquality
+  const bool
+    ChainedAccessEquality = pipefix::enabled(pipefix::ChainedAccessEquality);
+
+  /// The nodes that an access node of pointer size points to, in the order
+  /// the access nodes were created (a node appears once per access node), and
+  /// whether the node with a given ID is such an access node.
+  /// Used by linkNodesWithSamePointee, with ChainedAccessEquality.
+  std::vector<LayoutTypeSystemNode *> PointeesOfAccessNodes;
+  std::vector<bool> IsPointerAccessNode;
+
 private:
   LayoutTypeSystemNode *getLayoutType(const llvm::Value *V, unsigned Id);
 
@@ -146,6 +158,14 @@ private:
   bool createInterproceduralTypes(llvm::Module &M,
                                   const SegmentNodeMapT &Segments);
   bool createIntraproceduralTypes(llvm::Module &M);
+
+  /// All the nodes that point to a node that some access node points to have
+  /// the same type: connect them with equality links.
+  ///
+  /// With ChainedAccessEquality this is where those links are made, once all
+  /// the modules have been visited; without it, createIntraproceduralTypes
+  /// makes them as it goes and there is nothing left to do here.
+  void linkNodesWithSamePointee();
 
   /// Collect LayoutTypePtrs and place them in the right position
   void createValuesList();
@@ -192,9 +212,14 @@ public:
 
     for (llvm::Module *M : Modules)
       createInterproceduralTypes(*M, SegmentNodes);
+    statistics::record("frontend: interprocedural types", TS);
 
     for (llvm::Module *M : Modules)
       createIntraproceduralTypes(*M);
+    statistics::record("frontend: intraprocedural types", TS);
+
+    linkNodesWithSamePointee();
+    statistics::record("frontend: nodes with the same pointee linked", TS);
 
     createValuesList();
     VisitedValues.clear();

@@ -768,6 +768,133 @@ bool Builder::connectToFuncsWithSamePrototype(const llvm::CallInst *Call) {
   return Changed;
 }
 
+void Builder::linkNodesWithSamePointee() {
+  if (not ChainedAccessEquality)
+    return;
+
+  // What createIntraproceduralTypes does without ChainedAccessEquality: every
+  // access node of pointer size gets, when it is created, an equality link to
+  // each node that already points to its pointee. Nodes are numbered in order
+  // of creation, so for a pointee P the links are those between an access
+  // node and each node that points to P and has a lower ID.
+  //
+  // The nodes that point to P are of two sorts, each with a single outgoing
+  // link (the pointer link to P) and no equality link other than the ones
+  // above:
+  //
+  // - placeholders, created for P when it is an argument of a call or a
+  //   returned value (all of them before the first access node exists, see
+  //   createInterproceduralTypes) or the stack frame (before the body of its
+  //   function is visited);
+  // - the access nodes themselves.
+  //
+  // So, with placeholders p1 < ... < pm and access nodes a1 < ... < ak (m, k
+  // their numbers, in order of ID, every p lower than every a), the links
+  // are: each a with each p and with each other a. These m + k nodes are a
+  // connected component of the equality links, and all have the size of a
+  // pointer: CollapseEqualitySCC, the only reader of equality links, merges
+  // them into one node. Which one is the only thing that depends on the
+  // links: the last node that the depth first visit of the component finds,
+  // starting from the node with the lowest ID and following the links of each
+  // node in order of ID. With the links above the visit goes p1, a1, p2, a2,
+  // ... until either sort is exhausted, then through the rest of the other in
+  // order of ID: it ends in ak if k >= m, in pm otherwise.
+  //
+  // The same component, visited in an order that ends in the same node, takes
+  // m + k - 1 links: a chain through the nodes in order of ID, with the node
+  // that has to be found last moved to the end.
+  uint64_t Chains = 0;
+  uint64_t LongestChain = 0;
+  uint64_t ChainLinks = 0;
+  uint64_t LinksOfAllPairs = 0;
+  uint64_t EndingInPlaceholder = 0;
+  uint64_t NotChained = 0;
+
+  // Each pointee once, in order of ID
+  LayoutTypeSystem::NodeComparison ByID;
+  llvm::sort(PointeesOfAccessNodes, ByID);
+  PointeesOfAccessNodes.erase(std::unique(PointeesOfAccessNodes.begin(),
+                                          PointeesOfAccessNodes.end()),
+                              PointeesOfAccessNodes.end());
+
+  auto IsAccess = [this](const LayoutTypeSystemNode *Node) {
+    return Node->ID < IsPointerAccessNode.size()
+           and IsPointerAccessNode[Node->ID];
+  };
+
+  const uint64_t PointerSize = getPointerSize(Model.Architecture());
+  std::vector<LayoutTypeSystemNode *> Pointers;
+  for (LayoutTypeSystemNode *Pointee : PointeesOfAccessNodes) {
+
+    // The nodes that point to Pointee, in order of ID
+    Pointers.clear();
+    for (const auto &Link : Pointee->Predecessors) {
+      if (isPointerEdge(Link)) {
+        revng_assert(Link.first->Size == PointerSize);
+        // Its only outgoing link is the one to Pointee
+        revng_assert(Link.first->Successors.size() == 1);
+        Pointers.push_back(Link.first);
+      }
+    }
+
+    auto FirstAccess = llvm::find_if(Pointers, IsAccess);
+    revng_assert(FirstAccess != Pointers.end());
+    uint64_t Placeholders = FirstAccess - Pointers.begin();
+    uint64_t Accesses = Pointers.end() - FirstAccess;
+
+    LinksOfAllPairs += Accesses * Placeholders + Accesses * (Accesses - 1) / 2;
+
+    if (not std::all_of(FirstAccess, Pointers.end(), IsAccess)) {
+      // A placeholder that is newer than an access node. Not expected: make
+      // the links exactly as they would be made otherwise.
+      ++NotChained;
+      for (auto It = FirstAccess; It != Pointers.end(); ++It)
+        if (IsAccess(*It))
+          for (auto Earlier = Pointers.begin(); Earlier != It; ++Earlier)
+            TS.addEqualityLink(*Earlier, *It);
+      continue;
+    }
+
+    if (Pointers.size() < 2)
+      continue;
+
+    // The node to be found last goes last
+    if (Accesses < Placeholders) {
+      std::rotate(Pointers.begin() + (Placeholders - 1),
+                  Pointers.begin() + Placeholders,
+                  Pointers.end());
+      ++EndingInPlaceholder;
+    }
+
+    for (size_t I = 1; I < Pointers.size(); ++I)
+      TS.addEqualityLink(Pointers[I - 1], Pointers[I]);
+
+    ++Chains;
+    ChainLinks += Pointers.size() - 1;
+    LongestChain = std::max<uint64_t>(LongestChain, Pointers.size());
+  }
+
+  if (statistics::enabled()) {
+    std::string Text = "pointees of access nodes "
+                       + std::to_string(PointeesOfAccessNodes.size())
+                       + " | chains " + std::to_string(Chains)
+                       + " | links in chains " + std::to_string(ChainLinks)
+                       + " | links between all pairs "
+                       + std::to_string(LinksOfAllPairs) + " | longest chain "
+                       + std::to_string(LongestChain)
+                       + " | chains ending in a placeholder "
+                       + std::to_string(EndingInPlaceholder)
+                       + " | pointees linked as before "
+                       + std::to_string(NotChained);
+    statistics::note("frontend: chains of nodes with the same pointee", Text);
+  }
+
+  PointeesOfAccessNodes.clear();
+  PointeesOfAccessNodes.shrink_to_fit();
+  IsPointerAccessNode.clear();
+  IsPointerAccessNode.shrink_to_fit();
+}
+
 bool Builder::createIntraproceduralTypes(llvm::Module &M) {
   bool Changed = false;
   InstanceLinkAdder ILA(Model, *this);
@@ -892,11 +1019,36 @@ bool Builder::createIntraproceduralTypes(llvm::Module &M) {
           if (AccessSize != getPointerSize(Model.Architecture()))
             continue;
 
+          // An experiment, off unless REVNG_DLA_NO_CONSTANT_POINTEES is set,
+          // and one that changes the result: a constant that is stored is
+          // not taken for a pointer. All the stores of the same constant
+          // otherwise end up as one node that points to "the type of 0",
+          // shared by every structure a zero was ever stored in.
+          const char *Switch = "REVNG_DLA_NO_CONSTANT_POINTEES";
+          static const bool NoConstantPointees = std::getenv(Switch) != nullptr;
+          if (NoConstantPointees and isa<ConstantInt>(Val))
+            continue;
+
           PointeeNode->InterferingInfo = Unknown;
           TS.addPointerLink(AccessNode, PointeeNode);
 
           // If the pointee already has nodes that point to it, their type must
           // be the same as the type of PointerNode, so add an equality link.
+          if (ChainedAccessEquality) {
+            // Not now: a link to each of the nodes that already point to the
+            // pointee makes, for a pointee that n access nodes point to,
+            // n * (n - 1) / 2 links, where n - 1 say the same. And n is not
+            // small: the pointee of a store of a constant is the node of the
+            // constant, which is the same llvm::Value in all the modules.
+            // linkNodesWithSamePointee makes the links when all the nodes that
+            // point to each pointee are known.
+            if (IsPointerAccessNode.size() <= AccessNode->ID)
+              IsPointerAccessNode.resize(AccessNode->ID + 1, false);
+            IsPointerAccessNode[AccessNode->ID] = true;
+            PointeesOfAccessNodes.push_back(PointeeNode);
+            continue;
+          }
+
           using PointerGraph = EdgeFilteredGraph<LayoutTypeSystemNode *,
                                                  isPointerEdge>;
           using InversePointerGraph = llvm::Inverse<PointerGraph>;

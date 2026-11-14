@@ -71,7 +71,16 @@ enum Values : unsigned {
   /// system, do not search the set of all nodes for each of them (a check that
   /// they belong to it), and find the tag of equality links once instead of
   /// searching the set of tags at every link.
-  CheaperLayoutLinks = 11
+  CheaperLayoutLinks = 11,
+
+  /// analyze-data-layout: all the nodes that point to the same node are
+  /// meant to become one node. Say so with a chain of equality links (one
+  /// link per node) built when all of them are known, instead of linking
+  /// every access node to all the nodes that pointed to its pointee before
+  /// it: all the modules share one LLVMContext, so a constant is one value,
+  /// one pointee, for the whole program, and the number of links grows with
+  /// the square of the number of stores of that constant.
+  ChainedAccessEquality = 12
 };
 
 /// Whether whoever receives the output of the pipes can take the dependencies
