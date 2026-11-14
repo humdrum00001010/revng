@@ -179,7 +179,15 @@ enum Values : unsigned {
   /// - within one walk, what a class type contains is walked once, not once
   ///   for every path that leads to it.
   /// A failed check is not remembered: it is reported every time, as before.
-  VerifyClassRecursionOnce = 22
+  VerifyClassRecursionOnce = 22,
+
+  /// Clift, MutableStringAttr (the names and comments of types, fields and
+  /// functions): setting the value it already has does nothing, instead of
+  /// copying the string once more into the allocator of the context, where it
+  /// stays until the context is destroyed. import-descriptive-function-info
+  /// sets the names of every type reachable from every function, and reading
+  /// a definition sets them too.
+  SetChangedNamesOnly = 23
 };
 
 /// Whether whoever receives the output of the pipes can take the dependencies

@@ -22,6 +22,7 @@
 #include "revng/Clift/CliftDialect.h"
 #include "revng/Clift/CliftInterfaces.h"
 #include "revng/Clift/CliftTypes.h"
+#include "revng/Support/PipeFixes.h"
 
 #include "CliftBytecode.h"
 
@@ -121,6 +122,18 @@ llvm::StringRef MutableStringAttr::getValue() const {
 }
 
 void MutableStringAttr::setValue(llvm::StringRef Value) {
+  using clift::bytecode::Counters;
+  Counters::count(clift::bytecode::TheCounters.NamesSet);
+
+  if (getValue() == Value) {
+    Counters::count(clift::bytecode::TheCounters.NamesUnchanged);
+
+    // Mutating copies the string into the allocator of the context, even if
+    // it is the one already there
+    if (pipefix::enabled(pipefix::SetChangedNamesOnly))
+      return;
+  }
+
   (void) Base::mutate(Value);
 }
 
