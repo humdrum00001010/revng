@@ -6,6 +6,7 @@
 #include <limits>
 #include <vector>
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/ADT/PostOrderIterator.h"
@@ -159,6 +160,19 @@ static bool removeBackedgesFromSCC(LayoutTypeSystem &TS) {
   T.advance("Remove Backedges");
   using MixedNodeT = MixedNodeT<SCC>;
 
+  // The nodes reached by a visit that met no loop. Such a visit removes
+  // nothing, and what it reached is all that can be reached from each of those
+  // nodes: no loop goes through them, now or after edges are removed
+  // elsewhere, and a later visit that arrives at one of them can treat it as
+  // seen. Without this each root walks again all that can be reached from it,
+  // however many roots before it reached the same nodes.
+  //
+  // The nodes of a visit that did meet a loop are not recorded: the edges it
+  // removes do not necessarily break every loop among them, and it is the
+  // later visits that find the ones left.
+  const bool VisitOnce = pipefix::enabled(pipefix::VisitLayoutNodesOnce);
+  llvm::DenseSet<const LTSN *> NoLoopFrom;
+
   for (const auto &Root : llvm::nodes(&TS)) {
     revng_assert(Root != nullptr);
     // We start from SCCNodeView roots and look if we find an SCC with mixed
@@ -168,6 +182,11 @@ static bool removeBackedgesFromSCC(LayoutTypeSystem &TS) {
 
     if (not isSCCRoot<SCC>(Root))
       continue;
+
+    if (VisitOnce and NoLoopFrom.contains(Root))
+      continue;
+
+    bool LoopFound = false;
 
     revng_log(Log, "# Looking for mixed loops from: " << Root->ID);
 
@@ -220,6 +239,12 @@ static bool removeBackedgesFromSCC(LayoutTypeSystem &TS) {
       revng_log(Log,
                 "--| next children is " << NextChild->ID
                                         << " tag: " << *NextTag);
+
+      if (VisitOnce and NoLoopFrom.contains(NextChild)) {
+        revng_log(Log, "--| reached by an earlier visit that met no loop!");
+        return TryPushResult{ .Status = TryPushStatus::AlreadyVisited,
+                              .EdgeToPush = NextEdgeToVisit };
+      }
 
       bool NewVisit = Visited.insert(NextChild).second;
       if (not NewVisit) {
@@ -326,6 +351,7 @@ static bool removeBackedgesFromSCC(LayoutTypeSystem &TS) {
       } break;
 
       case TryPushStatus::FailedCloseLoop: {
+        LoopFound = true;
 
         // If we're closing a loop, add all the backedges involved in the loop
         // in the edges ToRemove.
@@ -357,6 +383,11 @@ static bool removeBackedgesFromSCC(LayoutTypeSystem &TS) {
 
       } break;
       }
+    }
+
+    if (VisitOnce and not LoopFound) {
+      revng_assert(ToRemove.empty());
+      NoLoopFrom.insert(Visited.begin(), Visited.end());
     }
 
     // Actually remove the edges

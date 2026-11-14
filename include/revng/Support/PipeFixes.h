@@ -80,7 +80,20 @@ enum Values : unsigned {
   /// it: all the modules share one LLVMContext, so a constant is one value,
   /// one pointee, for the whole program, and the number of links grows with
   /// the square of the number of stores of that constant.
-  ChainedAccessEquality = 12
+  ChainedAccessEquality = 12,
+
+  /// analyze-data-layout, two visits of the type system that start from
+  /// every node (or every root) in turn and each time walk again whatever
+  /// the earlier ones walked:
+  /// - the search for strongly connected components (CollapseEqualitySCC,
+  ///   CollapseInstanceAtOffset0SCC) keeps one record of the nodes seen for
+  ///   all the starting points, as a single run of the algorithm over
+  ///   several roots does;
+  /// - the removal of back edges from the loops made of instance edges
+  ///   remembers the nodes reached by a visit that found no loop: nothing
+  ///   reachable from them is on a loop, and no later visit needs to enter
+  ///   them.
+  VisitLayoutNodesOnce = 15
 };
 
 /// Whether whoever receives the output of the pipes can take the dependencies

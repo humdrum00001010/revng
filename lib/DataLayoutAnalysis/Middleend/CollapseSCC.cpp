@@ -6,6 +6,7 @@
 #include <type_traits>
 #include <vector>
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/GraphTraits.h"
 #include "llvm/ADT/SCCIterator.h"
 #include "llvm/ADT/STLExtras.h"
@@ -36,6 +37,99 @@ static bool sizeGreater(const LTSN *LHS, const LTSN *RHS) {
   return LHS->Size > RHS->Size;
 }
 
+/// The strongly connected components of a graph, found starting from several
+/// nodes one after the other, like `llvm::scc_iterator` (same algorithm, same
+/// order of the components and of the nodes in each), with one difference: the
+/// record of the nodes seen is kept from one starting point to the next.
+///
+/// A new `llvm::scc_iterator` per starting point walks again everything that
+/// can be reached from it, including what the earlier ones walked, only to
+/// report components that the caller has already seen and discards. What has
+/// been walked is closed under reachability, so a component is either all in
+/// it or all out of it, and stopping where it begins changes neither the
+/// components that are out of it nor the order in which their nodes are found.
+template<typename GraphT>
+class ComponentFinder {
+private:
+  using GT = llvm::GraphTraits<GraphT>;
+  using NodeRef = typename GT::NodeRef;
+  using ChildIterator = typename GT::ChildIteratorType;
+
+  struct StackElement {
+    NodeRef Node;
+    ChildIterator NextChild;
+    unsigned MinVisited;
+  };
+
+  unsigned VisitNumber = 0;
+  llvm::DenseMap<NodeRef, unsigned> NodeVisitNumbers;
+  std::vector<NodeRef> ComponentStack;
+  std::vector<StackElement> VisitStack;
+
+private:
+  void visitOne(NodeRef Node) {
+    ++VisitNumber;
+    NodeVisitNumbers[Node] = VisitNumber;
+    ComponentStack.push_back(Node);
+    VisitStack.push_back({ Node, GT::child_begin(Node), VisitNumber });
+  }
+
+  void visitChildren() {
+    auto HasNextChild = [this]() {
+      const StackElement &Top = VisitStack.back();
+      return Top.NextChild != GT::child_end(Top.Node);
+    };
+
+    while (HasNextChild()) {
+      NodeRef Child = *VisitStack.back().NextChild++;
+      auto It = NodeVisitNumbers.find(Child);
+      if (It == NodeVisitNumbers.end()) {
+        visitOne(Child);
+        continue;
+      }
+
+      unsigned ChildNumber = It->second;
+      if (VisitStack.back().MinVisited > ChildNumber)
+        VisitStack.back().MinVisited = ChildNumber;
+    }
+  }
+
+public:
+  bool seen(NodeRef Node) const { return NodeVisitNumbers.count(Node) != 0; }
+
+  /// Calls \p OnComponent with each component reachable from \p Root without
+  /// going through a node seen before, as a vector of its nodes.
+  template<typename CallableT>
+  void run(NodeRef Root, CallableT &&OnComponent) {
+    revng_assert(not seen(Root));
+    std::vector<NodeRef> Component;
+    visitOne(Root);
+    while (not VisitStack.empty()) {
+      visitChildren();
+
+      NodeRef Visiting = VisitStack.back().Node;
+      unsigned MinVisited = VisitStack.back().MinVisited;
+      VisitStack.pop_back();
+
+      if (not VisitStack.empty() and VisitStack.back().MinVisited > MinVisited)
+        VisitStack.back().MinVisited = MinVisited;
+
+      if (MinVisited != NodeVisitNumbers[Visiting])
+        continue;
+
+      // A whole component is on the stack, from Visiting up
+      Component.clear();
+      do {
+        Component.push_back(ComponentStack.back());
+        ComponentStack.pop_back();
+        NodeVisitNumbers[Component.back()] = ~0U;
+      } while (Component.back() != Visiting);
+
+      OnComponent(Component);
+    }
+  }
+};
+
 template<typename NodeT>
 static bool collapseSCCs(LayoutTypeSystem &TS) {
 
@@ -44,11 +138,27 @@ static bool collapseSCCs(LayoutTypeSystem &TS) {
   using scc_t = std::vector<GraphNodeT>;
   llvm::SmallVector<scc_t, 0> ToCollapse;
 
+  const bool VisitOnce = pipefix::enabled(pipefix::VisitLayoutNodesOnce);
+  ComponentFinder<NodeT> Finder;
+
   // We cannot start just from the roots because we cannot exclude that there
   // are loops without entries.
   for (const auto &Node : llvm::nodes(&TS)) {
     revng_assert(Node != nullptr);
     revng_log(LogVerbose, "## Analyzing SCCs from  " << Node);
+
+    if (VisitOnce) {
+      if (Finder.seen(Node))
+        continue;
+
+      Finder.run(Node, [&ToCollapse](const std::vector<GraphNodeT> &SCC) {
+        // Only the components with more than one node are of interest
+        if (SCC.size() > 1)
+          ToCollapse.push_back(SCC);
+      });
+      continue;
+    }
+
     if (VisitedNodes.contains(Node)) {
       revng_log(LogVerbose, "## Was already visited");
       continue;
