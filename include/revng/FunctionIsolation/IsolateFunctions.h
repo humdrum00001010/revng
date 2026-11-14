@@ -7,11 +7,13 @@
 #include <memory>
 
 #include "llvm/Pass.h"
+#include "llvm/Transforms/Utils/CodeExtractor.h"
 
 #include "revng/BasicAnalyses/CSVGlobals.h"
 #include "revng/BasicAnalyses/RootFunction.h"
 #include "revng/EarlyFunctionAnalysis/CollectCFG.h"
 #include "revng/Support/IRHelper.h"
+#include "revng/Support/OpaqueFunctionsPool.h"
 
 /// The function every indirect call is routed through
 inline IRHelper<> FunctionDispatcherHelper("function_dispatcher");
@@ -36,6 +38,14 @@ private:
   LLVMFunctionContainer &Output;
   std::optional<RootFunction> RootF;
   std::optional<CSVGlobals> Globals;
+
+  /// The analysis of `root` the code extractor needs, shared by the outliners
+  /// of all the functions
+  std::optional<llvm::CodeExtractorAnalysisCache> SharedCEAC;
+
+  /// The functions producing opaque return addresses in the module being
+  /// worked on, collected once for all the functions to isolate
+  std::optional<OpaqueFunctionsPool<llvm::Type *>> SharedReturnAddressPool;
   std::vector<IsolatedFunction> IsolatedFunctions;
 
   /// How many output modules still need the body of each isolated function

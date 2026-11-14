@@ -4,6 +4,8 @@
 // This file is distributed under the MIT License. See LICENSE.md for details.
 //
 
+#include <optional>
+
 #include "llvm/IR/Module.h"
 #include "llvm/Support/ModRef.h"
 #include "llvm/Transforms/Utils/CodeExtractor.h"
@@ -87,32 +89,59 @@ private:
   /// `unexpectedpc` of their caller.
   TemporaryOpaqueFunction UnexpectedPCMarker;
 
-  OpaqueFunctionsPool<llvm::Type *> OpaqueReturnAddress;
+  /// The functions that produce opaque return addresses, by type. Collecting
+  /// them takes a visit of all the functions of the module: who creates many
+  /// outliners for the same module can prepare a pool once (see
+  /// prepareOpaqueReturnAddressPool) and hand it to each of them. Only an
+  /// outliner creates such functions, and it does so through the pool.
+  OpaqueFunctionsPool<llvm::Type *> OwnOpaqueReturnAddress;
+  OpaqueFunctionsPool<llvm::Type *> &OpaqueReturnAddress;
 
-  llvm::CodeExtractorAnalysisCache CEAC;
+  /// The analysis of `root` the code extractor needs. Computing it visits the
+  /// whole of `root`: who creates many outliners for the same module can
+  /// compute it once and hand it to each of them.
+  std::optional<llvm::CodeExtractorAnalysisCache> OwnCEAC;
+  const llvm::CodeExtractorAnalysisCache &CEAC;
 
 public:
+  /// \param SharedCEAC if not null, an analysis of the `root` function of
+  ///        \p M that outlives this object and is used instead of computing
+  ///        a new one
   Outliner(llvm::Module &M,
            RootFunction &RootF,
            const CSVGlobals &Globals,
-           FunctionSummaryOracle &Oracle) :
+           FunctionSummaryOracle &Oracle,
+           const llvm::CodeExtractorAnalysisCache *SharedCEAC = nullptr,
+           OpaqueFunctionsPool<llvm::Type *> *SharedReturnAddressPool =
+             nullptr) :
     M(M),
     RootF(RootF),
     Globals(Globals),
     Oracle(Oracle),
     UnexpectedPCMarker(initializeUnexpectedPCMarker(M)),
-    OpaqueReturnAddress(&M, false),
-    CEAC(*M.getFunction("root")) {
+    OwnOpaqueReturnAddress(&M, false),
+    OpaqueReturnAddress(SharedReturnAddressPool != nullptr ?
+                          *SharedReturnAddressPool :
+                          OwnOpaqueReturnAddress),
+    OwnCEAC(makeOwnCEAC(M, SharedCEAC)),
+    CEAC(SharedCEAC != nullptr ? *SharedCEAC : *OwnCEAC) {
 
+    if (SharedReturnAddressPool == nullptr)
+      prepareOpaqueReturnAddressPool(OwnOpaqueReturnAddress);
+  }
+
+  /// Configure \p Pool, a pool for the module the outliners will work on, and
+  /// fill it with the functions that are already there
+  static void
+  prepareOpaqueReturnAddressPool(OpaqueFunctionsPool<llvm::Type *> &Pool) {
     using namespace llvm;
     auto Effects = MemoryEffects::inaccessibleMemOnly(llvm::ModRefInfo::Ref);
-    OpaqueReturnAddress.setMemoryEffects(Effects);
-    OpaqueReturnAddress.addFnAttribute(Attribute::NoUnwind);
-    OpaqueReturnAddress.addFnAttribute(Attribute::WillReturn);
-    OpaqueReturnAddress.setTags({ &FunctionTags::OpaqueReturnAddressFunction,
-                                  &FunctionTags::UniquedByPrototype });
-    OpaqueReturnAddress
-      .initializeFromReturnType(FunctionTags::OpaqueReturnAddressFunction);
+    Pool.setMemoryEffects(Effects);
+    Pool.addFnAttribute(Attribute::NoUnwind);
+    Pool.addFnAttribute(Attribute::WillReturn);
+    Pool.setTags({ &FunctionTags::OpaqueReturnAddressFunction,
+                   &FunctionTags::UniquedByPrototype });
+    Pool.initializeFromReturnType(FunctionTags::OpaqueReturnAddressFunction);
   }
 
 public:
@@ -120,6 +149,15 @@ public:
                            CallHandler *TheCallHandler);
 
 private:
+  static std::optional<llvm::CodeExtractorAnalysisCache>
+  makeOwnCEAC(llvm::Module &M,
+              const llvm::CodeExtractorAnalysisCache *SharedCEAC) {
+    std::optional<llvm::CodeExtractorAnalysisCache> Result;
+    if (SharedCEAC == nullptr)
+      Result.emplace(*M.getFunction("root"));
+    return Result;
+  }
+
   static TemporaryOpaqueFunction initializeUnexpectedPCMarker(llvm::Module &M) {
     return { llvm::FunctionType::get(llvm::Type::getVoidTy(M.getContext()),
                                      false),

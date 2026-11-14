@@ -18,12 +18,34 @@ enum Values : unsigned {
   /// whole model five times per object.
   TouchedTracking = 0,
 
+  /// isolate: build the CodeExtractorAnalysisCache over `root` once per run
+  /// instead of once per function.
+  SharedExtractorCache = 1,
+
+  /// isolate: look for the `newpc` calls of the function at hand among its
+  /// own instructions instead of among all the callers of `newpc`.
+  LocalNewPCScan = 2,
+
+  /// cloneFiltered: back up the metadata of the functions that will be in the
+  /// clone, instead of the metadata of every function of the source module.
+  FilteredMetadataBackup = 3,
+
+  /// isolate: when a function is cloned into its own module, visit the global
+  /// values that end up in that module instead of asking, for every global
+  /// value of the program, whether it does.
+  SelectiveModuleClone = 4,
+
   /// Dependencies of the objects a pipe produces: hand them over as classes
   /// of model paths (the paths read by exactly the same objects, stored once)
   /// with the classes each object depends on, instead of one (object, path)
   /// pair per path read. Only for a consumer that asked for it (see
   /// DependencyClassesWanted).
-  DependencyClasses = 7
+  DependencyClasses = 7,
+
+  /// isolate: collect the functions that produce opaque return addresses once
+  /// per run instead of once per function (a visit of all the functions of
+  /// the module, which grows by one function at each step).
+  SharedOpaqueReturnAddressPool = 10
 };
 
 /// Whether whoever receives the output of the pipes can take the dependencies

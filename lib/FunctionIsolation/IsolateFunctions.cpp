@@ -49,6 +49,7 @@
 #include "revng/Support/IRBuilder.h"
 #include "revng/Support/IRHelpers.h"
 #include "revng/Support/MetaAddress.h"
+#include "revng/Support/PipeFixes.h"
 #include "revng/Support/SimplePassManager.h"
 
 // This name is not present after `enforce-abi`.
@@ -254,10 +255,29 @@ public:
     // As in CFGAnalyzer::outline, restore jump-target block boundaries that
     // LLVM inlining may have merged.
     if (std::optional NewPC = NewPCHelper.get(*F.getParent())) {
-      for (auto Call : NewPC->callersIn(&F)) {
+      auto SplitAt = [](auto Call) {
         auto *BB = Call.call()->getParent();
         if (startsBasicBlock(Call) and BB->getFirstNonPHI() != Call.call())
           BB->splitBasicBlock(Call.call());
+      };
+
+      if (pipefix::enabled(pipefix::LocalNewPCScan)) {
+        // `newpc` has one caller per translated instruction of the whole
+        // program: look for the ones in F among the instructions of F
+        // instead of filtering all of them. The blocks are split after the
+        // visit, since splitting changes the list being visited; the result
+        // does not depend on the order of the splits.
+        std::vector<llvm::Instruction *> Calls;
+        for (BasicBlock &BB : F)
+          for (Instruction &I : BB)
+            if (NewPC->getCall(&I).has_value())
+              Calls.push_back(&I);
+
+        for (llvm::Instruction *I : Calls)
+          SplitAt(*NewPC->getCall(I));
+      } else {
+        for (auto Call : NewPC->callersIn(&F))
+          SplitAt(Call);
       }
     }
 
@@ -367,9 +387,11 @@ public:
   FunctionOutliner(llvm::Module &M,
                    const model::Binary &Binary,
                    RootFunction &Root,
-                   const CSVGlobals &Globals) :
+                   const CSVGlobals &Globals,
+                   const llvm::CodeExtractorAnalysisCache *SharedCEAC,
+                   OpaqueFunctionsPool<llvm::Type *> *SharedReturnAddressPool) :
     Oracle(FSOracle::importWithoutPrototypes(M, Globals, Binary)),
-    Outliner(M, Root, Globals, Oracle) {}
+    Outliner(M, Root, Globals, Oracle, SharedCEAC, SharedReturnAddressPool) {}
 
 public:
   efa::OutlinedFunction outline(MetaAddress Entry,
@@ -487,6 +509,15 @@ private:
 
   std::set<const llvm::GlobalVariable *> IgnorableGVs;
 
+  /// Position of each global variable and of each function in the lists of
+  /// the module, which do not change while functions are being cloned out
+  llvm::DenseMap<const llvm::GlobalVariable *, uint32_t> VariablePosition;
+  llvm::DenseMap<const llvm::Function *, uint32_t> FunctionPosition;
+
+  /// The global variables that end up in every clone: the ones that are
+  /// defined and cannot be ignored
+  std::vector<const llvm::GlobalVariable *> AlwaysClonedGVs;
+
 public:
   MinimalModuleCloner(const model::Binary &Binary, llvm::Module &Module) :
     Module(Module) {
@@ -519,6 +550,19 @@ public:
       if (Name.starts_with(DefaultStringNamespace)
           or (FunctionTags::CSV.isTagOf(&GV) and not IsRegister(GV)))
         IgnorableGVs.insert(&GV);
+    }
+
+    if (pipefix::enabled(pipefix::SelectiveModuleClone)) {
+      uint32_t Position = 0;
+      for (const llvm::GlobalVariable &GV : Module.globals()) {
+        VariablePosition[&GV] = Position++;
+        if (not IgnorableGVs.contains(&GV) and not GV.isDeclaration())
+          AlwaysClonedGVs.push_back(&GV);
+      }
+
+      Position = 0;
+      for (const llvm::Function &F : Module)
+        FunctionPosition[&F] = Position++;
     }
   }
 
@@ -577,7 +621,55 @@ public:
         return CloneAction::Clone;
       };
 
-    auto New = cloneFiltered(Module, ActionFunction);
+    std::unique_ptr<llvm::Module> New;
+    if (pipefix::enabled(pipefix::SelectiveModuleClone)) {
+      // The module has one string per translated instruction of the whole
+      // program: do not ask about each of them at every clone. What
+      // ActionFunction does not omit is known: the global variables this
+      // function uses, the ones every clone gets, and the functions found
+      // above. They are handed over in the order they have in the module, the
+      // order in which a visit of the whole module would meet them.
+      std::vector<const llvm::GlobalVariable *> Variables(UsedGVs.begin(),
+                                                          UsedGVs.end());
+      Variables.insert(Variables.end(),
+                       AlwaysClonedGVs.begin(),
+                       AlwaysClonedGVs.end());
+      auto VariableIndex = [this](const llvm::GlobalVariable *GV) {
+        auto It = VariablePosition.find(GV);
+        revng_assert(It != VariablePosition.end());
+        return It->second;
+      };
+      llvm::sort(Variables,
+                 [&VariableIndex](const llvm::GlobalVariable *LHS,
+                                  const llvm::GlobalVariable *RHS) {
+                   return VariableIndex(LHS) < VariableIndex(RHS);
+                 });
+      Variables.erase(std::unique(Variables.begin(), Variables.end()),
+                      Variables.end());
+
+      std::vector<const llvm::Function *> Functions(Visited.begin(),
+                                                    Visited.end());
+      Functions.insert(Functions.end(),
+                       CalledFunctions.begin(),
+                       CalledFunctions.end());
+      auto FunctionIndex = [this](const llvm::Function *F) {
+        auto It = FunctionPosition.find(F);
+        revng_assert(It != FunctionPosition.end());
+        return It->second;
+      };
+      llvm::sort(Functions,
+                 [&FunctionIndex](const llvm::Function *LHS,
+                                  const llvm::Function *RHS) {
+                   return FunctionIndex(LHS) < FunctionIndex(RHS);
+                 });
+      Functions.erase(std::unique(Functions.begin(), Functions.end()),
+                      Functions.end());
+
+      New = cloneSelected(Module, Variables, Functions, ActionFunction);
+    } else {
+      New = cloneFiltered(Module, ActionFunction);
+    }
+
     revng::verify(New.get());
     return New;
   }
@@ -671,6 +763,17 @@ Isolate::Isolate(const class Model &Model,
                          .function();
   FunctionTags::FunctionDispatcher.addTo(FunctionDispatcher);
 
+  // Outlining a function does not change the blocks of `root` (it clones the
+  // ones it needs and extracts the clones): the analysis the code extractor
+  // needs can be computed once
+  if (pipefix::enabled(pipefix::SharedExtractorCache))
+    SharedCEAC.emplace(*ClonedModule->getFunction("root"));
+
+  if (pipefix::enabled(pipefix::SharedOpaqueReturnAddressPool)) {
+    SharedReturnAddressPool.emplace(ClonedModule.get(), false);
+    efa::Outliner::prepareOpaqueReturnAddressPool(*SharedReturnAddressPool);
+  }
+
   //
   // Create the dynamic functions
   //
@@ -711,7 +814,14 @@ Function *Isolate::isolateFunction(const efa::ControlFlowGraph &FM) {
 
   // Outline the function (later on we'll steal its body and move it into F)
   CallIsolatedFunction CallHandler(*this, FM, *ClonedModule);
-  FunctionOutliner Outliner(*ClonedModule, Binary, *RootF, *Globals);
+  FunctionOutliner Outliner(*ClonedModule,
+                            Binary,
+                            *RootF,
+                            *Globals,
+                            SharedCEAC.has_value() ? &*SharedCEAC : nullptr,
+                            SharedReturnAddressPool.has_value() ?
+                              &*SharedReturnAddressPool :
+                              nullptr);
   efa::OutlinedFunction Outlined = Outliner.outline(Entry, &CallHandler);
 
   CallHandler.emitCalls(*Outlined.Function);
