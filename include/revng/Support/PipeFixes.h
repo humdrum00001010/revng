@@ -93,7 +93,40 @@ enum Values : unsigned {
   ///   remembers the nodes reached by a visit that found no loop: nothing
   ///   reachable from them is on a loop, and no later visit needs to enter
   ///   them.
-  VisitLayoutNodesOnce = 15
+  VisitLayoutNodesOnce = 15,
+
+  /// analyze-data-layout, ArrangeAccessesHierarchically: for every child of
+  /// a node it keeps the list of the other children that fit inside it, each
+  /// with the offset it would have there.
+  /// - Put a child in a list once. A child that fits inside another is added
+  ///   to the list of everything that one fits inside, together with its own
+  ///   list, without looking whether they are there already: with children
+  ///   nested one inside the other the list of each holds those of all the
+  ///   smaller ones, and doubles at every level. The repetitions change
+  ///   nothing in what is done with the lists.
+  /// - Store the offset in 32 bytes (an offset, at most one stride and trip
+  ///   count, which is all it can be) instead of in an OffsetExpression of
+  ///   136 (two vectors with inline room for four elements each).
+  CompactPushedOffsets = 16,
+
+  /// analyze-data-layout, ArrangeAccessesHierarchically: whether a child can
+  /// be absorbed by its parent is asked for every child every time the parent
+  /// is analysed, and the answer took three scans of all the links entering
+  /// the child (is one a pointer, is one strided, does one come from another
+  /// node): 44,000 links for a node shared by 44,000 structures, where the
+  /// first link already answers. One scan that stops at the first link that
+  /// decides.
+  FixedChildInOnePass = 18,
+
+  /// analyze-data-layout, ArrangeAccessesHierarchically: each child of the
+  /// node being analysed is compared with every later child (canPushThrough).
+  /// The comparison does nothing unless the two byte ranges overlap and at
+  /// least one of the two children is not a leaf; on a node with 100,000
+  /// children, nearly all leaves, that is a few pairs in a million. Index the
+  /// children by range and leafness and compare only those pairs, in the same
+  /// order. REVNG_DLA_CHECK_PUSH=1 also runs the full comparison and checks
+  /// that the two give the same pairs.
+  OverlapIndexedComparison = 21
 };
 
 /// Whether whoever receives the output of the pipes can take the dependencies
