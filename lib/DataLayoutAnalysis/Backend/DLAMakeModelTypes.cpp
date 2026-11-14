@@ -31,6 +31,7 @@ static Logger Log("dla-make-model");
 static Logger ModelLog("dla-dump-model");
 static Logger TypeMapLog("dla-type-map");
 
+using llvm::dyn_cast;
 using model::UpcastableType;
 using LTSN = LayoutTypeSystemNode;
 

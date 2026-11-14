@@ -17,6 +17,7 @@ bool init_unit_test();
 #include "revng/Model/PrimitiveType.h"
 #include "revng/Model/RawFunctionDefinition.h"
 #include "revng/Model/Register.h"
+#include "revng/UnitTestHelpers/UnitTestHelpers.h"
 
 #include "lib/EarlyFunctionAnalysis/RecordRegisters.h"
 
