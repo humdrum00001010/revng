@@ -454,6 +454,12 @@ std::optional<uint64_t> Definition::alignment(const model::TypeDefinition &Type,
   return Result->IsNatural ? Result->Value : 1;
 }
 
+bool Definition::isAlignmentKnown(const model::TypeDefinition &Type,
+                                  AlignmentCache &Cache) const {
+  std::optional<AlignmentInfo> Result = naturalAlignment(*this, Type, Cache);
+  return Result.has_value();
+}
+
 std::optional<bool>
 Definition::hasNaturalAlignment(const model::Type &Type,
                                 AlignmentCache &Cache) const {

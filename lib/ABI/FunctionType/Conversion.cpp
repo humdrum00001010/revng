@@ -13,6 +13,7 @@
 #include "revng/Model/TypeBucket.h"
 #include "revng/Support/AlignmentHelpers.h"
 #include "revng/Support/OverflowSafeInt.h"
+#include "revng/Support/PipeFixes.h"
 
 #include "ValueDistributor.h"
 
@@ -451,6 +452,13 @@ TCC::tryConvertingStackArguments(const model::UpcastableType &StackStruct,
     return llvm::SmallVector<model::Argument, 8>{};
   }
   auto &Stack = StackStruct->toStruct();
+  if (pipefix::enabled(pipefix::UnknownAlignmentIsNotConvertible)
+      and not ABI.isAlignmentKnown(Stack, AlignmentCache)) {
+    revng_log(Log,
+              "The ABI has no alignment for something in the stack arguments: "
+              "not convertible.");
+    return std::nullopt;
+  }
   uint64_t StackSize = paddedSizeOnStack(Stack.Size(),
                                          adjustedAlignment(Stack));
 

@@ -151,6 +151,13 @@ enum Values : unsigned {
   /// process lifts again.
   ReuseLibTcgContext = 19,
 
+  /// convert-functions-to-cabi: a prototype whose stack arguments contain a
+  /// type the ABI has no alignment for (a 32-byte scalar, which the layout
+  /// analysis makes of a 256-bit load or store) is left as it is, like any
+  /// other prototype that cannot be converted, instead of aborting the run
+  /// ("Unable to compute the alignment of ...").
+  UnknownAlignmentIsNotConvertible = 20,
+
   /// analyze-data-layout, ArrangeAccessesHierarchically: each child of the
   /// node being analysed is compared with every later child (canPushThrough).
   /// The comparison does nothing unless the two byte ranges overlap and at

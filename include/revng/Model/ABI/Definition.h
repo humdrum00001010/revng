@@ -102,6 +102,11 @@ public:
   hasNaturalAlignment(const model::TypeDefinition &Definition,
                       AlignmentCache &Cache) const;
 
+  /// Whether alignment() and hasNaturalAlignment() can answer for \p
+  /// Definition (they abort if they cannot)
+  bool isAlignmentKnown(const model::TypeDefinition &Definition,
+                        AlignmentCache &Cache) const;
+
   [[nodiscard]] CDataModel getDataModel() const;
 
 public:
