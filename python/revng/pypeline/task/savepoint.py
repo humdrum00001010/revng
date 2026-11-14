@@ -6,12 +6,60 @@ from collections.abc import Buffer
 from typing import Mapping, Sequence, final
 
 from revng.pypeline.container import ConfigurationId, ContainerDeclaration, ContainerSet
-from revng.pypeline.object import ObjectID
+from revng.pypeline.object import ObjectID, ObjectSet
 from revng.pypeline.storage.storage_provider import ContainerLocation, PipeDependencies
 from revng.pypeline.storage.storage_provider import SavePointsRange, StorageProvider
+from revng.pypeline.utils import fixes
 
 from .requests import Requests
 from .task import TaskArgument, TaskArgumentAccess
+
+
+class _StreamedObjects(Mapping):
+    """
+    The serialized (and compressed, if the container asks for it) objects of a
+    container, produced a chunk at a time as they are iterated over: what the
+    storage provider is given in place of a dict that holds them all.
+    """
+
+    CHUNK = 256
+
+    def __init__(self, container, objects: ObjectSet, compression):
+        self._container = container
+        self._kind = objects.kind
+        # In a fixed order (that of their serialized form): the order in which they are
+        # written does not matter to the storage, but this way it is the same in every run
+        self._objects = sorted(objects, key=lambda o: o.serialize())
+        self._set = set(self._objects)
+        self._compression = compression
+
+    def _encode(self, buffer):
+        if self._compression is None:
+            return buffer
+        return self._compression.compress(buffer)
+
+    def __len__(self):
+        return len(self._objects)
+
+    def __iter__(self):
+        return iter(self._objects)
+
+    def __contains__(self, key):
+        return key in self._set
+
+    def __getitem__(self, key):
+        if key not in self._set:
+            raise KeyError(key)
+        serialized = self._container.serialize(ObjectSet(self._kind, {key}))
+        return self._encode(serialized[key])
+
+    def items(self):  # type: ignore[override]
+        for start in range(0, len(self._objects), self.CHUNK):
+            chunk = self._objects[start : start + self.CHUNK]
+            serialized = self._container.serialize(ObjectSet(self._kind, set(chunk)))
+            for object_id in chunk:
+                yield object_id, self._encode(serialized[object_id])
+            del serialized
 
 
 class SavePoint:
@@ -95,7 +143,11 @@ class SavePoint:
                 configuration_id=configuration_id,
             )
             container_incoming = incoming.get(decl)
-            if len(container_incoming) > 0:
+            if len(container_incoming) > 0 and fixes.enabled(fixes.STREAMED_SAVEPOINTS):
+                objects[location] = _StreamedObjects(
+                    containers[decl], container_incoming, containers[decl].get_compression()
+                )
+            elif len(container_incoming) > 0:
                 serialized_container = containers[decl].serialize(container_incoming)
                 compression = containers[decl].get_compression()
                 if compression is not None:

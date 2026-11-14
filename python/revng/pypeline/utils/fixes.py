@@ -39,6 +39,12 @@ DEPENDENCY_CLASSES = 5
 # needed, which made them run for nothing
 SKIP_PREREQUISITES_OF_SKIPPED_PIPES = 6
 
+# Savepoints: serialize and compress the objects of a container a chunk at a
+# time while the storage provider writes them, instead of first serializing all
+# of them and then making a compressed copy of all of them, both kept in memory
+# until the end of the savepoint
+STREAMED_SAVEPOINTS = 7
+
 _MASK = int(os.environ.get("REVNG_PY_FIXES", "-1"), 0)
 
 
