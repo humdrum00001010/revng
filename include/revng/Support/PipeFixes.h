@@ -35,6 +35,11 @@ enum Values : unsigned {
   /// value of the program, whether it does.
   SelectiveModuleClone = 4,
 
+  /// convert-functions-to-cabi: keep track of where the references to each
+  /// type definition are, so that replacing the references to a converted
+  /// prototype does not take a visit of the whole model per prototype.
+  IndexedReferenceReplacement = 5,
+
   /// Dependencies of the objects a pipe produces: hand them over as classes
   /// of model paths (the paths read by exactly the same objects, stored once)
   /// with the classes each object depends on, instead of one (object, path)

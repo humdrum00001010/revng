@@ -5,6 +5,8 @@
 //
 
 #include <concepts>
+#include <map>
+#include <set>
 
 #include "llvm/Support/MathExtras.h"
 
@@ -13,6 +15,8 @@
 #include "revng/Model/Binary.h"
 #include "revng/Model/DefinedType.h"
 #include "revng/Support/AlignmentHelpers.h"
+#include "revng/TupleTree/TupleTree.h"
+#include "revng/TupleTree/Visits.h"
 
 namespace abi::FunctionType {
 
@@ -42,6 +46,91 @@ inline void replaceTypeDefinition(const model::TypeDefinition::Key &O,
                                   TupleTree<model::Binary> &B) {
   return replaceTypeDefinition(O, llvm::cast<model::DefinedType>(N), B);
 }
+
+/// Where the references to each type definition are.
+///
+/// `replaceTypeDefinition` visits every reference of the model to find the
+/// ones to a single definition; who replaces many definitions one at a time
+/// can build this once and then touch only the references involved. The
+/// outcome is the same as long as the index is told about every definition
+/// that enters or leaves the model while it is in use.
+class TypeDefinitionReferenceIndex {
+public:
+  using Reference = model::TypeDefinitionReference;
+  using Key = model::TypeDefinition::Key;
+
+private:
+  std::map<Key, std::set<Reference *>> Referrers;
+
+public:
+  explicit TypeDefinitionReferenceIndex(TupleTree<model::Binary> &Binary) {
+    Binary.visitReferences([this]<typename T>(T &Element) {
+      if constexpr (std::is_same_v<T, Reference>)
+        add(Element);
+    });
+  }
+
+  TypeDefinitionReferenceIndex(const TypeDefinitionReferenceIndex &) = delete;
+  TypeDefinitionReferenceIndex &
+  operator=(const TypeDefinitionReferenceIndex &) = delete;
+
+public:
+  /// Record the references that \p Object, a part of the model that has just
+  /// been added to it, contains.
+  template<typename T>
+  void addReferencesIn(T &Object) {
+    auto Visitor = [this]<typename E>(E &Element) {
+      if constexpr (std::is_same_v<E, Reference>)
+        add(Element);
+    };
+    visitTupleTree(Object, Visitor, [](auto &) {});
+  }
+
+  /// Forget the references that \p Object, a part of the model that is about
+  /// to be removed from it, contains.
+  template<typename T>
+  void removeReferencesIn(T &Object) {
+    auto Visitor = [this]<typename E>(E &Element) {
+      if constexpr (std::is_same_v<E, Reference>)
+        remove(Element);
+    };
+    visitTupleTree(Object, Visitor, [](auto &) {});
+  }
+
+  /// Same effect on the model as `replaceTypeDefinition(Old, New, Binary)`
+  void replace(const Key &Old, const Reference &New) {
+    auto It = Referrers.find(Old);
+    if (It == Referrers.end())
+      return;
+
+    std::set<Reference *> Replaced = std::move(It->second);
+    Referrers.erase(It);
+
+    for (Reference *R : Replaced)
+      *R = New;
+
+    if (not New.empty())
+      Referrers[New.getConst()->key()].merge(Replaced);
+  }
+
+private:
+  void add(Reference &R) {
+    // The same test `replaceTypeDefinition` applies to a reference
+    if (R.empty())
+      return;
+
+    Referrers[R.getConst()->key()].insert(&R);
+  }
+
+  void remove(Reference &R) {
+    if (R.empty())
+      return;
+
+    auto It = Referrers.find(R.getConst()->key());
+    if (It != Referrers.end())
+      It->second.erase(&R);
+  }
+};
 
 /// Filters a list of upcastable types.
 ///

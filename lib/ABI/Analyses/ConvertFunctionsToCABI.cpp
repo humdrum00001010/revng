@@ -13,6 +13,7 @@
 #include "revng/Model/TypeDefinition.h"
 #include "revng/Model/VerifyHelper.h"
 #include "revng/Support/IRHelpers.h"
+#include "revng/Support/PipeFixes.h"
 #include "revng/TupleTree/TupleTree.h"
 
 // TODO: Stop using VerifyHelper for this verification.
@@ -230,6 +231,15 @@ static void convertFunctionsToCABI(TupleTree<model::Binary> &Model,
     }
   };
 
+  // Replacing the references to a converted prototype takes a visit of the
+  // whole model: with one prototype per function that is the square of the
+  // size of the program. Find where the references are once instead.
+  namespace FT = abi::FunctionType;
+  std::optional<FT::TypeDefinitionReferenceIndex> Index;
+  if (pipefix::enabled(pipefix::IndexedReferenceReplacement))
+    Index.emplace(Model);
+  FT::TypeDefinitionReferenceIndex *IndexPointer = Index ? &*Index : nullptr;
+
   // And convert them.
   for (model::RawFunctionDefinition *Old : ToConvert) {
     LogFunctionName(Old->key());
@@ -242,8 +252,11 @@ static void convertFunctionsToCABI(TupleTree<model::Binary> &Model,
       continue;
     }
 
-    namespace FT = abi::FunctionType;
-    if (auto New = FT::tryConvertToCABI(*Old, Model, ABI, SoftDeductions)) {
+    if (auto New = FT::tryConvertToCABI(*Old,
+                                        Model,
+                                        ABI,
+                                        SoftDeductions,
+                                        IndexPointer)) {
       // If the conversion succeeds, make sure the returned type is valid,
       revng_assert(!New->isEmpty());
 

@@ -157,7 +157,8 @@ std::optional<model::UpcastableType>
 tryConvertToCABI(const model::RawFunctionDefinition &FunctionType,
                  TupleTree<model::Binary> &Binary,
                  std::optional<model::ABI::Values> MaybeABI,
-                 bool UseSoftRegisterStateDeductions) {
+                 bool UseSoftRegisterStateDeductions,
+                 TypeDefinitionReferenceIndex *Index) {
   if (!MaybeABI.has_value())
     MaybeABI = Binary->DefaultABI();
 
@@ -177,6 +178,10 @@ tryConvertToCABI(const model::RawFunctionDefinition &FunctionType,
                 << model::ABI::getName(ABI.ABI()) << "`.");
     return std::nullopt;
   }
+
+  // Every definition the conversion adds to the model gets an identifier
+  // from here on
+  const uint64_t FirstNewID = Binary->getAvailableTypeID();
 
   ToCABIConverter Converter(ABI, *Binary, UseSoftRegisterStateDeductions);
   std::optional Converted = Converter.tryConvert(FunctionType);
@@ -215,7 +220,28 @@ tryConvertToCABI(const model::RawFunctionDefinition &FunctionType,
 
   // To finish up the conversion, remove all the references to the old type by
   // carefully replacing them with references to the new one.
-  replaceTypeDefinition(FunctionType.key(), *Type, Binary);
+  if (Index != nullptr) {
+    // The definitions that were just added are the last ones: tell the index
+    // about the references they hold before using it, since they might well
+    // point to the old type too
+    auto &Definitions = Binary->TypeDefinitions();
+    for (auto It = Definitions.end(); It != Definitions.begin();) {
+      --It;
+      if ((*It)->ID() < FirstNewID)
+        break;
+      Index->addReferencesIn(*It);
+    }
+
+    const auto &New = llvm::cast<model::DefinedType>(*Type).Definition();
+    Index->replace(FunctionType.key(), New);
+
+    // The references the old type holds are about to disappear
+    auto OldIt = Definitions.find(FunctionType.key());
+    revng_assert(OldIt != Definitions.end());
+    Index->removeReferencesIn(*OldIt);
+  } else {
+    replaceTypeDefinition(FunctionType.key(), *Type, Binary);
+  }
 
   // And don't forget to remove the old type.
   Binary->TypeDefinitions().erase(FunctionType.key());
