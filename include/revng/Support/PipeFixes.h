@@ -40,6 +40,11 @@ enum Values : unsigned {
   /// prototype does not take a visit of the whole model per prototype.
   IndexedReferenceReplacement = 5,
 
+  /// lift, custom invalidation: read the stored map of jump targets entry by
+  /// entry instead of through `llvm::yaml::Input`, which at the end of a
+  /// mapping looks every key up in a vector.
+  LinearJumpTargetsRead = 6,
+
   /// Dependencies of the objects a pipe produces: hand them over as classes
   /// of model paths (the paths read by exactly the same objects, stored once)
   /// with the classes each object depends on, instead of one (object, path)

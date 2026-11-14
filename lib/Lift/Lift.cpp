@@ -2,6 +2,8 @@
 // This file is distributed under the MIT License. See LICENSE.md for details.
 //
 
+#include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/YAMLParser.h"
 #include "llvm/Transforms/IPO/StripSymbols.h"
 
 #include "revng/Lift/JumpTargetReason.h"
@@ -11,6 +13,7 @@
 #include "revng/Support/IRHelperRegistry.h"
 #include "revng/Support/IRHelpers.h"
 #include "revng/Support/NewPC.h"
+#include "revng/Support/PipeFixes.h"
 #include "revng/Support/ResourceFinder.h"
 #include "revng/Support/SimplePassManager.h"
 
@@ -84,6 +87,73 @@ struct llvm::yaml::CustomMappingTraits<JumpTargetMap> {
       IO.mapRequired(Key.toString().c_str(), Value);
   }
 };
+
+/// Read a document written by the traits above, giving the map
+/// `fromString<JumpTargetMap>` gives for it.
+///
+/// `llvm::yaml::Input` checks, when a mapping ends, that every key in the
+/// document is one that was asked for, looking each of them up in a vector:
+/// the time grows with the square of the number of jump targets (12 minutes
+/// for the half a million of a 10 MB binary). Here the entries are taken as
+/// the parser yields them.
+static JumpTargetMap readJumpTargets(llvm::StringRef String) {
+  using namespace llvm::yaml;
+
+  JumpTargetMap Result;
+
+  llvm::SourceMgr SourceManager;
+  Stream YAMLStream(String, SourceManager);
+  document_iterator Document = YAMLStream.begin();
+  revng_assert(Document != YAMLStream.end());
+
+  auto *Mapping = llvm::dyn_cast_or_null<MappingNode>(Document->getRoot());
+  revng_assert(Mapping != nullptr);
+
+  llvm::SmallString<64> KeyStorage;
+  llvm::SmallString<16> ValueStorage;
+  for (KeyValueNode &Entry : *Mapping) {
+    auto *Key = llvm::dyn_cast_or_null<ScalarNode>(Entry.getKey());
+    auto *Value = llvm::dyn_cast_or_null<ScalarNode>(Entry.getValue());
+    revng_assert(Key != nullptr and Value != nullptr);
+
+    llvm::StringRef KeyText = Key->getValue(KeyStorage);
+    llvm::StringRef ValueText = Value->getValue(ValueStorage);
+    revng_assert(ValueText == "true" or ValueText == "false");
+
+    MetaAddress Address = MetaAddress::fromString(KeyText);
+    bool New = Result.emplace(Address, ValueText == "true").second;
+    revng_assert(New);
+  }
+
+  revng_assert(not YAMLStream.failed());
+
+  return Result;
+}
+
+static JumpTargetMap parseJumpTargets(llvm::StringRef String) {
+  JumpTargetMap Result;
+  if (pipefix::enabled(pipefix::LinearJumpTargetsRead))
+    Result = readJumpTargets(String);
+  else
+    Result = llvm::cantFail(fromString<JumpTargetMap>(String));
+
+  // On request, check that what was read is what was written: the map has to
+  // serialize to the very document it was read from
+  if (std::getenv("REVNG_CHECK_JUMP_TARGETS") != nullptr) {
+    std::string Again;
+    {
+      llvm::raw_string_ostream OS(Again);
+      serialize(OS, Result);
+    }
+    revng_assert(llvm::StringRef(Again) == String,
+                 "The jump targets do not serialize to what they were read "
+                 "from");
+    dbg << "jump targets: " << Result.size() << " entries read from "
+        << String.size() << " bytes, verified\n";
+  }
+
+  return Result;
+}
 
 static std::tuple<bool, std::map<MetaAddress, bool>>
 collectJumpTargets(const llvm::Module &Module) {
@@ -270,7 +340,7 @@ Lift::processCustomInvalidation(const InvalidationData &Data,
   auto DataBuffer = std::get<1>(LLVMModuleData[0]);
   llvm::StringRef String(reinterpret_cast<const char *>(DataBuffer.data()),
                          DataBuffer.size());
-  auto JumpTargets = llvm::cantFail(fromString<JumpTargetMap>(String));
+  auto JumpTargets = parseJumpTargets(String);
 
   if (shouldInvalidateRoot(JumpTargets, Diff.get()))
     return { {}, { ObjectID() } };
