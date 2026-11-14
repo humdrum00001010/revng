@@ -3,9 +3,12 @@
 #
 
 import inspect
+import re
 import signal
 import tarfile
 from io import BytesIO
+
+import yaml
 
 from revng.internal.support import import_pipebox
 from revng.model import Binary  # type: ignore[attr-defined]
@@ -16,7 +19,11 @@ from revng.pypeline.object import ObjectSet
 from revng.pypeline.storage.file_provider import FileProvider, FileRequest
 from revng.pypeline.task.pipe import Pipe, PipeDependencies
 from revng.pypeline.task.task import TaskArgument, TaskArgumentAccess
+from revng.pypeline.utils import fixes
 from revng.support import get_root
+
+# A line that starts a new top-level entry of a serialized model
+_TOP_LEVEL_KEY = re.compile(r"\n[^\s#-]")
 
 _native_libraries = [get_root() / "lib/librevngPipebox.so"]
 _module, _handles = import_pipebox(_native_libraries)
@@ -94,14 +101,45 @@ class ImportFiles(Pipe):
             ),
         )
 
+    @staticmethod
+    def _binaries_section(serialized_model: str) -> str | None:
+        """The text of the top-level `Binaries` entry of a serialized model, or
+        None if it cannot be told apart from the rest."""
+        start = serialized_model.find("\nBinaries:\n")
+        if start == -1:
+            return None
+        start += 1
+        match = _TOP_LEVEL_KEY.search(serialized_model, start + len("Binaries:\n"))
+        end = match.start() + 1 if match is not None else len(serialized_model)
+        return serialized_model[start:end]
+
     def _get_file_requests(self, model: ReadOnlyModel):
         # TODO: add facilities to `model` that avoid having to serialize the
         # whole thing. Right now we need to serialize the entire model and load
         # it in the python wrapper to be able to access the `/Binaries` list.
-        model_obj = Binary.deserialize(model.serialize().decode())
+        serialized_model = model.serialize().decode()
 
         indexes: list[int] = []
         requests: list[FileRequest] = []
+
+        # Parsing the whole model in Python takes time proportional to its
+        # size (minutes for a large binary) and this pipe only needs one small
+        # section of it
+        section = None
+        if fixes.enabled(fixes.PARTIAL_MODEL_PARSE):
+            section = self._binaries_section(serialized_model)
+
+        if section is not None:
+            for binary in yaml.safe_load(section)["Binaries"] or []:
+                indexes.append(int(binary["Index"]))
+                requests.append(
+                    FileRequest(
+                        str(binary["Hash"]), str(binary["CanonicalPath"]), int(binary["Size"])
+                    )
+                )
+            return (indexes, requests)
+
+        model_obj = Binary.deserialize(serialized_model)
         for binary in model_obj.Binaries:
             indexes.append(binary.Index)
             requests.append(FileRequest(binary.Hash, binary.CanonicalPath, binary.Size))

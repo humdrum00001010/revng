@@ -22,6 +22,10 @@ BATCHED_INVALIDATION_INPUT = 1
 # comparing every stored object with every matching dependency
 INDEXED_INVALIDATION = 2
 
+# import-files: read the `Binaries` section of the model instead of parsing
+# the whole model in Python
+PARTIAL_MODEL_PARSE = 3
+
 # Temporary storage (deleted when the command ends): no durability is needed,
 # so keep the rollback journal in memory and do not wait for the disk
 TEMPORARY_DB_SETTINGS = 4
