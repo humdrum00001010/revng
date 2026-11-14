@@ -15,6 +15,7 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Support/LogicalResult.h"
 
+#include "revng/Clift/CliftBytecodeSharing.h"
 #include "revng/Clift/CliftTypes.h"
 #include "revng/Support/Identifier.h"
 
@@ -1164,6 +1165,26 @@ static TypeT readClassType(mlir::DialectBytecodeReader &Reader) {
     return {};
 
   auto Type = TypeT::get(Reader.getContext(), Handle);
+
+  // In the shared form (see CliftBytecodeSharing.h) a flag tells whether the
+  // type is only a reference to a definition that is already in the context.
+  if (clift::bytecode::SharingScope::current() != nullptr) {
+    bool IsReference = false;
+    if (readBool(IsReference, Reader).failed())
+      return {};
+
+    if (IsReference) {
+      clift::bytecode::Counters::count(clift::bytecode::TheCounters
+                                         .ReferencesRead);
+      revng_check(Type.isComplete(),
+                  "A shared class type is referenced before its definition "
+                  "has been read.");
+      if (Const)
+        Type = mlir::cast<TypeT>(Type.addConst());
+      return Type;
+    }
+  }
+
   const void *Opaque = Type.getAsOpaquePointer();
   auto [Iterator, Inserted] = BytecodeClassTypeSet.insert(Opaque);
 
@@ -1230,12 +1251,48 @@ static void writeClassType(TypeT Type, mlir::DialectBytecodeWriter &Writer) {
 
   Writer.writeOwnedString(Type.getHandle());
   writeBool(Type.getIsConst(), Writer);
+
+  if (auto *Scope = clift::bytecode::SharingScope::current()) {
+    mlir::Attribute Definition = Type.getDefinition();
+    bool IsReference = not Scope->Inline.contains(Definition);
+    writeBool(IsReference, Writer);
+    if (IsReference) {
+      clift::bytecode::Counters::count(clift::bytecode::TheCounters
+                                         .ReferencesWritten);
+      Scope->Referenced.insert(Definition);
+      return;
+    }
+  }
+
   Writer.writeAttribute(BytecodeClassAttr::get(Type.getContext(), Type));
+}
+
+//===------------------------ Shared bytecode form ------------------------===//
+
+static thread_local clift::bytecode::SharingScope
+  *CurrentSharingScope = nullptr;
+
+clift::bytecode::Counters clift::bytecode::TheCounters;
+
+clift::bytecode::SharingScope::SharingScope() : Previous(CurrentSharingScope) {
+  CurrentSharingScope = this;
+}
+
+clift::bytecode::SharingScope::~SharingScope() {
+  revng_assert(CurrentSharingScope == this);
+  CurrentSharingScope = Previous;
+}
+
+clift::bytecode::SharingScope *clift::bytecode::SharingScope::current() {
+  return CurrentSharingScope;
 }
 
 template<typename TypeT, typename AttrT>
 static TypeT readClassDefinition(mlir::DialectBytecodeReader &Reader) {
   constexpr bool IsStruct = std::is_same_v<TypeT, StructType>;
+
+  clift::bytecode::Counters::count(clift::bytecode::TheCounters
+                                     .DefinitionsRead);
 
   llvm::StringRef Handle;
   if (Reader.readString(Handle).failed())
@@ -1340,6 +1397,9 @@ template<typename TypeT>
 static void
 writeClassDefinition(TypeT Type, mlir::DialectBytecodeWriter &Writer) {
   constexpr bool IsStruct = std::is_same_v<TypeT, StructType>;
+
+  clift::bytecode::Counters::count(clift::bytecode::TheCounters
+                                     .DefinitionsWritten);
 
   Writer.writeOwnedString(Type.getHandle());
   Writer.writeOwnedString(Type.getName());

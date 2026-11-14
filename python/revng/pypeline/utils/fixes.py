@@ -45,6 +45,12 @@ SKIP_PREREQUISITES_OF_SKIPPED_PIPES = 6
 # until the end of the savepoint
 STREAMED_SAVEPOINTS = 7
 
+# Savepoints: store the containers that support it (the Clift ones) in their
+# shared form, where the definitions of the types are stored once, as parts
+# that the objects refer to by hash, instead of in every object that uses them.
+# Reading recognizes the form of each object whatever the setting.
+SHARED_CLIFT_TYPES = 8
+
 _MASK = int(os.environ.get("REVNG_PY_FIXES", "-1"), 0)
 
 

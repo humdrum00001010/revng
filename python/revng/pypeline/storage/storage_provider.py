@@ -125,6 +125,30 @@ class ObjectsToInvalidate:
 
 
 @dataclass
+class SharedParts:
+    """
+    Parts of objects that the storage keeps once, however many objects need
+    them (see `StorageProvider.supports_shared_parts`). A part is identified by
+    the hash of its content; an object or a part refers to parts by their
+    hashes.
+    """
+
+    # The size of a hash, in bytes: several hashes are stored one after the other
+    HASH_SIZE = 32
+
+    # For each part, by its hash: the hashes of the parts it refers to, one
+    # after the other, and its content
+    parts: Mapping[bytes, tuple[bytes, Buffer]]
+    # For each object stored in the shared form: the hashes of the parts it
+    # refers to directly, one after the other
+    objects: Mapping[ContainerLocation, Mapping[ObjectID, bytes]]
+
+    @classmethod
+    def split(cls, hashes: bytes) -> list[bytes]:
+        return [hashes[i : i + cls.HASH_SIZE] for i in range(0, len(hashes), cls.HASH_SIZE)]
+
+
+@dataclass
 class SetModelResult:
     # The new epoch after changing the model
     epoch: int
@@ -310,6 +334,26 @@ class StorageProvider(ABC):
         caller expands the classes into `PipeDependencies.dependencies`.
         """
         return False
+
+    def supports_shared_parts(self) -> bool:
+        """
+        Whether `add_objects` takes a `shared` argument (a `SharedParts`) and
+        `get_shared_parts` is available: parts of objects that are stored once,
+        by hash, together with the objects that refer to them, and that are
+        deleted when no stored object needs them any more.
+        """
+        return False
+
+    def get_shared_parts(
+        self,
+        location: ContainerLocation,
+        keys: Collection[ObjectID],
+    ) -> dict[bytes, bytes]:
+        """
+        The parts the given objects need, by hash: those they refer to directly
+        and those the parts refer to, and so on.
+        """
+        raise NotImplementedError()
 
     @abstractmethod
     def add_objects(

@@ -95,18 +95,51 @@ struct RegisterContainer {
     python::Registry.registerModuleInitializer([](nanobind::module_ &M,
                                                   python::BaseClasses &BC) {
       std::string Name = pascalCaseName(T::Name);
-      nanobind::class_<T>(M, Name.c_str(), BC.BaseContainer)
-        .def_ro_static("name", &T::Name)
-        .def_ro_static("kind", &T::Kind)
-        .def_ro_static("compression", &T::Compression)
-        .def_static("mime_type", []() { return T::MimeType; })
-        .def(nanobind::init<>())
-        .def("objects", &python::ContainerIO<T>::objects)
-        .def("verify", &T::verify)
-        .def("set_is_disposable", &T::setIsDisposable)
-        .def("dispose_if_possible", &T::disposeIfPossible)
-        .def("deserialize", &python::ContainerIO<T>::deserialize)
-        .def("serialize", &python::ContainerIO<T>::serialize);
+      auto Class = nanobind::class_<T>(M, Name.c_str(), BC.BaseContainer)
+                     .def_ro_static("name", &T::Name)
+                     .def_ro_static("kind", &T::Kind)
+                     .def_ro_static("compression", &T::Compression)
+                     .def_static("mime_type", []() { return T::MimeType; })
+                     .def(nanobind::init<>())
+                     .def("objects", &python::ContainerIO<T>::objects)
+                     .def("verify", &T::verify)
+                     .def("set_is_disposable", &T::setIsDisposable)
+                     .def("dispose_if_possible", &T::disposeIfPossible)
+                     .def("deserialize", &python::ContainerIO<T>::deserialize)
+                     .def("serialize", &python::ContainerIO<T>::serialize);
+
+      // Containers that can store parts of their objects once (see
+      // CliftSharedTypes.h): the parts are bytes keyed by their hash (bytes)
+      if constexpr (requires(T &C) { C.takeSharedParts(); }) {
+        Class.def("begin_shared_parts", &T::beginSharedParts)
+          .def("end_shared_parts", &T::endSharedParts)
+          .def("take_shared_parts",
+               [](T &Handle) {
+                 nanobind::dict Result;
+                 for (const auto &[Key, Value] : Handle.takeSharedParts()) {
+                   nanobind::bytes Hash(Key.data(), Key.size());
+                   Result[Hash] = nanobind::bytes(Value.data(), Value.size());
+                 }
+                 return Result;
+               })
+          .def("add_shared_parts",
+               [](T &Handle, nanobind::dict Parts) {
+                 std::map<std::string, std::string> Input;
+                 for (auto [Key, Value] : Parts) {
+                   auto K = nanobind::cast<nanobind::bytes>(Key);
+                   auto V = nanobind::cast<nanobind::bytes>(Value);
+                   Input.emplace(std::string(K.c_str(), K.size()),
+                                 std::string(V.c_str(), V.size()));
+                 }
+                 Handle.addSharedParts(std::move(Input));
+               })
+          .def("shared_parts_statistics", [](T &Handle) {
+            nanobind::dict Result;
+            for (const auto &[Key, Value] : Handle.sharedPartsStatistics())
+              Result[nanobind::str(Key.c_str())] = nanobind::int_(Value);
+            return Result;
+          });
+      }
     });
 
     // Native

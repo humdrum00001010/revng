@@ -35,7 +35,7 @@ from revng.pypeline.utils.registry import get_singleton
 from .file_provider import FileRequest
 from .storage_provider import ContainerLocation, FileStorageEntry, InvalidatedObjects, LockType
 from .storage_provider import ObjectsToInvalidate, PipeDependencies, ProjectID, ProjectMetadata
-from .storage_provider import SetModelResult, StorageProvider, StorageProviderFactory
+from .storage_provider import SetModelResult, SharedParts, StorageProvider, StorageProviderFactory
 from .util import _OBJECTID_MAXSIZE, check_kind_structure, check_object_id_supported_by_sql
 from .util import compute_hash
 
@@ -298,6 +298,11 @@ DELETE FROM objects
 WHERE rowid IN (SELECT object_row_id FROM invalidated_objects_{uuid})
 RETURNING object_id, container_id, savepoint_id, configuration_hash;
 """
+
+
+# How many keys go in one query for shared parts (SQLite limits the number of
+# parameters of a statement)
+_SHARED_PARTS_CHUNK = 500
 
 
 class CursorWrapper:
@@ -630,6 +635,100 @@ class LocalStorageProvider(StorageProvider):
     def supports_dependency_classes(self) -> bool:
         return fixes.enabled(fixes.DEPENDENCY_CLASSES)
 
+    def supports_shared_parts(self) -> bool:
+        return True
+
+    def get_shared_parts(
+        self,
+        location: ContainerLocation,
+        keys: Collection[ObjectID],
+    ) -> dict[bytes, bytes]:
+        result: dict[bytes, bytes] = {}
+        pending: set[bytes] = set()
+        ids = [key.to_bytes() for key in keys]
+        with self._cursor() as cursor:
+            # The parts the objects refer to directly
+            for start in range(0, len(ids), _SHARED_PARTS_CHUNK):
+                chunk = ids[start : start + _SHARED_PARTS_CHUNK]
+                cursor.execute(
+                    "SELECT hashes FROM shared_object_parts WHERE savepoint_id = ? "
+                    "AND container_id = ? AND configuration_hash = ? AND object_id IN "
+                    f"({','.join('?' * len(chunk))})",
+                    (
+                        location.savepoint_id,
+                        location.container_id,
+                        location.configuration_id,
+                        *chunk,
+                    ),
+                )
+                for (hashes,) in cursor:
+                    pending.update(SharedParts.split(hashes))
+
+            # Those parts, the parts they refer to, and so on
+            while pending:
+                batch = list(pending)
+                pending = set()
+                for start in range(0, len(batch), _SHARED_PARTS_CHUNK):
+                    chunk = batch[start : start + _SHARED_PARTS_CHUNK]
+                    cursor.execute(
+                        "SELECT hash, children, content FROM shared_parts WHERE hash IN "
+                        f"({','.join('?' * len(chunk))})",
+                        chunk,
+                    )
+                    for part_hash, children, content in cursor:
+                        result[part_hash] = content
+                        pending.update(SharedParts.split(children))
+                missing = sum(1 for part_hash in batch if part_hash not in result)
+                assert missing == 0, f"{missing} shared parts are missing from the storage"
+                pending -= result.keys()
+        return result
+
+    @staticmethod
+    def _has_shared_object_parts(cursor: sqlite3.Cursor) -> bool:
+        cursor.execute("SELECT EXISTS (SELECT 1 FROM shared_object_parts)")
+        return bool(cursor.fetchone()[0])
+
+    @staticmethod
+    def _collect_shared_parts(cursor: sqlite3.Cursor) -> int:
+        """
+        Delete the shared parts that no stored object needs any more, directly
+        or through other parts. To be called, in the same transaction, after
+        objects have been deleted. Returns how many parts were deleted.
+        """
+        # What the deleted objects referred to no longer counts
+        cursor.execute(
+            """
+            DELETE FROM shared_object_parts
+            WHERE NOT EXISTS (
+                SELECT 1 FROM objects
+                WHERE objects.savepoint_id = shared_object_parts.savepoint_id
+                  AND objects.container_id = shared_object_parts.container_id
+                  AND objects.configuration_hash = shared_object_parts.configuration_hash
+                  AND objects.object_id = shared_object_parts.object_id
+            )
+            """
+        )
+        if cursor.rowcount == 0:
+            return 0
+
+        pending: set[bytes] = set()
+        cursor.execute("SELECT hashes FROM shared_object_parts")
+        for (hashes,) in cursor:
+            pending.update(SharedParts.split(hashes))
+        cursor.execute("SELECT hash, children FROM shared_parts")
+        children: dict[bytes, bytes] = dict(cursor.fetchall())
+        needed: set[bytes] = set()
+        while pending:
+            part_hash = pending.pop()
+            if part_hash in needed:
+                continue
+            needed.add(part_hash)
+            pending.update(SharedParts.split(children.get(part_hash, b"")))
+
+        unneeded = [(part_hash,) for part_hash in children if part_hash not in needed]
+        cursor.executemany("DELETE FROM shared_parts WHERE hash = ?", unneeded)
+        return len(unneeded)
+
     def _add_dependency_classes(self, cursor: sqlite3.Cursor, dependency: PipeDependencies):
         classes = dependency.classes
         assert classes is not None
@@ -675,6 +774,7 @@ class LocalStorageProvider(StorageProvider):
         self,
         dependencies: list[PipeDependencies],
         objects: Mapping[ContainerLocation, Mapping[ObjectID, Buffer]],
+        shared: SharedParts | None = None,
     ) -> None:
         batched = fixes.enabled(fixes.BATCHED_INSERTS)
 
@@ -735,6 +835,47 @@ class LocalStorageProvider(StorageProvider):
                                 bytes(invalidation_blob),
                             ),
                         )
+
+            # Save the parts the objects share and what each object refers to,
+            # in the same transaction as the objects. An object that is stored
+            # again no longer refers to what it referred to before.
+            if shared is not None or self._has_shared_object_parts(cursor):
+                for location, objects_set in objects.items():
+                    cursor.executemany(
+                        "DELETE FROM shared_object_parts WHERE savepoint_id = ? "
+                        "AND container_id = ? AND configuration_hash = ? AND object_id = ?",
+                        (
+                            (
+                                location.savepoint_id,
+                                location.container_id,
+                                location.configuration_id,
+                                object_id.to_bytes(),
+                            )
+                            for object_id in objects_set
+                        ),
+                    )
+            if shared is not None:
+                cursor.executemany(
+                    "INSERT OR IGNORE INTO shared_parts VALUES (?, ?, ?)",
+                    (
+                        (bytes(part_hash), bytes(children), bytes(content))
+                        for part_hash, (children, content) in shared.parts.items()
+                    ),
+                )
+                for location, hashes_of in shared.objects.items():
+                    cursor.executemany(
+                        "REPLACE INTO shared_object_parts VALUES (?, ?, ?, ?, ?)",
+                        (
+                            (
+                                location.savepoint_id,
+                                location.container_id,
+                                location.configuration_id,
+                                object_id.to_bytes(),
+                                bytes(hashes),
+                            )
+                            for object_id, hashes in hashes_of.items()
+                        ),
+                    )
 
             # Save objects
             for location, objects_set in objects.items():
@@ -837,6 +978,10 @@ class LocalStorageProvider(StorageProvider):
                 )
                 invalidated[location].add(object_id_type.from_bytes(object_id))
 
+            # The shared parts only the deleted objects needed go with them
+            if invalidated and self._has_shared_object_parts(cursor):
+                self._collect_shared_parts(cursor)
+
             # DROP the temporary tables as they are no longer needed
             cursor.execute(f"DROP TABLE additional_objects_{table_uuid};")
             cursor.execute(f"DROP TABLE model_paths_{table_uuid};")
@@ -857,6 +1002,8 @@ class LocalStorageProvider(StorageProvider):
             cursor.execute("DELETE FROM dependency_class_objects")
             cursor.execute("DELETE FROM dependency_class_paths")
             cursor.execute("DELETE FROM custom_dependencies")
+            cursor.execute("DELETE FROM shared_parts")
+            cursor.execute("DELETE FROM shared_object_parts")
             self._write_metadata(cursor, _MetadataUpdate.OBJECT_SAVE)
 
     def get_epoch(self) -> int:

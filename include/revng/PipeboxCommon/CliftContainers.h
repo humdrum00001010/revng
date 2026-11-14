@@ -13,6 +13,7 @@
 
 #include "revng/Clift/Clift.h"
 #include "revng/Clift/CliftDialect.h"
+#include "revng/PipeboxCommon/CliftSharedTypes.h"
 #include "revng/PipeboxCommon/Common.h"
 #include "revng/PipeboxCommon/ObjectID.h"
 
@@ -31,6 +32,16 @@ private:
   std::unique_ptr<mlir::MLIRContext> Context;
   std::map<ObjectID, mlir::OwningOpRef<mlir::ModuleOp>> Modules;
 
+  // The shared form (see CliftSharedTypes.h). Between beginSharedParts and
+  // endSharedParts, serialize produces objects in the shared form and collects
+  // the parts they need, which takeSharedParts hands out. deserialize reads
+  // both forms; the parts of the objects in the shared form must have been
+  // given with addSharedParts.
+  std::unique_ptr<clift_shared::Writer> SharedWriter;
+  std::map<std::string, std::string> AvailableParts;
+  std::set<std::string> LoadedParts;
+  clift_shared::Statistics SharedStatistics;
+
 public:
   CliftMultiObjectContainerBase() : Context(clift::makeContext()) {}
 
@@ -42,24 +53,78 @@ public:
   void
   deserialize(const std::map<const ObjectID *, llvm::ArrayRef<char>> Data) {
     const mlir::ParserConfig Config(Context.get());
+    clift_shared::Reader SharedReader(Context.get(),
+                                      AvailableParts,
+                                      LoadedParts,
+                                      SharedStatistics);
     for (auto const &[Object, Buffer] : Data) {
       revng_assert(Object->kind() == Kind);
       llvm::StringRef String(Buffer.data(), Buffer.size());
-      auto NewModule = mlir::parseSourceString<mlir::ModuleOp>(String, Config);
+      mlir::OwningOpRef<mlir::ModuleOp> NewModule;
+      if (clift_shared::hasMagic(String, clift_shared::ObjectMagic))
+        NewModule = SharedReader.readObject(String);
+      else
+        NewModule = mlir::parseSourceString<mlir::ModuleOp>(String, Config);
       revng_assert(NewModule);
       revng_assert(clift::isCliftModule(NewModule.get()));
       Modules[*Object] = std::move(NewModule);
     }
+    AvailableParts.clear();
   }
 
   std::map<ObjectID, Buffer>
   serialize(const std::vector<const ObjectID *> Objects) const {
     std::map<ObjectID, Buffer> Result;
     for (const ObjectID *Object : Objects) {
+      if (SharedWriter) {
+        std::string Shared = SharedWriter->writeObject(*Modules.at(*Object));
+        Result[*Object].data().append(Shared.begin(), Shared.end());
+        continue;
+      }
       llvm::raw_svector_ostream OS(Result[*Object].data());
       mlir::writeBytecodeToFile(*Modules.at(*Object), OS);
     }
     return Result;
+  }
+
+  void beginSharedParts() {
+    SharedWriter = std::make_unique<clift_shared::Writer>(Context.get(),
+                                                          SharedStatistics);
+  }
+
+  std::map<std::string, std::string> takeSharedParts() {
+    revng_assert(SharedWriter);
+    return std::exchange(SharedWriter->NewParts, {});
+  }
+
+  void endSharedParts() { SharedWriter.reset(); }
+
+  void addSharedParts(std::map<std::string, std::string> &&Parts) {
+    AvailableParts.merge(Parts);
+  }
+
+  std::map<std::string, uint64_t> sharedPartsStatistics() const {
+    const auto &S = SharedStatistics;
+    const auto &C = clift::bytecode::TheCounters;
+    return { { "objects", S.Objects },
+             { "object_bytes", S.ObjectBytes },
+             { "roots", S.Roots },
+             { "components", S.Components },
+             { "parts_emitted", S.PartsEmitted },
+             { "part_bytes_emitted", S.PartBytesEmitted },
+             { "parts_loaded", S.PartsLoaded },
+             { "parts_skipped", S.PartsSkipped },
+             // For the whole process, not only this container
+             { "definitions_read", C.DefinitionsRead.load() },
+             { "definitions_written", C.DefinitionsWritten.load() },
+             { "references_read", C.ReferencesRead.load() },
+             { "references_written", C.ReferencesWritten.load() },
+             { "definitions_stored", C.DefinitionsStored.load() },
+             { "definitions_compared", C.DefinitionsCompared.load() },
+             { "names_set", C.NamesSet.load() },
+             { "names_unchanged", C.NamesUnchanged.load() },
+             { "recursion_checks", C.RecursionChecks.load() },
+             { "recursion_check_visits", C.RecursionCheckVisits.load() } };
   }
 
   bool verify() const {
@@ -78,6 +143,9 @@ public:
       return;
 
     Modules.clear();
+    SharedWriter.reset();
+    AvailableParts.clear();
+    LoadedParts.clear();
     Context = clift::makeContext();
     Disposable = false;
   }

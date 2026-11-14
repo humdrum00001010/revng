@@ -18,6 +18,7 @@
 
 #include "revng/ADT/STLExtras.h"
 #include "revng/Clift/CliftAttributes.h"
+#include "revng/Clift/CliftBytecodeSharing.h"
 #include "revng/Clift/CliftDialect.h"
 #include "revng/Clift/CliftInterfaces.h"
 #include "revng/Clift/CliftTypes.h"
@@ -181,9 +182,13 @@ public:
 
   mlir::LogicalResult mutate(mlir::StorageUniquer::StorageAllocator &Allocator,
                              const ClassDefinition &Definition) {
-    if (TheKey.Definition)
+    using clift::bytecode::Counters;
+    if (TheKey.Definition) {
+      Counters::count(clift::bytecode::TheCounters.DefinitionsCompared);
       return mlir::success(Definition == TheKey.Definition);
+    }
 
+    Counters::count(clift::bytecode::TheCounters.DefinitionsStored);
     TheKey.Definition.emplace(Definition.Name,
                               Definition.Comment,
                               Definition.Size,
