@@ -52,6 +52,7 @@
 #include "revng/Support/MetaAddress.h"
 #include "revng/Support/NewPC.h"
 #include "revng/Support/OpaqueRegisterUser.h"
+#include "revng/Support/PipeFixes.h"
 
 #include "RecordRegisters.h"
 
@@ -215,7 +216,11 @@ private:
   void propagatePrototypes();
 
   /// Propagate prototypes to callers
-  void propagatePrototypesInFunction(model::Function &Function);
+  ///
+  /// \param NamesDeduplicated whether the names in the model have been
+  ///        deduplicated and nothing changed since. Kept up to date.
+  void propagatePrototypesInFunction(model::Function &Function,
+                                     bool &NamesDeduplicated);
 
 private:
   CSVSet computePreservedCSVs(const CSVSet &ClobberedRegisters) const;
@@ -842,13 +847,16 @@ void DetectABI::finalizeModel() {
 }
 
 void DetectABI::propagatePrototypes() {
+  // Nothing is known about the names in the model at this point
+  bool NamesDeduplicated = false;
   for (model::Function &Function : Binary->Functions()) {
-    propagatePrototypesInFunction(Function);
+    propagatePrototypesInFunction(Function, NamesDeduplicated);
   }
 }
 
 // TODO: is this still necessary after the new EFA?
-void DetectABI::propagatePrototypesInFunction(model::Function &Function) {
+void DetectABI::propagatePrototypesInFunction(model::Function &Function,
+                                              bool &NamesDeduplicated) {
   const MetaAddress &Entry = Function.Entry();
 
   revng_log(Log, "Trying to propagate prototypes for " << Entry.toString());
@@ -928,6 +936,9 @@ void DetectABI::propagatePrototypesInFunction(model::Function &Function) {
             << toString(model::copyTypeDefinition(*Prototype)) << DoLog;
       }
 
+      // The model changes here, and only here
+      NamesDeduplicated = false;
+
       Function.Prototype() = Binary->makeType(Prototype->key());
 
       if (Function.Name().empty()) {
@@ -948,7 +959,15 @@ void DetectABI::propagatePrototypesInFunction(model::Function &Function) {
   }
 
   // TODO: should this be done at a higher abstraction level?
-  model::deduplicateCollidingNames(Binary);
+  //
+  // Deduplicating visits the whole model, and this runs for every function
+  // with a single block and a single successor: as long as nothing changed
+  // since the last time there is nothing for it to rename.
+  if (not NamesDeduplicated
+      or not pipefix::enabled(pipefix::DeduplicateNamesWhenNeeded)) {
+    model::deduplicateCollidingNames(Binary);
+    NamesDeduplicated = true;
+  }
 }
 
 model::UpcastableType

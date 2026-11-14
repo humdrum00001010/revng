@@ -57,6 +57,11 @@ enum Values : unsigned {
   /// function analyzed), all the functions of the module that carry its tags.
   LazyOpaqueFunctionLookup = 8,
 
+  /// detect-abi, propagation of prototypes to wrappers: deduplicate the names
+  /// in the model (a visit of the whole model) only if something changed since
+  /// the last time, instead of after every wrapper candidate.
+  DeduplicateNamesWhenNeeded = 9,
+
   /// isolate: collect the functions that produce opaque return addresses once
   /// per run instead of once per function (a visit of all the functions of
   /// the module, which grows by one function at each step).
