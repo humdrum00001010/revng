@@ -266,7 +266,12 @@ CustomInvalidationData Lift::run() {
 
   // Look for the library in the system's paths
   T.advance("Load libtcg", false);
-  auto TheLibTcg = LibTcg::get(Model->Architecture());
+  std::optional<LibTcg> OwnLibTcg;
+  if (not pipefix::enabled(pipefix::ReuseLibTcgContext))
+    OwnLibTcg.emplace().initialize(Model->Architecture());
+  LibTcg &TheLibTcg = OwnLibTcg.has_value() ?
+                        *OwnLibTcg :
+                        LibTcg::shared(Model->Architecture());
 
   // Get access to raw binary data
   revng_assert(Binary.size() == 1);

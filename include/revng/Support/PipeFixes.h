@@ -143,6 +143,14 @@ enum Values : unsigned {
   /// decides.
   FixedChildInOnePass = 18,
 
+  /// lift: keep the libtcg context of an architecture for the life of the
+  /// process instead of creating one per run of the pipe and destroying it.
+  /// QEMU initializes once per process: creating a second context aborts
+  /// (`env->idt.base != -1` in target_cpu_copy_regs), which is what happens
+  /// when a change of the model invalidates the lifted module and the same
+  /// process lifts again.
+  ReuseLibTcgContext = 19,
+
   /// analyze-data-layout, ArrangeAccessesHierarchically: each child of the
   /// node being analysed is compared with every later child (canPushThrough).
   /// The comparison does nothing unless the two byte ranges overlap and at

@@ -20,6 +20,23 @@ findLibTcgPath(const model::Architecture::Values Architecture) {
 
 LibTcg LibTcg::get(model::Architecture::Values Architecture) {
   LibTcg Result;
+  Result.initialize(Architecture);
+  return Result;
+}
+
+LibTcg &LibTcg::shared(model::Architecture::Values Architecture) {
+  // Never destroyed: see pipefix::ReuseLibTcgContext
+  static std::map<model::Architecture::Values, LibTcg *> Contexts;
+  LibTcg *&Context = Contexts[Architecture];
+  if (Context == nullptr) {
+    Context = new LibTcg;
+    Context->initialize(Architecture);
+  }
+  return *Context;
+}
+
+void LibTcg::initialize(model::Architecture::Values Architecture) {
+  LibTcg &Result = *this;
 
   // Look for the library in the system's paths
   std::string LibraryPath = findLibTcgPath(Architecture);
@@ -52,8 +69,6 @@ LibTcg LibTcg::get(model::Architecture::Values Architecture) {
     revng_assert(not Result.GlobalNames.contains(Offset));
     Result.GlobalNames[Offset] = Name;
   }
-
-  return Result;
 }
 
 LibTcg::~LibTcg() {

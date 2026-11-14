@@ -46,6 +46,13 @@ public:
 public:
   static LibTcg get(model::Architecture::Values Architecture);
 
+  /// The context of \p Architecture that is created on first use and kept
+  /// until the process ends
+  static LibTcg &shared(model::Architecture::Values Architecture);
+
+  /// What get() does, on an object that already exists
+  void initialize(model::Architecture::Values Architecture);
+
 public:
   const LibTcgArchInfo &archInfo() const { return ArchInfo; }
 
