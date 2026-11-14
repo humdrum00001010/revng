@@ -1116,6 +1116,36 @@ static void suppressCalleeSaved(RUAResults &ABIResults,
   }
 }
 
+/// Whether some calling convention passes arguments in \p Register.
+///
+/// The registers of the x87 stack never carry arguments: a function receives
+/// that stack empty. The data-flow analysis knows nothing of this, it reports
+/// as arguments of a call the registers that are written before it and not
+/// read, and the state variable behind `st0` is also written by MMX
+/// instructions (`movd mm0, eax`).
+static bool canCarryArguments(model::Register::Values Register) {
+  return Register != model::Register::st0_x86;
+}
+
+static void suppressNonArguments(RUAResults &ABIResults,
+                                 model::Architecture::Values Architecture) {
+  auto Suppress = [Architecture](CSVSet &Arguments) {
+    for (auto It = Arguments.begin(); It != Arguments.end();) {
+      auto Register = model::Register::fromCSVName((*It)->getName(),
+                                                   Architecture);
+      if (Register != model::Register::Invalid
+          and not canCarryArguments(Register))
+        It = Arguments.erase(It);
+      else
+        ++It;
+    }
+  };
+
+  Suppress(ABIResults.ArgumentsRegisters);
+  for (auto &[Block, CallSite] : ABIResults.CallSites)
+    Suppress(CallSite.ArgumentsRegisters);
+}
+
 template<typename T, typename F>
 static auto zeroOrOne(const T &Range, const F &Predicate)
   -> decltype(&*Range.begin()) {
@@ -1159,6 +1189,10 @@ Changes DetectABI::runAnalyses(MetaAddress EntryAddress,
   // Refine ABI analyses results by suppressing callee-saved and stack
   // pointer registers.
   suppressCalleeSaved(ABIResults, ActualCalleeSavedRegs);
+
+  // And the registers that no function takes arguments in
+  if (pipefix::enabled(pipefix::NoX87Arguments))
+    suppressNonArguments(ABIResults, Binary->Architecture());
 
   // Commit ABI analysis results to the oracle
   auto Old = Summary.ABIResults;

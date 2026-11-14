@@ -91,6 +91,13 @@ enum Values : unsigned {
   /// and a store that is wider than the variable.
   RegisterWidthInEnforceABI = 13,
 
+  /// detect-abi: do not report an x87 register as an argument of a function
+  /// or of a call site. No calling convention passes arguments there; the
+  /// analysis takes for arguments all the registers written before a call and
+  /// never read, and the state variable of `st0` is also that of the MMX
+  /// register `mm0`.
+  NoX87Arguments = 14,
+
   /// analyze-data-layout, two visits of the type system that start from
   /// every node (or every root) in turn and each time walk again whatever
   /// the earlier ones walked:
