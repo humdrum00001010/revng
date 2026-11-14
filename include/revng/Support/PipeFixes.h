@@ -52,6 +52,11 @@ enum Values : unsigned {
   /// DependencyClassesWanted).
   DependencyClasses = 7,
 
+  /// OpaqueRegisterUser: look the function for a register up by name when it
+  /// is needed, instead of collecting, every time one is constructed (once per
+  /// function analyzed), all the functions of the module that carry its tags.
+  LazyOpaqueFunctionLookup = 8,
+
   /// isolate: collect the functions that produce opaque return addresses once
   /// per run instead of once per function (a visit of all the functions of
   /// the module, which grows by one function at each step).
