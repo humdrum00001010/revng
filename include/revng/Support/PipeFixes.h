@@ -65,7 +65,13 @@ enum Values : unsigned {
   /// isolate: collect the functions that produce opaque return addresses once
   /// per run instead of once per function (a visit of all the functions of
   /// the module, which grows by one function at each step).
-  SharedOpaqueReturnAddressPool = 10
+  SharedOpaqueReturnAddressPool = 10,
+
+  /// analyze-data-layout: when a link is added between two nodes of the type
+  /// system, do not search the set of all nodes for each of them (a check that
+  /// they belong to it), and find the tag of equality links once instead of
+  /// searching the set of tags at every link.
+  CheaperLayoutLinks = 11
 };
 
 /// Whether whoever receives the output of the pipes can take the dependencies

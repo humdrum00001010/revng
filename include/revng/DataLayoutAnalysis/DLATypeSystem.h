@@ -26,6 +26,7 @@
 #include "revng/ADT/FilteredGraphTraits.h"
 #include "revng/Support/Assert.h"
 #include "revng/Support/Debug.h"
+#include "revng/Support/PipeFixes.h"
 
 namespace dla {
 
@@ -319,8 +320,14 @@ protected:
   addLink(LayoutTypeSystemNode *Src, LayoutTypeSystemNode *Tgt, TagT &&Tag) {
     if (Src == nullptr or Tgt == nullptr or Src == Tgt)
       return std::make_pair(nullptr, false);
-    revng_assert(Layouts.contains(Src));
-    revng_assert(Layouts.contains(Tgt));
+
+    // Each of these checks is a search in the set of all the nodes, twice per
+    // link: on a large program they take more time than adding the link
+    if (not CheaperLinks) {
+      revng_assert(Layouts.contains(Src));
+      revng_assert(Layouts.contains(Tgt));
+    }
+
     auto It = LinkTags.insert(std::forward<TagT>(Tag)).first;
     revng_assert(It != LinkTags.end());
     const TypeLinkTag *T = &*It;
@@ -332,6 +339,26 @@ protected:
 public:
   std::pair<const TypeLinkTag *, bool>
   addEqualityLink(LayoutTypeSystemNode *Src, LayoutTypeSystemNode *Tgt) {
+    if (CheaperLinks) {
+      if (Src == nullptr or Tgt == nullptr or Src == Tgt)
+        return std::make_pair(nullptr, false);
+
+      // All equality links carry the same tag: tags are never removed from
+      // LinkTags and a set does not move its elements, so the tag can be
+      // looked up once
+      if (EqualityTag == nullptr)
+        EqualityTag = &*LinkTags.insert(dla::TypeLinkTag::equalityTag()).first;
+      const TypeLinkTag *T = EqualityTag;
+
+      // What the two calls to addLink below do
+      bool NewForward = Src->Successors.insert(std::make_pair(Tgt, T)).second;
+      NewForward |= Tgt->Predecessors.insert(std::make_pair(Src, T)).second;
+      bool NewBackward = Tgt->Successors.insert(std::make_pair(Src, T)).second;
+      NewBackward |= Src->Predecessors.insert(std::make_pair(Tgt, T)).second;
+      revng_assert(NewForward == NewBackward);
+      return std::make_pair(T, NewForward);
+    }
+
     auto ForwardLinkTag = addLink(Src, Tgt, dla::TypeLinkTag::equalityTag());
     auto BackwardLinkTag = addLink(Tgt, Src, dla::TypeLinkTag::equalityTag());
     revng_assert(ForwardLinkTag == BackwardLinkTag);
@@ -407,6 +434,10 @@ private:
   // Holds the link tags, so that they can be deduplicated and referred to using
   // TypeLinkTag * in the links inside LayoutTypeSystemNode
   std::set<TypeLinkTag> LinkTags = {};
+
+  // See addLink and addEqualityLink
+  const bool CheaperLinks = pipefix::enabled(pipefix::CheaperLayoutLinks);
+  const TypeLinkTag *EqualityTag = nullptr;
 
 public:
   // Checks that is valid, and returns true if it is, false otherwise
