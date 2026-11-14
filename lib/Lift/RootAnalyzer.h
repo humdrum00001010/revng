@@ -5,9 +5,11 @@
 //
 
 #include <unordered_set>
+#include <vector>
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/ValueHandle.h"
 #include "llvm/Transforms/Utils/ValueMapper.h"
 
 #include "revng/Model/Binary.h"
@@ -50,7 +52,8 @@ private:
                                   revng::IRBuilder &Builder);
 
   SummaryCallsBuilder optimize(llvm::Function *OptimizedFunction,
-                               const Features &CommonFeatures);
+                               const Features &CommonFeatures,
+                               const std::vector<llvm::WeakVH> &StackPops);
 
   GlobalToAllocaTy promoteCSVsToAlloca(llvm::Function *OptimizedFunction);
 

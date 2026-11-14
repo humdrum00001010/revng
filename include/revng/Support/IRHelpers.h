@@ -1095,6 +1095,51 @@ const llvm::BasicBlock *getJumpTargetBlock(const llvm::BasicBlock *BB);
 /// Replace all uses of \Old, with \New in \F.
 ///
 /// \return true if it changes something, false otherwise.
+/// Replace, in the instructions of \p F, each use of a key of \p Replacements
+/// with the corresponding value, visiting the function only once.
+///
+/// It behaves as calling the single-value version once per entry of the map,
+/// which visits the whole function every time.
+template<typename MapType>
+inline bool
+replaceAllUsesInFunctionWith(llvm::Function *F, const MapType &Replacements) {
+  using namespace llvm;
+
+  bool Changed = false;
+
+  for (BasicBlock &BB : *F) {
+    for (Instruction &I : BB) {
+      for (Use &U : I.operands()) {
+        Value *Operand = U.get();
+        if (isa<GlobalVariable>(Operand)) {
+          auto It = Replacements.find(cast<GlobalVariable>(Operand));
+          if (It != Replacements.end()) {
+            U.set(It->second);
+            Changed = true;
+          }
+        } else if (auto *CE = dyn_cast<ConstantExpr>(Operand)) {
+          if (CE->isCast() and isa<GlobalVariable>(CE->getOperand(0))) {
+            Value *Old = CE->getOperand(0);
+            auto It = Replacements.find(cast<GlobalVariable>(Old));
+            if (It != Replacements.end()) {
+              // Preserve the shared constant expression and materialize a
+              // cast for this local use, replacing Old only in the new
+              // instruction.
+              Instruction *CastInst = CE->getAsInstruction();
+              CastInst->replaceUsesOfWith(Old, It->second);
+              CastInst->insertBefore(&I);
+              U.set(CastInst);
+              Changed = true;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return Changed;
+}
+
 inline bool replaceAllUsesInFunctionWith(llvm::Function *F,
                                          llvm::Value *Old,
                                          llvm::Value *New) {

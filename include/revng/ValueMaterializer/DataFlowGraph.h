@@ -80,17 +80,30 @@ public:
   class Limits {
   public:
     static constexpr const auto Max = std::numeric_limits<unsigned>::max();
+    using ValueSet = llvm::SmallPtrSetImpl<const llvm::Value *>;
 
   private:
     unsigned MaxPhiLike = Max;
     unsigned MaxLoad = Max;
 
-  public:
-    Limits() = default;
-    Limits(unsigned MaxPhiLike, unsigned MaxLoad) :
-      MaxPhiLike(MaxPhiLike), MaxLoad(MaxLoad) {}
+    /// Loads the graph must not go past, whatever MaxLoad is (e.g., a load
+    /// popping the program counter from the stack: its address is the stack
+    /// pointer, not a statically mapped location, so no memory oracle can read
+    /// through it).
+    const ValueSet *DoNotFollow = nullptr;
 
   public:
+    Limits() = default;
+    Limits(unsigned MaxPhiLike,
+           unsigned MaxLoad,
+           const ValueSet *DoNotFollow = nullptr) :
+      MaxPhiLike(MaxPhiLike), MaxLoad(MaxLoad), DoNotFollow(DoNotFollow) {}
+
+  public:
+    bool shouldNotFollow(const llvm::Value *Load) const {
+      return DoNotFollow != nullptr and DoNotFollow->contains(Load);
+    }
+
     bool consumePhiLike() {
       if (MaxPhiLike == 0)
         return false;

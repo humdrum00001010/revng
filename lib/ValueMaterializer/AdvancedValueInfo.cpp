@@ -31,6 +31,7 @@
 #include "revng/Support/GraphAlgorithms.h"
 #include "revng/Support/IRHelpers.h"
 #include "revng/Support/Statistics.h"
+#include "revng/Support/VMFixes.h"
 #include "revng/ValueMaterializer/AdvancedValueInfo.h"
 #include "revng/ValueMaterializer/DataFlowGraph.h"
 #include "revng/ValueMaterializer/DataFlowRangeAnalysis.h"
@@ -42,6 +43,26 @@ using std::map;
 static Logger AVILogger("avi");
 
 inline RunningStatistics AVICFEGSizeStatitistics("avi-cfeg-size");
+
+AVICandidatesCache::Set AVICandidatesCache::compute(Instruction *I) {
+  // Note: same insertion order as the loop it replaces, the iteration order of
+  //       the set decides which candidate wins among equally sized ranges
+  Set Candidates;
+  Candidates.insert(I);
+
+  for (User *U : I->users()) {
+    if (auto *Trunc = dyn_cast<TruncInst>(U)) {
+      Candidates.insert(Trunc);
+      for (User *U2 : Trunc->users()) {
+        if (auto *ZExt = dyn_cast<ZExtInst>(U2)) {
+          Candidates.insert(ZExt);
+        }
+      }
+    }
+  }
+
+  return Candidates;
+}
 
 AdvancedValueInfoMFI::LatticeElement
 AdvancedValueInfoMFI::combineValues(const LatticeElement &LHS,
@@ -90,23 +111,51 @@ AdvancedValueInfoMFI::applyTransferFunction(Label L,
     uint32_t BitWidth = I->getType()->getIntegerBitWidth();
     ConstantRangeSet Range(BitWidth, true);
 
-    SmallSet<Instruction *, 4> Candidates;
-    Candidates.insert(I);
+    SmallSet<Instruction *, 4> LocalCandidates;
+    const SmallSet<Instruction *, 4> *CandidatesPointer = &LocalCandidates;
 
-    if (ZeroExtendConstraints) {
-      // Steal constraints from trunc'd versions of this value and use the most
-      // accurate
-      for (User *U : I->users()) {
-        if (auto *Trunc = dyn_cast<TruncInst>(U)) {
-          Candidates.insert(Trunc);
-          for (User *U2 : Trunc->users()) {
-            if (auto *ZExt = dyn_cast<ZExtInst>(U2)) {
-              Candidates.insert(ZExt);
+    // Steal constraints from trunc'd versions of this value and use the most
+    // accurate
+    //
+    // Note: an instruction can have hundreds of thousands of users (e.g., the
+    //       initial value of the stack pointer in root): walk them once, not
+    //       on every application of the transfer function.
+    bool UseCache = ZeroExtendConstraints
+                    and vmfix::enabled(vmfix::CandidateCache)
+                    and I->hasNUsesOrMore(8);
+    if (UseCache) {
+      CandidatesPointer = &CandidatesCache.get(I);
+
+      if (vmfix::verifying() and VerifiedCandidates.insert(I).second) {
+        // The cached set must be what walking the users now would give
+        static vmfix::VerifyCounter Counter("candidates of a tracked "
+                                            "instruction (cache vs walk)");
+        auto Fresh = AVICandidatesCache::compute(I);
+        SmallVector<Instruction *, 8> Cached(CandidatesPointer->begin(),
+                                             CandidatesPointer->end());
+        SmallVector<Instruction *, 8> Walked(Fresh.begin(), Fresh.end());
+        if (Cached != Walked)
+          vmfix::verificationFailed(Counter.Name);
+        Counter.record(Walked.size());
+      }
+    } else {
+      LocalCandidates.insert(I);
+
+      if (ZeroExtendConstraints) {
+        for (User *U : I->users()) {
+          if (auto *Trunc = dyn_cast<TruncInst>(U)) {
+            LocalCandidates.insert(Trunc);
+            for (User *U2 : Trunc->users()) {
+              if (auto *ZExt = dyn_cast<ZExtInst>(U2)) {
+                LocalCandidates.insert(ZExt);
+              }
             }
           }
         }
       }
     }
+
+    const SmallSet<Instruction *, 4> &Candidates = *CandidatesPointer;
 
     if (AVILogger.isEnabled()) {
       AVILogger << "Considering constraints on " << getName(I);
@@ -206,8 +255,15 @@ runAVI(const DataFlowGraph &DFG,
        const llvm::DominatorTree &DT,
        llvm::LazyValueInfo &LVI,
        DataFlowRangeAnalysis &DFRA,
-       bool ZeroExtendConstraints) {
+       bool ZeroExtendConstraints,
+       AVICandidatesCache *CandidatesCache) {
   using namespace llvm;
+
+  // Without a longer-lived cache, candidates are still collected only once per
+  // query
+  AVICandidatesCache LocalCandidatesCache;
+  if (CandidatesCache == nullptr)
+    CandidatesCache = &LocalCandidatesCache;
 
   //
   // Identify nodes from the root of the DFG to all the instructions in the
@@ -309,7 +365,8 @@ runAVI(const DataFlowGraph &DFG,
                               DT,
                               Context,
                               Targets,
-                              ZeroExtendConstraints);
+                              ZeroExtendConstraints,
+                              *CandidatesCache);
 
   AdvancedValueInfoMFI::LatticeElement ExtremalValue;
   for (Instruction *I : Targets)

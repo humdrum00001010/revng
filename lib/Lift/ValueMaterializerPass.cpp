@@ -92,6 +92,22 @@ PreservedAnalyses ValueMaterializerPass::run(Function &F,
   auto &LVI = FAM.getResult<LazyValueAnalysis>(F);
   auto &DT = FAM.getResult<DominatorTreeAnalysis>(F);
 
+  // The function is not modified while its markers are processed (only
+  // metadata is attached), so candidates can be shared among all the queries
+  AVICandidatesCache CandidatesCache;
+
+  // The loads popping the program counter from the stack that survived the
+  // optimizations: the data-flow graphs do not go past them
+  SmallPtrSet<const Value *, 16> DoNotFollow;
+  if (StackPops != nullptr) {
+    for (const WeakVH &Handle : *StackPops) {
+      const Value *V = Handle;
+      if (const auto *Load = dyn_cast_or_null<LoadInst>(V))
+        if (Load->getFunction() == &F)
+          DoNotFollow.insert(Load);
+    }
+  }
+
   BasicBlock *Entry = &F.getEntryBlock();
   auto GetConstantArgument = [](CallBase *Call, unsigned Index) {
     return cast<ConstantInt>(Call->getArgOperand(Index))->getLimitedValue();
@@ -113,7 +129,7 @@ PreservedAnalyses ValueMaterializerPass::run(Function &F,
     uint64_t CurrentAddress = Address.address();
 
     MaterializedValues Values;
-    DataFlowGraph::Limits Limits(MaxPhiLike, MaxLoad);
+    DataFlowGraph::Limits Limits(MaxPhiLike, MaxLoad, &DoNotFollow);
     auto Results = ::ValueMaterializer::getValuesFor(Call,
                                                      ToTrack,
                                                      MO,
@@ -121,7 +137,8 @@ PreservedAnalyses ValueMaterializerPass::run(Function &F,
                                                      DFRA,
                                                      DT,
                                                      Limits,
-                                                     Oracle);
+                                                     Oracle,
+                                                     &CandidatesCache);
     if (Results.values())
       Values = std::move(*Results.values());
 

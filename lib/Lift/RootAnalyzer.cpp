@@ -36,6 +36,7 @@
 #include "revng/Support/NewPC.h"
 #include "revng/Support/OpaqueRegisterUser.h"
 #include "revng/Support/Statistics.h"
+#include "revng/Support/VMFixes.h"
 #include "revng/TypeShrinking/TypeShrinking.h"
 #include "revng/TypeShrinking/TypeShrinkingAnalysis.h"
 #include "revng/ValueMaterializer/DataFlowGraph.h"
@@ -617,6 +618,28 @@ RootAnalyzer::promoteCSVsToAlloca(Function *OptimizedFunction) {
   revng::IRBuilder AllocaBuilder(&*EntryBB->begin());
   revng::IRBuilder InitBuilder(EntryBB->getTerminator());
 
+  if (vmfix::enabled(vmfix::SingleSweepPromotion)) {
+    // Same result as the loop below, but the function is visited once instead
+    // of once per CSV: create all the allocas, replace all the uses, and only
+    // then emit the loads of the CSVs initializing the allocas (they must keep
+    // using the CSVs).
+    auto SortedCSVs = toSortedByName(CSVs);
+
+    for (GlobalVariable *CSV : SortedCSVs) {
+      Type *CSVType = CSV->getValueType();
+      CSVMap[CSV] = AllocaBuilder.CreateAlloca(CSVType,
+                                               nullptr,
+                                               CSV->getName());
+    }
+
+    replaceAllUsesInFunctionWith(OptimizedFunction, CSVMap);
+
+    for (GlobalVariable *CSV : SortedCSVs)
+      InitBuilder.CreateStore(InitBuilder.createLoad(CSV), CSVMap[CSV]);
+
+    return CSVMap;
+  }
+
   for (GlobalVariable *CSV : toSortedByName(CSVs)) {
     Type *CSVType = CSV->getValueType();
     auto *Alloca = AllocaBuilder.CreateAlloca(CSVType, nullptr, CSV->getName());
@@ -632,8 +655,10 @@ RootAnalyzer::promoteCSVsToAlloca(Function *OptimizedFunction) {
   return CSVMap;
 }
 
-SummaryCallsBuilder RootAnalyzer::optimize(llvm::Function *OptimizedFunction,
-                                           const Features &CommonFeatures) {
+SummaryCallsBuilder
+RootAnalyzer::optimize(llvm::Function *OptimizedFunction,
+                       const Features &CommonFeatures,
+                       const std::vector<llvm::WeakVH> &StackPops) {
   using namespace model::Architecture;
   using namespace model::Register;
 
@@ -730,7 +755,7 @@ SummaryCallsBuilder RootAnalyzer::optimize(llvm::Function *OptimizedFunction,
     FPM.addPass(DropRangeMetadataPass());
 
     // Run ValueMaterializer!
-    FPM.addPass(ValueMaterializerPass(MO));
+    FPM.addPass(ValueMaterializerPass(MO, &StackPops));
 
     FunctionAnalysisManager FAM;
     FAM.registerPass([]() {
@@ -966,6 +991,62 @@ static MetaAddress::Features findCommonFeatures(Function *F) {
   return Result;
 }
 
+/// If the program counter being written before \p ExitTB is popped from the
+/// top of the stack (i.e., it is loaded from the address held by the stack
+/// pointer, as a return instruction does), record the load performing the pop
+/// in \p StackPops, so that the data-flow graphs of the value materializer do
+/// not go past it.
+///
+/// The address of such a load is the stack pointer, whose value is unknown
+/// when entering the code being analyzed, and the stack is not part of the
+/// statically mapped memory: following the load cannot lead to any value, but
+/// drags into the analysis the initial value of the stack pointer, which is
+/// used all over root.
+///
+/// Note: what is recorded is the load, not the value being tracked. If later
+///       optimizations replace the load with the value that has been stored
+///       there (e.g., `push X; ret`), the load is deleted, its handle becomes
+///       null and what is left is analyzed as usual.
+static void collectStackPop(CallBase *ExitTB,
+                            GlobalVariable *StackPointer,
+                            const ProgramCounterHandler &PCH,
+                            std::vector<WeakVH> &StackPops) {
+  if (StackPointer == nullptr)
+    return;
+
+  auto SkipCasts = [](Value *V) {
+    while (true) {
+      if (auto *Cast = dyn_cast<CastInst>(V))
+        V = Cast->getOperand(0);
+      else if (auto *CE = dyn_cast<ConstantExpr>(V); CE and CE->isCast())
+        V = CE->getOperand(0);
+      else
+        return V;
+    }
+  };
+
+  for (Instruction *I = ExitTB->getPrevNode(); I != nullptr;
+       I = I->getPrevNode()) {
+    auto *Store = dyn_cast<StoreInst>(I);
+    if (Store == nullptr or not PCH.affectsPC(Store))
+      continue;
+
+    // Is the value written in the program counter loaded from memory?
+    auto *Load = dyn_cast<LoadInst>(SkipCasts(Store->getValueOperand()));
+    if (Load == nullptr)
+      continue;
+
+    // Is the address of the load the current value of the stack pointer?
+    Value *LoadAddress = SkipCasts(Load->getPointerOperand());
+    auto *AddressLoad = dyn_cast<LoadInst>(LoadAddress);
+    if (AddressLoad == nullptr
+        or AddressLoad->getPointerOperand() != StackPointer)
+      continue;
+
+    StackPops.emplace_back(Load);
+  }
+}
+
 void RootAnalyzer::cloneOptimizeAndHarvest(Function *TheFunction) {
   // Re-run the identification of function calls
   RootFunction Root(*TheFunction->getParent());
@@ -981,6 +1062,16 @@ void RootAnalyzer::cloneOptimizeAndHarvest(Function *TheFunction) {
 
   AnalysisRegistry AR(&TheModule);
 
+  // The loads popping the program counter from the stack (e.g., returns)
+  std::vector<WeakVH> StackPops;
+  GlobalVariable *StackPointerCSV = nullptr;
+  if (vmfix::enabled(vmfix::StackPopNotFollowed)) {
+    using namespace model::Architecture;
+    auto StackPointerRegister = getStackPointer(Model->Architecture());
+    auto Name = model::Register::singleCSVName(StackPointerRegister);
+    StackPointerCSV = TheModule.getGlobalVariable(Name, true);
+  }
+
   // Register for analysis the value written in the PC before each exit_tb call
   revng::IRBuilder Builder(TheModule.getContext());
   for (CallBase *Call : callersIn(JTM.exitTB(), TheFunction)) {
@@ -990,6 +1081,10 @@ void RootAnalyzer::cloneOptimizeAndHarvest(Function *TheFunction) {
       continue;
     Builder.SetInsertPoint(cast<CallInst>(&*It->second));
     ProgramCounterHandler *PCH = JTM.programCounterHandler();
+    collectStackPop(cast<CallInst>(&*It->second),
+                    StackPointerCSV,
+                    *PCH,
+                    StackPops);
     Instruction *ComposedIntegerPC = PCH->composeIntegerPC(Builder);
     AR.registerValue(getPC(Call).first,
                      Call,
@@ -1013,7 +1108,7 @@ void RootAnalyzer::cloneOptimizeAndHarvest(Function *TheFunction) {
 
   // Optimize the hell out of it and collect the possible values of indirect
   // branches.
-  auto SCB = optimize(OptimizedFunction, CommonFeatures);
+  auto SCB = optimize(OptimizedFunction, CommonFeatures, StackPops);
 
   revng::verify(OptimizedFunction);
 

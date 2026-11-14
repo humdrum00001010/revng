@@ -5,6 +5,9 @@
 //
 
 #include <map>
+#include <unordered_map>
+
+#include "llvm/ADT/SmallSet.h"
 
 #include "revng/ADT/ConstantRangeSet.h"
 #include "revng/MFP/Graph.h"
@@ -19,6 +22,30 @@ class DominatorTree;
 } // namespace llvm
 
 class DataFlowGraph;
+
+/// For a tracked instruction, the instructions whose constraints can be used
+/// in its place: the instruction itself, its truncations and the zero
+/// extensions of those. They depend only on the instruction, so they are
+/// collected once and reused across applications of the transfer function and,
+/// if the cache outlives the query, across queries on the same (unmodified)
+/// function.
+class AVICandidatesCache {
+public:
+  using Set = llvm::SmallSet<llvm::Instruction *, 4>;
+
+private:
+  std::unordered_map<const llvm::Instruction *, Set> Map;
+
+public:
+  static Set compute(llvm::Instruction *I);
+
+  const Set &get(llvm::Instruction *I) {
+    auto It = Map.find(I);
+    if (It == Map.end())
+      It = Map.emplace(I, compute(I)).first;
+    return It->second;
+  }
+};
 
 class AdvancedValueInfoMFI {
 public:
@@ -36,6 +63,11 @@ private:
   llvm::Instruction *Context;
   llvm::SmallPtrSetImpl<llvm::Instruction *> &Instructions;
   bool ZeroExtendConstraints = false;
+  AVICandidatesCache &CandidatesCache;
+
+  /// Self-check mode only: instructions whose cached candidates have already
+  /// been compared, in this query, with a fresh walk of their users
+  mutable llvm::SmallPtrSet<llvm::Instruction *, 8> VerifiedCandidates;
 
 public:
   AdvancedValueInfoMFI(llvm::LazyValueInfo &LVI,
@@ -43,13 +75,15 @@ public:
                        const llvm::DominatorTree &DT,
                        llvm::Instruction *Context,
                        InstructionsSet &Instructions,
-                       bool ZeroExtendConstraints) :
+                       bool ZeroExtendConstraints,
+                       AVICandidatesCache &CandidatesCache) :
     LVI(LVI),
     DFRA(DFRA),
     DT(DT),
     Context(Context),
     Instructions(Instructions),
-    ZeroExtendConstraints(ZeroExtendConstraints) {}
+    ZeroExtendConstraints(ZeroExtendConstraints),
+    CandidatesCache(CandidatesCache) {}
 
 public:
   LatticeElement combineValues(const LatticeElement &LHS,
@@ -80,7 +114,8 @@ runAVI(const DataFlowGraph &DFG,
        const llvm::DominatorTree &DT,
        llvm::LazyValueInfo &LVI,
        DataFlowRangeAnalysis &DFRA,
-       bool ZeroExtendConstraints);
+       bool ZeroExtendConstraints,
+       AVICandidatesCache *CandidatesCache = nullptr);
 
 template<>
 void mfp::dump(llvm::raw_ostream &Stream,

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "llvm/ADT/BreadthFirstIterator.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/ADT/GraphTraits.h"
 #include "llvm/ADT/MapVector.h"
@@ -20,8 +21,10 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/SmallVector.h"
 
 #include "revng/Support/Debug.h"
+#include "revng/Support/VMFixes.h"
 
 /// A generic way to compute a set of entry points to a graph such that any node
 /// in said graph is reachable from at least one of those points.
@@ -343,13 +346,94 @@ nodesBetweenImpl(GraphT Source, GraphT Target) {
   SmallSetVector ForwardDFSNodes = findReachableNodes<NodeRef, FGT>(Source,
                                                                     Target);
 
-  // Perform the backward DFS visit, stopping at the `Source` node
-  SmallSetVector BackwardDFSNodes = findReachableNodes<NodeRef, BGT>(Target,
-                                                                     Source);
+  SmallSetVector Result;
 
-  // Perform the set intersection between the forward and backward set nodes
-  SmallSetVector Result = llvm::set_intersection(ForwardDFSNodes,
-                                                 BackwardDFSNodes);
+  if (vmfix::enabled(vmfix::BoundedNodesBetween)) {
+    // The backward visit can reach the whole graph (e.g., all of root, if
+    // `Target` is its entry block) while the result is a subset of the forward
+    // visit. Perform it only as long as it is not larger than the forward one.
+    SmallSetVector BackwardDFSNodes;
+    bool Complete = true;
+    {
+      using ExtType = typename llvm::df_iterator_default_set<NodeRef>;
+      ExtType ExtSet;
+      ExtSet.insert(Source);
+
+      using df_iterator = llvm::df_iterator<NodeRef, ExtType, false, BGT>;
+      auto Begin = df_iterator::begin(Target, ExtSet);
+      auto End = df_iterator::end(Target, ExtSet);
+      for (NodeRef Block : llvm::make_range(Begin, End)) {
+        BackwardDFSNodes.insert(Block);
+        if (BackwardDFSNodes.size() > ForwardDFSNodes.size()) {
+          Complete = false;
+          break;
+        }
+      }
+    }
+
+    if (Complete) {
+      // The backward set is not larger than the forward one: nothing to save
+      Result = llvm::set_intersection(ForwardDFSNodes, BackwardDFSNodes);
+    } else {
+      // The backward set is the larger one, so the intersection has to be
+      // enumerated in the order of the forward set. A node of the forward set
+      // is in the backward set iff it reaches `Target` going through nodes of
+      // the forward set only (every node on a path from a node of the forward
+      // set to `Target` is itself reachable from `Source` without crossing
+      // `Target`), `Source` excluded since the backward visit stops there.
+      llvm::SmallPtrSet<NodeRef, 8> ReachTarget;
+      llvm::SmallVector<NodeRef, 8> WorkList;
+      llvm::DenseMap<NodeRef, llvm::SmallVector<NodeRef, 2>> ReachedFrom;
+      for (NodeRef Node : ForwardDFSNodes) {
+        if (Node == Source)
+          continue;
+
+        for (NodeRef Child :
+             llvm::make_range(FGT::child_begin(Node), FGT::child_end(Node))) {
+          if (Child == Target) {
+            if (ReachTarget.insert(Node).second)
+              WorkList.push_back(Node);
+          } else if (Child != Source and ForwardDFSNodes.count(Child) != 0) {
+            ReachedFrom[Child].push_back(Node);
+          }
+        }
+      }
+
+      while (not WorkList.empty()) {
+        NodeRef Node = WorkList.pop_back_val();
+        auto It = ReachedFrom.find(Node);
+        if (It == ReachedFrom.end())
+          continue;
+        for (NodeRef Predecessor : It->second)
+          if (ReachTarget.insert(Predecessor).second)
+            WorkList.push_back(Predecessor);
+      }
+
+      for (NodeRef Node : ForwardDFSNodes)
+        if (ReachTarget.count(Node) != 0)
+          Result.insert(Node);
+    }
+
+    if (vmfix::verifying()) {
+      // Same elements, in the same order, as the two unbounded visits
+      static vmfix::VerifyCounter Counter("nodesBetween (bounded vs two full "
+                                          "visits)");
+      SmallSetVector FullBackward = findReachableNodes<NodeRef, BGT>(Target,
+                                                                     Source);
+      SmallSetVector Old = llvm::set_intersection(ForwardDFSNodes,
+                                                  FullBackward);
+      if (not(Old.getArrayRef() == Result.getArrayRef()))
+        vmfix::verificationFailed(Counter.Name);
+      Counter.record(Old.size());
+    }
+  } else {
+    // Perform the backward DFS visit, stopping at the `Source` node
+    SmallSetVector BackwardDFSNodes = findReachableNodes<NodeRef, BGT>(Target,
+                                                                       Source);
+
+    // Perform the set intersection between the forward and backward set nodes
+    Result = llvm::set_intersection(ForwardDFSNodes, BackwardDFSNodes);
+  }
 
   // Corner case handling
   if (not Result.empty()) {

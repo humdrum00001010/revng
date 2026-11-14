@@ -132,7 +132,7 @@ void DataFlowGraph::enforceLimits(Limits TheLimits) {
     Value *V = N->Value;
 
     if (isa<LoadInst>(V)) {
-      if (not NewLimit.consumeLoad())
+      if (NewLimit.shouldNotFollow(V) or not NewLimit.consumeLoad())
         ToPurge.insert(N);
     } else if (isPhiLike(V)) {
       if (not NewLimit.consumePhiLike())
@@ -189,7 +189,8 @@ DataFlowGraph::processValue(Value *V, Limits Limits) {
     }
   } else if (auto *U = dyn_cast<User>(V)) {
 
-    if (not isa<LoadInst>(U) or Limits.consumeLoad()) {
+    if (not isa<LoadInst>(U)
+        or (not Limits.shouldNotFollow(U) and Limits.consumeLoad())) {
       for (Value *Operand : U->operands())
         NewNode->addSuccessor(rc_recur processValue(Operand, Limits));
     }
