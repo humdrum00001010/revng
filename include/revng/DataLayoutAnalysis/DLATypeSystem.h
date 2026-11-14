@@ -443,6 +443,50 @@ public:
   }
 }; // end class LayoutTypeSystem
 
+/// Whether the environment variable REVNG_DLA_ORDER_BY_ID is set. Some steps
+/// order nodes by their address where the order changes what they do (which
+/// node a group is merged into, the IDs of the nodes they create); with the
+/// variable set they order them by ID instead, so that the results of two runs
+/// can be compared. For verification; off by default.
+bool orderByID();
+
+/// Orders nodes by address, or by ID if orderByID()
+struct NodeOrder {
+  bool operator()(const LayoutTypeSystemNode *A,
+                  const LayoutTypeSystemNode *B) const {
+    if (orderByID())
+      return A->ID < B->ID;
+    return std::less<const LayoutTypeSystemNode *>()(A, B);
+  }
+};
+
+/// Measurements of a run of the analysis, for whoever wants to know where its
+/// time and memory go. Nothing is collected unless the environment variable
+/// REVNG_DLA_STATS names a file, to which one line per call is appended.
+namespace statistics {
+
+/// Whether REVNG_DLA_STATS is set
+bool enabled();
+
+/// Write a line with: the label, the time since the first call (wall clock
+/// and CPU), the resident memory of the process (now and its peak), the
+/// number of nodes, the number of links of each kind and a fingerprint of the
+/// type system (IDs, sizes and flags of the nodes, their outgoing links and
+/// the equivalence classes): two type systems with the same fingerprint are
+/// the same.
+void record(llvm::StringRef Label, const LayoutTypeSystem &TS);
+
+/// Write a line with the label and the given text
+void note(llvm::StringRef Label, llvm::StringRef Text);
+
+/// See record()
+extern const LayoutTypeSystemNode *MostPredecessors;
+
+/// The node whose ID is REVNG_DLA_WATCH_ID, when it is created
+extern LayoutTypeSystemNode *Watched;
+
+} // namespace statistics
+
 } // end namespace dla
 
 template<>

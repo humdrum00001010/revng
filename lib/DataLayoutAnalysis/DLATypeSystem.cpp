@@ -3,6 +3,10 @@
 //
 
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
 #include <string>
 
 #include "llvm/ADT/ArrayRef.h"
@@ -209,6 +213,13 @@ LayoutTypeSystemNode *LayoutTypeSystem::createArtificialLayoutType() {
   using LTSN = LayoutTypeSystemNode;
   LTSN *New = new (NodeAllocator) LayoutTypeSystemNode(NID);
   revng_assert(New);
+  // For a debugger: REVNG_DLA_WATCH_ID=N keeps the address of node N
+  static const long long WatchID = [] {
+    const char *Text = std::getenv("REVNG_DLA_WATCH_ID");
+    return Text != nullptr ? std::atoll(Text) : -1LL;
+  }();
+  if (WatchID >= 0 and NID == static_cast<uint64_t>(WatchID))
+    statistics::Watched = New;
   ++NID;
   EqClasses.growBy1();
   bool Success = Layouts.insert(New).second;
@@ -738,6 +749,159 @@ unsigned VectEqClasses::growBy1() {
   grow(NElems);
   return NElems;
 }
+
+bool orderByID() {
+  static const bool Enabled = std::getenv("REVNG_DLA_ORDER_BY_ID") != nullptr;
+  return Enabled;
+}
+
+namespace statistics {
+
+static std::FILE *output() {
+  static std::FILE *File = []() -> std::FILE * {
+    const char *Path = std::getenv("REVNG_DLA_STATS");
+    if (Path == nullptr or Path[0] == '\0')
+      return nullptr;
+    return std::fopen(Path, "a");
+  }();
+  return File;
+}
+
+bool enabled() {
+  return output() != nullptr;
+}
+
+/// Resident memory and its peak, in kB
+static std::pair<uint64_t, uint64_t> residentMemory() {
+  uint64_t Now = 0;
+  uint64_t Peak = 0;
+  if (std::FILE *Status = std::fopen("/proc/self/status", "r")) {
+    char Line[256];
+    while (std::fgets(Line, sizeof(Line), Status) != nullptr) {
+      unsigned long long Value = 0;
+      if (std::sscanf(Line, "VmRSS: %llu", &Value) == 1)
+        Now = Value;
+      else if (std::sscanf(Line, "VmHWM: %llu", &Value) == 1)
+        Peak = Value;
+    }
+    std::fclose(Status);
+  }
+  return { Now, Peak };
+}
+
+static std::string prefix(llvm::StringRef Label) {
+  using Clock = std::chrono::steady_clock;
+  static const Clock::time_point Start = Clock::now();
+  static const std::clock_t StartCPU = std::clock();
+  double Wall = std::chrono::duration<double>(Clock::now() - Start).count();
+  double CPU = double(std::clock() - StartCPU) / CLOCKS_PER_SEC;
+  auto [Resident, Peak] = residentMemory();
+  char Buffer[160];
+  std::snprintf(Buffer,
+                sizeof(Buffer),
+                " | wall %.2f s | cpu %.2f s | rss %llu kB | peak %llu kB",
+                Wall,
+                CPU,
+                static_cast<unsigned long long>(Resident),
+                static_cast<unsigned long long>(Peak));
+  return Label.str() + Buffer;
+}
+
+void note(llvm::StringRef Label, llvm::StringRef Text) {
+  std::FILE *File = output();
+  if (File == nullptr)
+    return;
+  std::fprintf(File, "%s | %s\n", prefix(Label).c_str(), Text.str().c_str());
+  std::fflush(File);
+}
+
+/// The node with the most predecessors at the last call of record(): for a
+/// debugger, which can read it without evaluating expressions
+const LayoutTypeSystemNode *MostPredecessors = nullptr;
+
+/// See createArtificialLayoutType
+LayoutTypeSystemNode *Watched = nullptr;
+
+void record(llvm::StringRef Label, const LayoutTypeSystem &TS) {
+  std::FILE *File = output();
+  if (File == nullptr)
+    return;
+
+  // The time and memory of the step, before those of the measurement
+  std::string Prefix = prefix(Label);
+
+  // FNV-1a over 64-bit words
+  uint64_t Hash = 0xcbf29ce484222325ULL;
+  auto Mix = [&Hash](uint64_t Value) {
+    for (unsigned I = 0; I < 8; ++I) {
+      Hash ^= (Value >> (8 * I)) & 0xff;
+      Hash *= 0x100000001b3ULL;
+    }
+  };
+
+  uint64_t Links[3] = { 0, 0, 0 };
+  uint64_t MostSuccessors = 0;
+  uint64_t MostPredecessorsCount = 0;
+  MostPredecessors = nullptr;
+  for (const LayoutTypeSystemNode *Node : TS.getLayoutsRange()) {
+    Mix(Node->ID);
+    Mix(Node->Size);
+    Mix(Node->InterferingInfo);
+    Mix(Node->NonScalar);
+    MostSuccessors = std::max<uint64_t>(MostSuccessors,
+                                        Node->Successors.size());
+    if (Node->Predecessors.size() > MostPredecessorsCount) {
+      MostPredecessorsCount = Node->Predecessors.size();
+      MostPredecessors = Node;
+    }
+    for (const auto &[Successor, Tag] : Node->Successors) {
+      auto Kind = Tag->getKind();
+      ++Links[Kind];
+      Mix(Successor->ID);
+      Mix(Kind);
+      if (Kind == TypeLinkTag::LK_Instance) {
+        const OffsetExpression &OE = Tag->getOffsetExpr();
+        Mix(OE.Offset);
+        Mix(OE.Strides.size());
+        for (uint64_t Stride : OE.Strides)
+          Mix(Stride);
+        for (const std::optional<uint64_t> &TripCount : OE.TripCounts)
+          Mix(TripCount.has_value() ? *TripCount + 1 : 0);
+      }
+    }
+    Mix(0xffffffffffffffffULL);
+  }
+
+  // The equivalence classes, as long as they are not compressed
+  const VectEqClasses &Classes = TS.getEqClasses();
+  if (Classes.getNumClasses() == 0)
+    for (unsigned I = 0; I < Classes.getNumElements(); ++I)
+      Mix(Classes.findLeader(I));
+
+  std::fprintf(File,
+               "%s | nodes %llu of %llu | equality %llu | instance %llu |"
+               " pointer %llu | most successors %llu | most predecessors %llu |"
+               " fingerprint %016llx | most predecessors: node %llu, size "
+               "%llu\n",
+               Prefix.c_str(),
+               static_cast<unsigned long long>(TS.getNumLayouts()),
+               static_cast<unsigned long long>(TS.getNID()),
+               static_cast<unsigned long long>(Links[TypeLinkTag::LK_Equality]),
+               static_cast<unsigned long long>(Links[TypeLinkTag::LK_Instance]),
+               static_cast<unsigned long long>(Links[TypeLinkTag::LK_Pointer]),
+               static_cast<unsigned long long>(MostSuccessors),
+               static_cast<unsigned long long>(MostPredecessorsCount),
+               static_cast<unsigned long long>(Hash),
+               static_cast<unsigned long long>(MostPredecessors ?
+                                                 MostPredecessors->ID :
+                                                 0),
+               static_cast<unsigned long long>(MostPredecessors ?
+                                                 MostPredecessors->Size :
+                                                 0));
+  std::fflush(File);
+}
+
+} // namespace statistics
 
 void VectEqClasses::remove(const unsigned A) {
   if (RemovedID)

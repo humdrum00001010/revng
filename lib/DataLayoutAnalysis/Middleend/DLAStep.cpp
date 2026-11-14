@@ -129,6 +129,10 @@ void StepManager::run(LayoutTypeSystem &TS) {
     T.advance(getStepNameFromID(S->getStepID()));
     S->runOnTypeSystem(TS);
     ++x;
+    if (statistics::enabled())
+      statistics::record("step " + std::to_string(x) + " "
+                           + getStepNameFromID(S->getStepID()),
+                         TS);
     if (DLADumpDot.isEnabled()) {
       revng_log(DLADumpDot,
                 "Step " << getStepNameFromID(S->getStepID())

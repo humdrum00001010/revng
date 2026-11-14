@@ -31,6 +31,8 @@ llvm::Error AnalyzeDataLayout::run(Model &Model,
 
   llvm::Task T(3, "runDataLayoutAnalysis");
   T.advance("DLA Frontend");
+  dla::statistics::note("start",
+                        std::to_string(Incoming[0].size()) + " functions");
 
   // Front-end: Create the LayoutTypeSystem graph from the LLVM modules
   dla::LayoutTypeSystem TS;
@@ -107,13 +109,16 @@ llvm::Error AnalyzeDataLayout::run(Model &Model,
 
   // Generate model types
   auto ValueToTypeMap = dla::makeModelTypes(TS, Values, Model.get());
+  dla::statistics::record("backend: model types made", TS);
 
   std::set<MetaAddress> UpdatedSegments;
   for (llvm::Module *M : Modules) {
     dla::updateFuncSignatures(*M, Model.get(), ValueToTypeMap);
     dla::updateSegmentsTypes(*M, Model.get(), ValueToTypeMap, UpdatedSegments);
   }
+  dla::statistics::note("backend: signatures and segments updated", "");
   revng_assert(Model.get()->verify(true));
+  dla::statistics::note("backend: model verified", "");
 
   return llvm::Error::success();
 }

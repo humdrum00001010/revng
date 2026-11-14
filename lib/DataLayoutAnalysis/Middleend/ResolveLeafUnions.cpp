@@ -3,6 +3,8 @@
 //
 
 #include <compare>
+#include <cstdlib>
+#include <functional>
 #include <set>
 
 #include "llvm/ADT/DepthFirstIterator.h"
@@ -18,12 +20,27 @@
 
 namespace dla {
 
+/// The children of a node are grouped and visited here in the order of the
+/// addresses of the nodes and of the link tags, and which links are removed
+/// depends on that order: the result of this step, and with it the types the
+/// analysis produces, changes with where the allocator happens to place them
+/// (it is not the same in two runs on the same input). With the environment
+/// variable REVNG_DLA_ORDER_BY_ID set, the order is that of the IDs of the
+/// nodes and of the content of the tags instead, which is the same in every
+/// run: for comparing the results of two runs.
+static const bool OrderByID = orderByID();
+
 struct ChildrenKey {
   uint64_t Size;
   const TypeLinkTag *Tag = nullptr;
   bool operator==(const ChildrenKey &) const noexcept = default;
-  std::strong_ordering
-  operator<=>(const ChildrenKey &) const noexcept = default;
+  std::strong_ordering operator<=>(const ChildrenKey &Other) const noexcept {
+    if (auto Cmp = Size <=> Other.Size; Cmp != 0)
+      return Cmp;
+    if (OrderByID and Tag != nullptr and Other.Tag != nullptr)
+      return *Tag <=> *Other.Tag;
+    return std::compare_three_way()(Tag, Other.Tag);
+  }
 };
 
 using NodePredicate = const std::function<bool(const LayoutTypeSystemNode *)>;
@@ -34,6 +51,11 @@ static bool neighborLess(const NeighborIterator &AIt,
                          const NeighborIterator &BIt) {
   const auto &[AChild, ATag] = *AIt;
   const auto &[BChild, BTag] = *BIt;
+  if (OrderByID) {
+    if (AChild->ID != BChild->ID)
+      return AChild->ID < BChild->ID;
+    return *ATag < *BTag;
+  }
   return (AChild < BChild) or (ATag < BTag);
 }
 

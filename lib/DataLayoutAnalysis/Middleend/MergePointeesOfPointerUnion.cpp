@@ -78,7 +78,10 @@ bool MergePointeesOfPointerUnion::runOnTypeSystem(LayoutTypeSystem &TS) {
       continue;
     }
 
-    llvm::EquivalenceClasses<LTSN *> PointersToMerge;
+    // The classes are visited in the order of this set, which is that of the
+    // addresses of the nodes unless orderByID(): it is searched only while it
+    // is filled, before any node is merged.
+    llvm::EquivalenceClasses<LTSN *, NodeOrder> PointersToMerge;
 
     auto ChildEnd = Node->Successors.end();
     for (auto AChildIt = Node->Successors.begin(); AChildIt != ChildEnd;
