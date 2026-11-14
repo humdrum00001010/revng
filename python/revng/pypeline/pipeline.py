@@ -28,6 +28,7 @@ from .task.pipe import Pipe
 from .task.requests import Requests
 from .task.savepoint import SavePoint
 from .task.task import TaskArgumentAccess
+from .utils import fixes
 from .utils.default_dict_from_key import DefaultDictFromKey
 from .utils.logger import pypeline_logger
 from .utils.registry import get_singleton
@@ -375,6 +376,19 @@ class Pipeline:
 
         return graph
 
+    @staticmethod
+    def _writes_nothing_requested(node: PipelineNode, requests: Requests) -> bool:
+        """
+        Whether no object is requested from any container `node` writes. This
+        is the condition under which `schedule` drops a task.
+        """
+        for argument in node.arguments:
+            if argument.access != TaskArgumentAccess.READ:
+                declaration = argument.declaration()
+                if declaration in requests and len(requests[declaration]) > 0:
+                    return False
+        return True
+
     def schedule(
         self,
         model: ReadOnlyModel,
@@ -404,12 +418,26 @@ class Pipeline:
             orig = repr(node_outgoing_requests)
             # Each node should remove the requests it can handle
             # and add the requests it needs to satisfy the task
-            node_ingoing_requests = node.prerequisites_for(
-                model=model,
-                requests=node_outgoing_requests,
-                configuration=configuration,
-                storage_provider=storage_provider,
-            )
+            if (
+                fixes.enabled(fixes.SKIP_PREREQUISITES_OF_SKIPPED_PIPES)
+                and node is not target_node
+                and isinstance(node.task, Pipe)
+                and self._writes_nothing_requested(node, node_outgoing_requests)
+            ):
+                # No object is requested from the containers this pipe writes:
+                # it is going to be dropped from the schedule (see the
+                # optimizations below), so it needs nothing. Asking it would
+                # turn requests that merely pass through it (for a container
+                # it reads) into requests for its other inputs, and the pipes
+                # before it would run to produce objects nobody uses.
+                node_ingoing_requests = node_outgoing_requests.clone()
+            else:
+                node_ingoing_requests = node.prerequisites_for(
+                    model=model,
+                    requests=node_outgoing_requests,
+                    configuration=configuration,
+                    storage_provider=storage_provider,
+                )
             assert orig == repr(node_outgoing_requests), (
                 f"Node {node} modified the outgoing requests, which is not allowed. "
                 f"Original: {orig}, modified: {node_outgoing_requests}"

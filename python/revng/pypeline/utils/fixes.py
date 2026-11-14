@@ -34,6 +34,11 @@ TEMPORARY_DB_SETTINGS = 4
 # of model paths, store them that way instead of as one row per object and path
 DEPENDENCY_CLASSES = 5
 
+# Scheduling: a pipe from which no object is requested in the containers it
+# writes does not run; do not ask its predecessors for what it would have
+# needed, which made them run for nothing
+SKIP_PREREQUISITES_OF_SKIPPED_PIPES = 6
+
 _MASK = int(os.environ.get("REVNG_PY_FIXES", "-1"), 0)
 
 
