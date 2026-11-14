@@ -166,7 +166,20 @@ enum Values : unsigned {
   /// children by range and leafness and compare only those pairs, in the same
   /// order. REVNG_DLA_CHECK_PUSH=1 also runs the full comparison and checks
   /// that the two give the same pairs.
-  OverlapIndexedComparison = 21
+  OverlapIndexedComparison = 21,
+
+  /// Clift, the verifier of a module: for every class type (struct or union)
+  /// reachable from the module it walks everything the type contains by value,
+  /// looking for the type itself, and it does so again for every module: a
+  /// function that touches the large connected group of types of a program
+  /// has thousands of them, and so has the next one. The definition of a
+  /// class type never changes once it is set, so:
+  /// - a class type found not to contain itself is remembered for the life of
+  ///   the context (in the dialect), and not walked again;
+  /// - within one walk, what a class type contains is walked once, not once
+  ///   for every path that leads to it.
+  /// A failed check is not remembered: it is reported every time, as before.
+  VerifyClassRecursionOnce = 22
 };
 
 /// Whether whoever receives the output of the pipes can take the dependencies

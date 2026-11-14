@@ -2,16 +2,22 @@
 // This file is distributed under the MIT License. See LICENSE.md for details.
 //
 
+#include <mutex>
 #include <optional>
+
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallPtrSet.h"
 
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OpImplementation.h"
 
 #include "revng/Clift/Clift.h"
+#include "revng/Clift/CliftBytecodeSharing.h"
 #include "revng/Clift/CliftDialect.h"
 #include "revng/Clift/CliftTypes.h"
 #include "revng/Clift/ModuleVisitor.h"
+#include "revng/Support/PipeFixes.h"
 
 #include "CliftBytecode.h"
 
@@ -88,6 +94,13 @@ public:
         return getCurrentOp()->emitError() << "Clift ModuleOp contains a "
                                               "recursive class type.";
 
+      // What a class type contains was walked already for this root, without
+      // finding the root: walking it again would not find it either
+      if (Once and not WalkedForRoot.insert(definitionOf(T)).second)
+        return mlir::success();
+
+      using clift::bytecode::Counters;
+      Counters::count(clift::bytecode::TheCounters.RecursionCheckVisits);
       return visitClassType(T, RootType);
     }
 
@@ -119,8 +132,20 @@ public:
                                          << UnqualifiedType.getHandle() << '\'';
 
     if (auto Class = mlir::dyn_cast<ClassType>(Type)) {
-      if (visitClassType(Class, Class, /*CheckRecursion=*/false).failed())
-        return mlir::failure();
+      // The definition of a class type never changes: once it is known not
+      // to contain itself, in this module or in an earlier one of the same
+      // context, there is nothing to look for again
+      const void *Definition = definitionOf(Class);
+      if (not Once or not Dialect->isKnownNonRecursive(Definition)) {
+        using clift::bytecode::Counters;
+        Counters::count(clift::bytecode::TheCounters.RecursionChecks);
+        WalkedForRoot.clear();
+        if (visitClassType(Class, Class, /*CheckRecursion=*/false).failed())
+          return mlir::failure();
+
+        if (Once)
+          Dialect->setKnownNonRecursive(Definition);
+      }
 
       ClassTypes.insert(Class);
     }
@@ -194,8 +219,23 @@ public:
   }
 
 private:
+  static const void *definitionOf(ClassType Class) {
+    if (auto S = mlir::dyn_cast<StructType>(Class))
+      return S.getDefinition().getAsOpaquePointer();
+    return mlir::cast<UnionType>(Class).getDefinition().getAsOpaquePointer();
+  }
+
+private:
   llvm::DenseMap<llvm::StringRef, DefinedType> Definitions;
   llvm::DenseSet<ClassType> ClassTypes;
+
+  // See pipefix::VerifyClassRecursionOnce
+  const bool Once = pipefix::enabled(pipefix::VerifyClassRecursionOnce);
+  CliftDialect *Dialect = nullptr;
+  llvm::SmallPtrSet<const void *, 32> WalkedForRoot;
+
+public:
+  explicit ModuleVerifier(CliftDialect *Dialect) : Dialect(Dialect) {}
 };
 
 static mlir::LogicalResult verifyModuleAttr(mlir::Operation *Op,
@@ -212,7 +252,9 @@ static mlir::LogicalResult verifyModuleAttr(mlir::Operation *Op,
            << "' attribute to be attached to '"
            << mlir::ModuleOp::getOperationName() << "'";
 
-  return ModuleVerifier::visit(Module);
+  auto *Dialect = Module->getContext()->getLoadedDialect<CliftDialect>();
+  revng_assert(Dialect != nullptr);
+  return ModuleVerifier::visit(Module, Dialect);
 }
 
 static mlir::LogicalResult verifyDataModelAttr(mlir::Operation *Op,
@@ -235,6 +277,11 @@ static mlir::LogicalResult verifyDataModelAttr(mlir::Operation *Op,
 
 struct clift::CliftDialectImpl {
   std::optional<CDataModel> DefaultDataModel;
+
+  // The definitions of the class types known not to contain themselves by
+  // value (see pipefix::VerifyClassRecursionOnce)
+  llvm::DenseSet<const void *> NonRecursiveClasses;
+  mutable std::mutex NonRecursiveClassesMutex;
 };
 
 void CliftDialect::initialize() {
@@ -259,6 +306,16 @@ const CDataModel *CliftDialect::getDefaultDataModel() const {
 
 void CliftDialect::setDefaultDataModel(const CDataModel &DataModel) {
   Impl->DefaultDataModel = DataModel;
+}
+
+bool CliftDialect::isKnownNonRecursive(const void *ClassDefinition) const {
+  std::lock_guard Lock(Impl->NonRecursiveClassesMutex);
+  return Impl->NonRecursiveClasses.contains(ClassDefinition);
+}
+
+void CliftDialect::setKnownNonRecursive(const void *ClassDefinition) {
+  std::lock_guard Lock(Impl->NonRecursiveClassesMutex);
+  Impl->NonRecursiveClasses.insert(ClassDefinition);
 }
 
 mlir::LogicalResult

@@ -45,6 +45,13 @@ def Clift_Dialect : Dialect {
     const CDataModel *getDefaultDataModel() const;
     void setDefaultDataModel(const CDataModel &DataModel);
 
+    /// The class types (by their definition attribute) that the verifier of a
+    /// module has found not to contain themselves by value. The definition of
+    /// a class type does not change once set, so this holds for the life of
+    /// the context.
+    bool isKnownNonRecursive(const void *ClassDefinition) const;
+    void setKnownNonRecursive(const void *ClassDefinition);
+
     mlir::Attribute parseAttribute(mlir::DialectAsmParser &Parser,
                                    mlir::Type Type) const override;
 
