@@ -302,6 +302,45 @@ static void fixPredSucc(LayoutTypeSystemNode *From,
 
 static Logger MergeLog("dla-merge-nodes");
 
+void LayoutTypeSystem::absorbNode(LayoutTypeSystemNode *Into,
+                                  LayoutTypeSystemNode *From) {
+  revng_assert(From != Into);
+  revng_log(MergeLog, "Merging: " << From->ID << " Into: " << Into->ID);
+
+  Into->InterferingInfo = Unknown;
+  if (Into->NonScalar or From->NonScalar) {
+    revng_assert(not(Into->NonScalar and From->NonScalar)
+                 or Into->Size == From->Size);
+    auto *NonScalar = Into->NonScalar ? Into : From;
+    auto *Other = Into->NonScalar ? From : Into;
+    revng_assert(Other->Size <= NonScalar->Size);
+    Into->Size = NonScalar->Size;
+  } else {
+    revng_assert(not Into->Size or From->Size <= Into->Size);
+    Into->Size = std::max(Into->Size, From->Size);
+  }
+  Into->NonScalar |= From->NonScalar;
+
+  const unsigned IntoID = Into->ID;
+  EqClasses.join(IntoID, From->ID);
+
+  fixPredSucc(From, Into);
+
+  // The links of From are links of Into now
+  From->Predecessors.clear();
+  From->Successors.clear();
+}
+
+void LayoutTypeSystem::removeAbsorbedNode(LayoutTypeSystemNode *Absorbed) {
+  revng_assert(Absorbed->Predecessors.empty());
+  revng_assert(Absorbed->Successors.empty());
+
+  bool Erased = Layouts.erase(Absorbed);
+  revng_assert(Erased);
+  Absorbed->~LayoutTypeSystemNode();
+  NodeAllocator.Deallocate(Absorbed);
+}
+
 void LayoutTypeSystem::mergeNodes(llvm::ArrayRef<LayoutTypeSystemNode *>
                                     ToMerge) {
   revng_assert(ToMerge.size() > 0ULL);
@@ -310,35 +349,9 @@ void LayoutTypeSystem::mergeNodes(llvm::ArrayRef<LayoutTypeSystemNode *>
     return;
 
   LayoutTypeSystemNode *Into = ToMerge[0];
-  const unsigned IntoID = Into->ID;
-
   for (LayoutTypeSystemNode *From : llvm::drop_begin(ToMerge, 1)) {
-    revng_assert(From != Into);
-    revng_log(MergeLog, "Merging: " << From->ID << " Into: " << Into->ID);
-
-    Into->InterferingInfo = Unknown;
-    if (Into->NonScalar or From->NonScalar) {
-      revng_assert(not(Into->NonScalar and From->NonScalar)
-                   or Into->Size == From->Size);
-      auto *NonScalar = Into->NonScalar ? Into : From;
-      auto *Other = Into->NonScalar ? From : Into;
-      revng_assert(Other->Size <= NonScalar->Size);
-      Into->Size = NonScalar->Size;
-    } else {
-      revng_assert(not Into->Size or From->Size <= Into->Size);
-      Into->Size = std::max(Into->Size, From->Size);
-    }
-    Into->NonScalar |= From->NonScalar;
-
-    EqClasses.join(IntoID, From->ID);
-
-    fixPredSucc(From, Into);
-
-    // Remove From from Layouts
-    bool Erased = Layouts.erase(From);
-    revng_assert(Erased);
-    From->~LayoutTypeSystemNode();
-    NodeAllocator.Deallocate(From);
+    absorbNode(Into, From);
+    removeAbsorbedNode(From);
   }
 }
 

@@ -109,6 +109,15 @@ enum Values : unsigned {
   ///   136 (two vectors with inline room for four elements each).
   CompactPushedOffsets = 16,
 
+  /// analyze-data-layout, CollapseSingleChild: when a node absorbs its only
+  /// child, move the links of whichever of the two has fewer, and let the node
+  /// that remains carry the ID of the absorbing one (given to it at the end of
+  /// the step), instead of always moving the links of the child. A node with
+  /// tens of thousands of parents, most of which have it as their only child,
+  /// is absorbed by each of them in turn, and every time all its links went
+  /// from one node to the next.
+  CollapseIntoLargerNode = 17,
+
   /// analyze-data-layout, ArrangeAccessesHierarchically: whether a child can
   /// be absorbed by its parent is asked for every child every time the parent
   /// is analysed, and the answer took three scans of all the links entering

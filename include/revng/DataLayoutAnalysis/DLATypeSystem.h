@@ -407,6 +407,14 @@ public:
 public:
   void mergeNodes(llvm::ArrayRef<LayoutTypeSystemNode *> ToMerge);
 
+  /// What mergeNodes({ Into, From }) does to \p Into, to the links and to the
+  /// equivalence classes, without removing \p From: it stays in the type
+  /// system, with no links, for who needs it to exist a while longer.
+  void absorbNode(LayoutTypeSystemNode *Into, LayoutTypeSystemNode *From);
+
+  /// Remove a node that absorbNode() left without links
+  void removeAbsorbedNode(LayoutTypeSystemNode *Absorbed);
+
   void removeNode(LayoutTypeSystemNode *N);
 
   void moveEdgeTarget(LayoutTypeSystemNode *OldTgt,
