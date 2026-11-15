@@ -182,8 +182,11 @@ OutlinedFunction CFGAnalyzer::outline(const MetaAddress &Entry) {
                             PostCallHook.get(),
                             RetHook.get(),
                             Globals.spReg(),
-                            HasCFG ? &ReturnBlocks : nullptr);
+                            HasCFG ? &ReturnBlocks : nullptr,
+                            &IndirectCallFSO,
+                            &IndirectCalls);
 
+  IndirectCalls.clear();
   OutlinedFunction Result = Outliner.outline(Entry, &Summarizer);
 
   // Make sure we start a new block before a PreCallHook and for each jump
@@ -1056,6 +1059,52 @@ FunctionSummary CFGAnalyzer::milkInfo(OutlinedFunction *OutlinedFunction,
 }
 
 FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
+  FunctionSummary Result = analyzeOnce(Entry);
+
+  using namespace efa::FunctionEdgeType;
+  auto Count = [](const FunctionSummary &Summary, Values Type) {
+    unsigned Result = 0;
+    for (const efa::BasicBlock &Block : Summary.CFG)
+      for (const auto &Edge : Block.Successors())
+        if (Edge->Type() == Type)
+          ++Result;
+    return Result;
+  };
+
+  // The callee of an indirect call is assumed to leave the stack as the
+  // default prototype says. Where it removes its arguments, as the member
+  // functions of 32-bit Windows code do, the stack pointer is off from there
+  // on, and the returns of the function are not recognized. With a single
+  // such call in the function, what the callee removes can be found by
+  // trying: only with the right amount is the return address where the
+  // returns look for it. This also holds where the stack pointer is unknown
+  // at a return because the paths that reach it disagree on it.
+  if (Binary->Architecture() != model::Architecture::x86
+      or IndirectCalls.size() != 1 or Count(Result, LongJmp) == 0)
+    return Result;
+
+  MetaAddress CallSite = IndirectCalls.front();
+  const model::Function *Function = Binary->Functions().tryGet(Entry);
+  std::optional<int64_t> Default = Oracle.getDefault().ElectedFSO;
+  if (Function == nullptr or Function->CallSitePrototypes().contains(CallSite)
+      or IndirectCallFSO.contains(CallSite) or not Default.has_value())
+    return Result;
+
+  constexpr unsigned MaxArguments = 8;
+  auto Word = model::Architecture::getPointerSize(Binary->Architecture());
+  for (unsigned I = 1; I <= MaxArguments; ++I) {
+    IndirectCallFSO[CallSite] = *Default + I * Word;
+    FunctionSummary Attempt = analyzeOnce(Entry);
+    if (Count(Attempt, Return) > Count(Result, Return)
+        and Count(Attempt, LongJmp) < Count(Result, LongJmp))
+      return Attempt;
+  }
+
+  IndirectCallFSO.erase(CallSite);
+  return Result;
+}
+
+FunctionSummary CFGAnalyzer::analyzeOnce(const MetaAddress &Entry) {
   using namespace llvm;
   using llvm::BasicBlock;
 
@@ -1126,14 +1175,20 @@ CallSummarizer::CallSummarizer(llvm::Module *M,
                                Function *PostCallHook,
                                llvm::Function *RetHook,
                                GlobalVariable *SPCSV,
-                               llvm::SmallSet<MetaAddress, 4> *ReturnBlocks) :
+                               llvm::SmallSet<MetaAddress, 4> *ReturnBlocks,
+                               const std::map<MetaAddress, int64_t>
+                                 *IndirectCallFSO,
+                               llvm::SmallVectorImpl<MetaAddress>
+                                 *IndirectCalls) :
   M(M),
   PreCallHook(PreCallHook),
   PostCallHook(PostCallHook),
   RetHook(RetHook),
   SPCSV(SPCSV),
   ReturnBlocks(ReturnBlocks),
-  Clobberer(M) {
+  Clobberer(M),
+  IndirectCallFSO(IndirectCallFSO),
+  IndirectCalls(IndirectCalls) {
 }
 
 void CallSummarizer::handleCall(MetaAddress CallerBlock,
@@ -1164,11 +1219,22 @@ void CallSummarizer::handleCall(MetaAddress CallerBlock,
   for (GlobalVariable *Register : toSortedByName(ClobberedRegisters))
     Clobberer.clobber(Builder, Register);
 
+  // For an indirect call, what has been found about its callee, if anything,
+  // replaces the default
+  std::optional<int64_t> FSO = MaybeFSO;
+  if (not IsTailCall and Callee.isInvalid()
+      and isa<ConstantPointerNull>(SymbolNamePointer)) {
+    IndirectCalls->push_back(CallerBlock);
+    auto It = IndirectCallFSO->find(CallerBlock);
+    if (FSO.has_value() and It != IndirectCallFSO->end())
+      FSO = It->second;
+  }
+
   // Adjust back the stack pointer
   if (not IsTailCall) {
-    if (MaybeFSO.has_value()) {
+    if (FSO.has_value()) {
       auto *StackPointer = Builder.createLoad(SPCSV);
-      Value *Offset = ConstantInt::get(StackPointer->getType(), *MaybeFSO);
+      Value *Offset = ConstantInt::get(StackPointer->getType(), *FSO);
       auto *AdjustedStackPointer = Builder.CreateAdd(StackPointer, Offset);
       Builder.CreateStore(AdjustedStackPointer, SPCSV);
     }

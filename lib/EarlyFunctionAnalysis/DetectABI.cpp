@@ -1108,6 +1108,11 @@ DetectABI::buildPrototypeForIndirectCall(const FunctionSummary &CallerSummary,
 
   Prototype.FinalStackOffset() = DefaultSummary.ElectedFSO.value_or(0);
 
+  // Unless the analysis of the caller found what this callee removes
+  MetaAddress CallSite = CallerBlock.ID().notInlinedAddress();
+  if (auto FSO = Analyzer.indirectCallFinalStackOffset(CallSite))
+    Prototype.FinalStackOffset() = *FSO;
+
   return std::move(NewType);
 }
 

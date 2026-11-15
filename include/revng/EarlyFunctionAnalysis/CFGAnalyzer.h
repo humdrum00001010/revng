@@ -4,7 +4,9 @@
 // This file is distributed under the MIT License. See LICENSE.md for details.
 //
 
+#include <map>
 #include <memory>
+#include <optional>
 
 #include "llvm/ADT/SmallVector.h"
 
@@ -37,13 +39,22 @@ private:
   llvm::SmallSet<MetaAddress, 4> *ReturnBlocks = nullptr;
   OpaqueRegisterUser Clobberer;
 
+  /// The final stack offset of the callee of an indirect call, where one has
+  /// been found, by the address of the block of the call
+  const std::map<MetaAddress, int64_t> *IndirectCallFSO = nullptr;
+
+  /// The blocks of the indirect calls met while outlining
+  llvm::SmallVectorImpl<MetaAddress> *IndirectCalls = nullptr;
+
 public:
   CallSummarizer(llvm::Module *M,
                  llvm::Function *PreCallHook,
                  llvm::Function *PostCallHook,
                  llvm::Function *RetHook,
                  llvm::GlobalVariable *SPCSV,
-                 llvm::SmallSet<MetaAddress, 4> *ReturnBlocks);
+                 llvm::SmallSet<MetaAddress, 4> *ReturnBlocks,
+                 const std::map<MetaAddress, int64_t> *IndirectCallFSO,
+                 llvm::SmallVectorImpl<MetaAddress> *IndirectCalls);
 
 public:
   void handleCall(MetaAddress CallerBlock,
@@ -92,6 +103,13 @@ private:
   std::unique_ptr<llvm::raw_ostream> OutputAAWriter;
   std::unique_ptr<llvm::raw_ostream> OutputIBI;
 
+  /// The final stack offset found for the callee of an indirect call, by the
+  /// address of the block of the call
+  std::map<MetaAddress, int64_t> IndirectCallFSO;
+
+  /// The blocks of the indirect calls of the function outlined last
+  llvm::SmallVector<MetaAddress, 4> IndirectCalls;
+
 public:
   CFGAnalyzer(llvm::Module &M,
               RootFunction &Root,
@@ -109,6 +127,19 @@ public:
   FunctionSummary analyze(const MetaAddress &Entry);
 
   OutlinedFunction outline(const MetaAddress &Entry);
+
+  /// \return the final stack offset found for the callee of the indirect call
+  ///         in the block at \p CallerBlock, if it is not the default one
+  std::optional<int64_t>
+  indirectCallFinalStackOffset(const MetaAddress &CallerBlock) const {
+    auto It = IndirectCallFSO.find(CallerBlock);
+    if (It == IndirectCallFSO.end())
+      return std::nullopt;
+    return It->second;
+  }
+
+private:
+  FunctionSummary analyzeOnce(const MetaAddress &Entry);
 
 private:
   static llvm::FunctionType *createCallMarkerType(llvm::Module &M);
