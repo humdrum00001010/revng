@@ -1633,6 +1633,21 @@ cloneFiltered(llvm::Module &Module,
 std::unique_ptr<llvm::Module>
 cloneFiltered(llvm::Module &Module, std::set<const llvm::Function *> &ToClone);
 
+/// Produce what `cloneFiltered` produces, for a caller that already knows
+/// which global variables and functions \p Action does not omit: only those
+/// are visited, so the cost does not depend on how many global values
+/// \p Module has.
+///
+/// \param Variables all the global variables for which \p Action does not
+///        return `Omit`, in the order they have in \p Module
+/// \param Functions the same, for the functions
+std::unique_ptr<llvm::Module>
+cloneSelected(llvm::Module &Module,
+              llvm::ArrayRef<const llvm::GlobalVariable *> Variables,
+              llvm::ArrayRef<const llvm::Function *> Functions,
+              llvm::function_ref<llvm::CloneAction(const llvm::GlobalValue *)>
+                Action);
+
 /// Serialize a module to bitcode, this is preferable over
 /// llvm::WriteBitcodeToFile as it does not create a redundant temporary buffer
 void writeBitcode(const llvm::Module &Module,
