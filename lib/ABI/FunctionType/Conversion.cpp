@@ -5,6 +5,7 @@
 #include "llvm/ADT/SmallSet.h"
 
 #include "revng/ABI/FunctionType/Conversion.h"
+#include "revng/ABI/FunctionType/Layout.h"
 #include "revng/ABI/FunctionType/Support.h"
 #include "revng/ADT/STLExtras.h"
 #include "revng/Model/ABI/Definition.h"
@@ -152,6 +153,23 @@ private:
   }
 };
 
+/// \return the ABIs to try for a function that removes its own stack
+///         arguments, when \p ABI leaves that to the caller
+static llvm::SmallVector<model::ABI::Values, 3>
+calleeCleanupCounterparts(model::ABI::Values ABI) {
+  switch (ABI) {
+  case model::ABI::Microsoft_x86_cdecl:
+    return { model::ABI::Microsoft_x86_stdcall,
+             model::ABI::Microsoft_x86_thiscall,
+             model::ABI::Microsoft_x86_fastcall };
+  case model::ABI::Microsoft_x86_cdecl_gcc:
+    return { model::ABI::Microsoft_x86_stdcall_gcc,
+             model::ABI::Microsoft_x86_fastcall_gcc };
+  default:
+    return {};
+  }
+}
+
 std::optional<model::UpcastableType>
 tryConvertToCABI(const model::RawFunctionDefinition &FunctionType,
                  TupleTree<model::Binary> &Binary,
@@ -178,6 +196,32 @@ tryConvertToCABI(const model::RawFunctionDefinition &FunctionType,
     return std::nullopt;
   }
 
+  // Where the caller removes the stack arguments, a function leaves the stack
+  // as it found it, apart from the return address. One that leaves it higher
+  // removes its arguments itself: as a prototype of such an ABI it would lose
+  // that, and with it what the analyses of its callers know about the stack
+  // after the call. It can still be a prototype of an ABI of the same family
+  // where the callee does the cleaning.
+  const auto Architecture = model::ABI::getArchitecture(ABI.ABI());
+  uint64_t CallPushSize = model::Architecture::getCallPushSize(Architecture);
+  bool RemovesArguments = FunctionType.FinalStackOffset() > CallPushSize;
+  if (RemovesArguments and not ABI.CalleeIsResponsibleForStackCleanup()) {
+    for (model::ABI::Values Other : calleeCleanupCounterparts(ABI.ABI())) {
+      auto Result = tryConvertToCABI(FunctionType,
+                                     Binary,
+                                     Index,
+                                     Other,
+                                     UseSoftRegisterStateDeductions);
+      if (Result.has_value())
+        return Result;
+    }
+
+    revng_log(Log,
+              "FAIL: the function removes its stack arguments, which `"
+                << model::ABI::getName(ABI.ABI()) << "` leaves to the caller.");
+    return std::nullopt;
+  }
+
   // The definitions the conversion adds to the model get their IDs from here
   const uint64_t FirstNewID = Binary->getAvailableTypeID();
 
@@ -199,6 +243,16 @@ tryConvertToCABI(const model::RawFunctionDefinition &FunctionType,
   for (auto &Argument : Arguments)
     Definition.Arguments().insert(std::move(Argument));
   Definition.ReturnType() = Converted->ReturnValueType;
+
+  // The new prototype must leave the stack where the original one does
+  if (RemovesArguments
+      and finalStackOffset(Definition) != FunctionType.FinalStackOffset()) {
+    revng_log(Log,
+              "FAIL: the stack arguments do not add up to what the function "
+              "removes.");
+    Binary->TypeDefinitions().erase(Definition.key());
+    return std::nullopt;
+  }
 
   revng_log(Log, "Conversion successful:\n" << toString(Definition));
 
