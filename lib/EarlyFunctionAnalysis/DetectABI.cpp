@@ -213,7 +213,10 @@ private:
   void propagatePrototypes();
 
   /// Propagate prototypes to callers
-  void propagatePrototypesInFunction(model::Function &Function);
+  /// \param NamesAreDeduplicated whether the names in the model have been
+  ///        deduplicated and nothing has changed since
+  void propagatePrototypesInFunction(model::Function &Function,
+                                     bool &NamesAreDeduplicated);
 
 private:
   /// Record in \p Inserter the registers whose lowest CSV is in \p CSVs.
@@ -936,8 +939,9 @@ void DetectABI::finalizeModel() {
 }
 
 void DetectABI::propagatePrototypes() {
+  bool NamesAreDeduplicated = false;
   for (model::Function &Function : Binary->Functions()) {
-    propagatePrototypesInFunction(Function);
+    propagatePrototypesInFunction(Function, NamesAreDeduplicated);
   }
 }
 
@@ -964,7 +968,8 @@ static bool isAnyWritten(llvm::Module &M,
 }
 
 // TODO: is this still necessary after the new EFA?
-void DetectABI::propagatePrototypesInFunction(model::Function &Function) {
+void DetectABI::propagatePrototypesInFunction(model::Function &Function,
+                                              bool &NamesAreDeduplicated) {
   const MetaAddress &Entry = Function.Entry();
 
   revng_log(Log, "Trying to propagate prototypes for " << Entry.toString());
@@ -1042,6 +1047,7 @@ void DetectABI::propagatePrototypesInFunction(model::Function &Function) {
             << toString(model::copyTypeDefinition(*Prototype)) << DoLog;
       }
 
+      NamesAreDeduplicated = false;
       Function.Prototype() = Binary->makeType(Prototype->key());
 
       if (Function.Name().empty()) {
@@ -1062,7 +1068,13 @@ void DetectABI::propagatePrototypesInFunction(model::Function &Function) {
   }
 
   // TODO: should this be done at a higher abstraction level?
-  model::deduplicateCollidingNames(Binary);
+  //
+  // This visits the whole model: do it again only after a change, since the
+  // previous time left no name to rename
+  if (not NamesAreDeduplicated) {
+    model::deduplicateCollidingNames(Binary);
+    NamesAreDeduplicated = true;
+  }
 }
 
 model::UpcastableType
