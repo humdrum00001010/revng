@@ -618,17 +618,19 @@ RootAnalyzer::promoteCSVsToAlloca(Function *OptimizedFunction) {
   revng::IRBuilder AllocaBuilder(&*EntryBB->begin());
   revng::IRBuilder InitBuilder(EntryBB->getTerminator());
 
-  for (GlobalVariable *CSV : toSortedByName(CSVs)) {
+  auto SortedCSVs = toSortedByName(CSVs);
+  for (GlobalVariable *CSV : SortedCSVs) {
     Type *CSVType = CSV->getValueType();
-    auto *Alloca = AllocaBuilder.CreateAlloca(CSVType, nullptr, CSV->getName());
-    CSVMap[CSV] = Alloca;
-
-    // Replace all uses of the CSV within OptimizedFunction with the alloca
-    replaceAllUsesInFunctionWith(OptimizedFunction, CSV, Alloca);
-
-    // Initialize the alloca
-    InitBuilder.CreateStore(InitBuilder.createLoad(CSV), Alloca);
+    CSVMap[CSV] = AllocaBuilder.CreateAlloca(CSVType, nullptr, CSV->getName());
   }
+
+  // Replace all uses of the CSVs within OptimizedFunction with the allocas
+  replaceAllUsesInFunctionWith(OptimizedFunction, CSVMap);
+
+  // Initialize the allocas: these loads have to keep reading the CSVs, so
+  // they are emitted after the replacement
+  for (GlobalVariable *CSV : SortedCSVs)
+    InitBuilder.CreateStore(InitBuilder.createLoad(CSV), CSVMap[CSV]);
 
   return CSVMap;
 }
