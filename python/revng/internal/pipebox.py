@@ -8,7 +8,6 @@ import tarfile
 from io import BytesIO
 
 from revng.internal.support import import_pipebox
-from revng.model import Binary  # type: ignore[attr-defined]
 from revng.pypeline.analysis import Analysis
 from revng.pypeline.container import Configuration, Container
 from revng.pypeline.model import ReadOnlyModel
@@ -95,16 +94,11 @@ class ImportFiles(Pipe):
         )
 
     def _get_file_requests(self, model: ReadOnlyModel):
-        # TODO: add facilities to `model` that avoid having to serialize the
-        # whole thing. Right now we need to serialize the entire model and load
-        # it in the python wrapper to be able to access the `/Binaries` list.
-        model_obj = Binary.deserialize(model.serialize().decode())
-
         indexes: list[int] = []
         requests: list[FileRequest] = []
-        for binary in model_obj.Binaries:
-            indexes.append(binary.Index)
-            requests.append(FileRequest(binary.Hash, binary.CanonicalPath, binary.Size))
+        for index, hash_, canonical_path, size in model.downcast().binaries():
+            indexes.append(index)
+            requests.append(FileRequest(hash_, canonical_path, size))
 
         return (indexes, requests)
 
