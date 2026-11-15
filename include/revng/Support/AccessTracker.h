@@ -5,6 +5,7 @@
 //
 
 #include <cstdint>
+#include <vector>
 
 #include "llvm/ADT/StringRef.h"
 
@@ -15,6 +16,14 @@ void onFieldAccess(llvm::StringRef FieldName,
                    llvm::StringRef StructName) debug_function;
 
 namespace revng {
+
+class AccessTracker;
+
+/// When not null, the trackers that get marked are appended here, and so are
+/// the containers in which a key is looked up, each identified by its `Exact`
+/// tracker. This lets `ObjectTracker` visit what was read instead of the whole
+/// tree. Not thread safe, like the trackers.
+inline std::vector<const AccessTracker *> *AccessLog = nullptr;
 
 ///
 /// A AccessCounter is optimized std::stack<bool> that can contain up to 8
@@ -58,7 +67,13 @@ public:
     IsTracking = true;
   }
 
-  void access() { Counter |= (0x1 & IsTracking); }
+  void access() {
+    if (IsTracking and not peak()) {
+      Counter |= 0x1;
+      if (AccessLog != nullptr)
+        AccessLog->push_back(this);
+    }
+  }
 
   void push() {
     bool HasLeadingZeroes = llvm::countLeadingZeros(Counter) != 0;

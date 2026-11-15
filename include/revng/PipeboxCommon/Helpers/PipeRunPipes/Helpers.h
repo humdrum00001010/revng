@@ -6,6 +6,7 @@
 
 #include "revng/PipeboxCommon/Concepts.h"
 #include "revng/PipeboxCommon/Model.h"
+#include "revng/TupleTree/TrackingImpl.h"
 
 //
 // ObjectDependenciesHelper
@@ -18,8 +19,12 @@ class ObjectDependenciesHelper {
 private:
   const model::Binary &Binary;
   const revng::pypeline::Request &Outgoing;
+  revng::ObjectTracker<model::Binary> Tracker;
   revng::pypeline::ObjectDependencies Dependencies;
   bool DependenciesTaken = false;
+
+  /// Whether what is being read is for an object, see `pushReadFields`
+  bool InObject = false;
 
 public:
   ObjectDependenciesHelper(const Model &Model,
@@ -27,6 +32,7 @@ public:
                            size_t DependenciesSize) :
     Binary(*Model.get().get()),
     Outgoing(Outgoing),
+    Tracker(Binary),
     Dependencies(DependenciesSize) {
     revng::Tracking::clearAndResume(Binary);
   }
@@ -71,11 +77,18 @@ public:
 
   /// Add a "layer" to the tracking, the paths read by the `commit*` functions
   /// will only be present until the call to `popReadFields`
-  void pushReadFields() { revng::Tracking::push(Binary); }
+  void pushReadFields() {
+    revng_assert(not InObject);
+    InObject = true;
+    Tracker.startObject();
+  }
 
   /// Remove a "layer" to the tracking, paths read since the last
   /// `pushReadFields` will no longer be present when `commit*` is called
-  void popReadFields() { revng::Tracking::pop(Binary); }
+  void popReadFields() {
+    revng_assert(InObject);
+    InObject = false;
+  }
 
   /// Retrieve the ObjectDependencies. This needs to be called exactly once,
   /// otherwise an assertion will be hit.
@@ -122,11 +135,14 @@ public:
 private:
   std::vector<std::string> getReadPaths() {
     std::vector<std::string> Result;
-    ReadFields ReadFieldsStruct = revng::Tracking::collect(Binary);
-    for (const TupleTreePath &Path : ReadFieldsStruct.Read)
-      Result.push_back(*pathAsString<model::Binary>(Path));
-    for (const TupleTreePath &Path : ReadFieldsStruct.ExactVectors)
-      Result.push_back(*pathAsString<model::Binary>(Path));
+    auto Groups = InObject ? Tracker.finishObject() : Tracker.collect();
+    for (auto Group : Groups) {
+      const ReadFields &Fields = Tracker.groups()[Group];
+      for (const TupleTreePath &Path : Fields.Read)
+        Result.push_back(*pathAsString<model::Binary>(Path));
+      for (const TupleTreePath &Path : Fields.ExactVectors)
+        Result.push_back(*pathAsString<model::Binary>(Path));
+    }
     return Result;
   }
 };
