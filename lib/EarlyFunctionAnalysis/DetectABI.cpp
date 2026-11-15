@@ -300,8 +300,12 @@ void DetectABI::computeApproximateCallGraph() {
   BasicBlockNode *RootNode = ApproximateCallGraph.addNode(MetaAddress());
   ApproximateCallGraph.setEntryNode(RootNode);
 
-  for (const auto &[_, Node] : BasicBlockNodeMap)
-    RootNode->addSuccessor(Node);
+  // The order of the successors of the root node is the order in which the
+  // functions are analyzed: follow the model, not the addresses of the blocks
+  for (const auto &Function : Binary->Functions()) {
+    auto *Entry = Root.getBlockAt(Function.Entry());
+    RootNode->addSuccessor(BasicBlockNodeMap[Entry]);
+  }
 
   // Dump the call-graph, if requested
   if (CallGraphOutputPath.getNumOccurrences() == 1) {
