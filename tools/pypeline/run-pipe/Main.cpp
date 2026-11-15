@@ -2,6 +2,8 @@
 // This file is distributed under the MIT License. See LICENSE.md for details.
 //
 
+#include <set>
+
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/PluginLoader.h"
 #include "llvm/Support/YAMLTraits.h"
@@ -58,12 +60,21 @@ static void
 serializeDependencies(const revng::pypeline::ObjectDependencies &Dependencies,
                       llvm::raw_ostream &OS) {
   bool Written = false;
-  for (size_t Index = 0; Index < Dependencies.size(); Index++) {
-    for (const auto &Entry : Dependencies[Index]) {
-      std::string SerializedObject = std::get<0>(Entry).serialize();
-      OS << "- [" << Index << ", \"" << llvm::yaml::escape(SerializedObject)
-         << "\", \"" << llvm::yaml::escape(std::get<1>(Entry)) << "\"]\n";
-      Written = true;
+  for (size_t Index = 0; Index < Dependencies.Objects.size(); Index++) {
+    for (const auto &[Object, Classes] : Dependencies.Objects[Index]) {
+      // The paths of the classes of the object, each once
+      std::set<uint32_t> Paths;
+      for (uint32_t Class : Classes)
+        Paths.insert(Dependencies.Classes[Class].begin(),
+                     Dependencies.Classes[Class].end());
+
+      std::string SerializedObject = Object.serialize();
+      for (uint32_t Path : Paths) {
+        OS << "- [" << Index << ", \"" << llvm::yaml::escape(SerializedObject)
+           << "\", \"" << llvm::yaml::escape(Dependencies.Paths[Path])
+           << "\"]\n";
+        Written = true;
+      }
     }
   }
 

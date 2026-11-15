@@ -57,20 +57,26 @@ struct type_caster<revng::pypeline::PipeOutput> {
                          cleanup_list *Cleanup) {
     using namespace revng::pypeline;
     using namespace revng::pypeline::helpers::python;
-    using ODCaster = make_caster<ObjectDependencies>;
-    using CIDCaster = make_caster<CustomInvalidationData>;
+    auto ToPython = [&](auto &Field) {
+      using Caster = make_caster<std::remove_cvref_t<decltype(Field)>>;
+      return steal(Caster::from_cpp(Field, Policy, Cleanup));
+    };
+
+    // The dependencies come as classes, the list of pairs is empty
+    nanobind::object ClassesCls = importObject("revng.pypeline.task.pipe."
+                                               "DependencyClasses");
+    ObjectDependencies &Dependencies = Value.Dependencies;
+    nanobind::object Classes = ClassesCls(ToPython(Dependencies.Paths),
+                                          ToPython(Dependencies.Classes),
+                                          ToPython(Dependencies.Objects));
 
     nanobind::object PipeDependenciesCls = importObject("revng.pypeline.task."
                                                         "pipe."
                                                         "PipeDependencies");
-    nanobind::object Dependencies = steal(ODCaster::from_cpp(Value.Dependencies,
-                                                             Policy,
-                                                             Cleanup));
-    nanobind::object
-      CustomInvalidation = steal(CIDCaster::from_cpp(Value.CustomInvalidation,
-                                                     Policy,
-                                                     Cleanup));
-    return PipeDependenciesCls(Dependencies, CustomInvalidation).release();
+    return PipeDependenciesCls(nanobind::list(),
+                               ToPython(Value.CustomInvalidation),
+                               Classes)
+      .release();
   }
 };
 

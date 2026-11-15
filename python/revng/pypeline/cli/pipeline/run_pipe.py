@@ -262,7 +262,7 @@ def build_pipe_command(
         # Dump dependencies if the path was specified
         if dependencies is not None:
             dependencies_data = []
-            for index, container_dependencies in enumerate(object_deps.dependencies):
+            for index, container_dependencies in enumerate(object_deps.expanded()):
                 for container_dependency in container_dependencies:
                     dependencies_data.append(
                         (index, container_dependency[0].serialize(), container_dependency[1])
