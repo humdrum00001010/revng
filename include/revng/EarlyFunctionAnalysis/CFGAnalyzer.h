@@ -85,6 +85,7 @@ private:
   TemporaryOpaqueFunction PostCallHook;
   TemporaryOpaqueFunction RetHook;
 
+  Outliner::ModuleState OutlinerState;
   Outliner Outliner;
 
   OpaqueFunctionsPool<llvm::Type *> OpaqueBranchConditionsPool;

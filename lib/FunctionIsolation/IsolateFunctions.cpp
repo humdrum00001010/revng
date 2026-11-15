@@ -317,9 +317,10 @@ public:
   FunctionOutliner(llvm::Module &M,
                    const model::Binary &Binary,
                    RootFunction &Root,
-                   const CSVGlobals &Globals) :
+                   const CSVGlobals &Globals,
+                   efa::Outliner::ModuleState &State) :
     Oracle(FSOracle::importWithoutPrototypes(M, Globals, Binary)),
-    Outliner(M, Root, Globals, Oracle) {}
+    Outliner(M, Root, Globals, Oracle, State) {}
 
 public:
   efa::OutlinedFunction outline(MetaAddress Entry,
@@ -612,6 +613,7 @@ Isolate::Isolate(const class Model &Model,
   IsolatedFunctionType = createFunctionType<void>(Context);
   RootF.emplace(*ClonedModule);
   Globals.emplace(*Model.get().get(), *ClonedModule);
+  OutlinerState.emplace(*ClonedModule);
 
   auto SimpleFunctionType = createFunctionType<void>(Context);
   FunctionDispatcher = FunctionDispatcherHelper
@@ -661,7 +663,11 @@ Function *Isolate::isolateFunction(const efa::ControlFlowGraph &FM) {
 
   // Outline the function (later on we'll steal its body and move it into F)
   CallIsolatedFunction CallHandler(*this, FM);
-  FunctionOutliner Outliner(*ClonedModule, Binary, *RootF, *Globals);
+  FunctionOutliner Outliner(*ClonedModule,
+                            Binary,
+                            *RootF,
+                            *Globals,
+                            *OutlinerState);
   efa::OutlinedFunction Outlined = Outliner.outline(Entry, &CallHandler);
 
   handleUnexpectedPCCloned(Outlined);
@@ -779,6 +785,7 @@ Isolate::~Isolate() {
 
   // Drop the `root` function's body to save memory, since we're done isolating
   T.advance("Cleanup", true);
+  OutlinerState.reset();
   deleteOnlyBody(*ClonedModule->getFunction("root"));
 
   // Before emitting it in output, verify the module
