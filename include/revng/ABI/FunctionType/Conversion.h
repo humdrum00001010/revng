@@ -8,9 +8,14 @@
 
 namespace abi::FunctionType {
 
+class TypeDefinitionReferenceIndex;
+
 /// Best effort `CABIFunctionDefinition` to `RawFunctionDefinition` conversion.
 ///
 /// If `ABI` is not specified, `Binary.DefaultABI` is used instead.
+///
+/// \param Index An index of the references of \p Binary, which is used, and
+///        kept up to date, to replace the references to \p Function.
 ///
 /// \param UseSoftRegisterStateDeductions For specifics see the difference
 ///        between `abi::Definition::tryDeducingArgumentRegisterState` (`true`)
@@ -18,6 +23,7 @@ namespace abi::FunctionType {
 std::optional<model::UpcastableType>
 tryConvertToCABI(const model::RawFunctionDefinition &Function,
                  TupleTree<model::Binary> &Binary,
+                 TypeDefinitionReferenceIndex &Index,
                  std::optional<model::ABI::Values> ABI = std::nullopt,
                  bool UseSoftRegisterStateDeductions = true);
 

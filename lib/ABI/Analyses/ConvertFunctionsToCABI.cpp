@@ -234,6 +234,10 @@ static void convertFunctionsToCABI(TupleTree<model::Binary> &Model,
     }
   };
 
+  // Find the references once, instead of visiting the whole model to replace
+  // the ones to each converted prototype
+  abi::FunctionType::TypeDefinitionReferenceIndex References(Model);
+
   // And convert them.
   for (model::RawFunctionDefinition *Old : ToConvert) {
     LogFunctionName(Old->key());
@@ -247,7 +251,11 @@ static void convertFunctionsToCABI(TupleTree<model::Binary> &Model,
     }
 
     namespace FT = abi::FunctionType;
-    if (auto New = FT::tryConvertToCABI(*Old, Model, ABI, SoftDeductions)) {
+    if (auto New = FT::tryConvertToCABI(*Old,
+                                        Model,
+                                        References,
+                                        ABI,
+                                        SoftDeductions)) {
       // If the conversion succeeds, make sure the returned type is valid,
       revng_assert(!New->isEmpty());
 

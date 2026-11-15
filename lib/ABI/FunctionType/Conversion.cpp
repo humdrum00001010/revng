@@ -155,6 +155,7 @@ private:
 std::optional<model::UpcastableType>
 tryConvertToCABI(const model::RawFunctionDefinition &FunctionType,
                  TupleTree<model::Binary> &Binary,
+                 TypeDefinitionReferenceIndex &Index,
                  std::optional<model::ABI::Values> MaybeABI,
                  bool UseSoftRegisterStateDeductions) {
   if (!MaybeABI.has_value())
@@ -176,6 +177,9 @@ tryConvertToCABI(const model::RawFunctionDefinition &FunctionType,
                 << model::ABI::getName(ABI.ABI()) << "`.");
     return std::nullopt;
   }
+
+  // The definitions the conversion adds to the model get their IDs from here
+  const uint64_t FirstNewID = Binary->getAvailableTypeID();
 
   ToCABIConverter Converter(ABI, *Binary, UseSoftRegisterStateDeductions);
   std::optional Converted = Converter.tryConvert(FunctionType);
@@ -213,11 +217,22 @@ tryConvertToCABI(const model::RawFunctionDefinition &FunctionType,
   }
 
   // To finish up the conversion, remove all the references to the old type by
-  // carefully replacing them with references to the new one.
-  replaceTypeDefinition(FunctionType.key(), *Type, Binary);
+  // carefully replacing them with references to the new one. The definitions
+  // that were just added, which are the last ones, might refer to it too.
+  auto &Definitions = Binary->TypeDefinitions();
+  for (auto &Definition : llvm::reverse(Definitions)) {
+    if (Definition->ID() < FirstNewID)
+      break;
+    Index.add(Definition);
+  }
+  Index.replace(FunctionType.key(),
+                llvm::cast<model::DefinedType>(*Type).Definition());
 
   // And don't forget to remove the old type.
-  Binary->TypeDefinitions().erase(FunctionType.key());
+  auto Old = Definitions.find(FunctionType.key());
+  revng_assert(Old != Definitions.end());
+  Index.remove(*Old);
+  Definitions.erase(Old);
 
   return std::move(Type);
 }
