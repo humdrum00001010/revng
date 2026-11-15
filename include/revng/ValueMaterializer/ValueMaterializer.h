@@ -51,6 +51,7 @@ private:
   const llvm::DominatorTree &DT;
   DataFlowGraph::Limits TheLimits;
   Oracle::Values Oracle;
+  AVICandidatesCache *Candidates = nullptr;
 
   //
   // Outputs
@@ -71,7 +72,8 @@ private:
                     DataFlowRangeAnalysis &DFRA,
                     const llvm::DominatorTree &DT,
                     DataFlowGraph::Limits TheLimits,
-                    Oracle::Values Oracle) :
+                    Oracle::Values Oracle,
+                    AVICandidatesCache *Candidates) :
     Context(Context),
     V(V),
     MO(MO),
@@ -79,18 +81,24 @@ private:
     DFRA(DFRA),
     DT(DT),
     TheLimits(TheLimits),
-    Oracle(Oracle) {}
+    Oracle(Oracle),
+    Candidates(Candidates) {}
 
 public:
-  static ValueMaterializer getValuesFor(llvm::Instruction *Context,
-                                        llvm::Value *V,
-                                        MemoryOracle &MO,
-                                        llvm::LazyValueInfo &LVI,
-                                        DataFlowRangeAnalysis &DFRA,
-                                        const llvm::DominatorTree &DT,
-                                        DataFlowGraph::Limits TheLimits,
-                                        Oracle::Values Oracle) {
-    ValueMaterializer Result(Context, V, MO, LVI, DFRA, DT, TheLimits, Oracle);
+  /// \param Candidates if not null, a cache to share with the other queries on
+  ///        the same function, which must not change in the meantime
+  static ValueMaterializer
+  getValuesFor(llvm::Instruction *Context,
+               llvm::Value *V,
+               MemoryOracle &MO,
+               llvm::LazyValueInfo &LVI,
+               DataFlowRangeAnalysis &DFRA,
+               const llvm::DominatorTree &DT,
+               DataFlowGraph::Limits TheLimits,
+               Oracle::Values Oracle,
+               AVICandidatesCache *Candidates = nullptr) {
+    ValueMaterializer
+      Result(Context, V, MO, LVI, DFRA, DT, TheLimits, Oracle, Candidates);
     Result.run();
     return Result;
   }
