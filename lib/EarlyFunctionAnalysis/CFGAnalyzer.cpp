@@ -186,20 +186,25 @@ OutlinedFunction CFGAnalyzer::outline(const MetaAddress &Entry) {
 
   OutlinedFunction Result = Outliner.outline(Entry, &Summarizer);
 
-  // Make sure we start a new block before a PreCallHook
-  auto IsFirst = [](llvm::Instruction *I) {
-    return I->getParent()->getFirstNonPHI() == I;
-  };
-  for (llvm::CallBase *Call : callers(PreCallHook.get()))
-    if (not IsFirst(Call))
-      Call->getParent()->splitBasicBlock(Call);
-
-  // Make sure we start a new block for each jump target
+  // Make sure we start a new block before a PreCallHook and for each jump
+  // target of the function that has just been outlined
   std::optional NewPC = NewPCHelper.get(M);
   revng_assert(NewPC.has_value());
-  for (IRHelperCall<NewPCArgument> Call : NewPC->callers())
-    if (startsBasicBlock(Call) and not IsFirst(Call.call()))
-      Call.call()->getParent()->splitBasicBlock(Call.call());
+  std::vector<llvm::Instruction *> BlockStarts;
+  if (llvm::Function *F = Result.Function.get()) {
+    for (llvm::Instruction &I : llvm::instructions(F)) {
+      if (isCallTo(&I, PreCallHook.get())) {
+        BlockStarts.push_back(&I);
+      } else if (std::optional Call = NewPC->getCall(&I)) {
+        if (startsBasicBlock(*Call))
+          BlockStarts.push_back(&I);
+      }
+    }
+  }
+
+  for (llvm::Instruction *I : BlockStarts)
+    if (I->getParent()->getFirstNonPHI() != I)
+      I->getParent()->splitBasicBlock(I);
 
   return Result;
 }
