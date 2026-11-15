@@ -84,7 +84,8 @@ private:
 
   using DelayDirectoryRef = const DelayImportDirectoryEntryRef;
   void recordDelayImportedFunctions(DelayDirectoryRef &I,
-                                    ImportedSymbolRange Range);
+                                    ImportedSymbolRange Range,
+                                    uint64_t AddressTable);
 
   /// Parse the base relocation table, which describes the absolute pointers
   /// in the image
@@ -513,7 +514,10 @@ void PECOFFImporter::parseImportedSymbols() {
 }
 
 void PECOFFImporter::recordDelayImportedFunctions(DelayDirectoryRef &I,
-                                                  ImportedSymbolRange Range) {
+                                                  ImportedSymbolRange Range,
+                                                  uint64_t AddressTable) {
+  auto Architecture = Model->Architecture();
+  uint64_t PointerSize = model::Architecture::getPointerSize(Architecture);
   // Index of entries within import table.
   int32_t Index = -1;
   for (const ImportedSymbolRef &S : Range) {
@@ -551,7 +555,13 @@ void PECOFFImporter::recordDelayImportedFunctions(DelayDirectoryRef &I,
     if (Sym.empty() or Model->ImportedDynamicFunctions().contains(Sym.str()))
       continue;
 
-    MetaAddress AddressOfDelayImportEntry = ImageBase + u64(Addr);
+    // The loader stores the address of the function in the entry of the delay
+    // import address table: that entry is what the code goes through. What
+    // `getImportAddress` returns is the content of the entry in the file,
+    // which points to the code that binds the function at its first use.
+    MetaAddress AddressOfDelayImportEntry = ImageBase
+                                            + (AddressTable
+                                               + Index * PointerSize);
 
     // Lets make Relocation.
     using namespace model::RelocationType;
@@ -585,7 +595,13 @@ void PECOFFImporter::parseDelayImportedSymbols() {
     if (not Model->ImportedLibraries().insert(Name.str()).second)
       continue;
 
-    recordDelayImportedFunctions(I, I.imported_symbols());
+    // The fields of the table are RVAs if the first bit of the attributes is
+    // set, virtual addresses otherwise (the format of older linkers)
+    uint64_t AddressTable = Table->DelayImportAddressTable;
+    if ((Table->Attributes & 1) == 0)
+      AddressTable -= ImageBase.address();
+
+    recordDelayImportedFunctions(I, I.imported_symbols(), AddressTable);
   }
 }
 

@@ -463,6 +463,18 @@ MaterializedValue JumpTargetManager::readFromPointer(MetaAddress LoadAddress,
     }
   }
 
+  // The entry of a delay import table also has a base relocation, for the
+  // address it holds until the function is bound: that of the code that binds
+  // it. The function is what a call through the entry is for.
+  if (MatchCount == 1) {
+    if (ReadFromPointerLog.isEnabled()) {
+      ReadFromPointerLog << "Returning ";
+      Result.dump(ReadFromPointerLog);
+      ReadFromPointerLog << DoLog;
+    }
+    return Result;
+  }
+
   // Check segment-related relocations
   auto SegmentRange = SegmentRelocations.equal_range(LoadAddress);
   for (const auto &[_, Entry] : llvm::make_range(SegmentRange)) {
