@@ -253,8 +253,11 @@ public:
     // Configure ValueMaterializer
     switch (Type) {
     case TrackedInstructionType::WrittenInPC:
-      // We do not think it's beneficial to traverse more than one load
-      MaxLoad = 1;
+      // A jump table can be indexed through another table: compilers emit
+      // that for a `switch` whose cases share few targets, a table of bytes
+      // that tells which entry of the jump table each case takes. More than
+      // two loads are not deemed beneficial.
+      MaxLoad = 2;
       break;
     case TrackedInstructionType::LoadTarget:
     case TrackedInstructionType::StoreTarget:
