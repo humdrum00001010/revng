@@ -43,6 +43,26 @@ static Logger AVILogger("avi");
 
 inline RunningStatistics AVICFEGSizeStatitistics("avi-cfeg-size");
 
+const AVICandidatesCache::Set &AVICandidatesCache::get(Instruction *I) {
+  auto [It, New] = Map.try_emplace(I);
+  Set &Result = It->second;
+  if (New) {
+    Result.insert(I);
+    for (User *U : I->users()) {
+      if (auto *Trunc = dyn_cast<TruncInst>(U)) {
+        Result.insert(Trunc);
+        for (User *U2 : Trunc->users()) {
+          if (auto *ZExt = dyn_cast<ZExtInst>(U2)) {
+            Result.insert(ZExt);
+          }
+        }
+      }
+    }
+  }
+
+  return Result;
+}
+
 AdvancedValueInfoMFI::LatticeElement
 AdvancedValueInfoMFI::combineValues(const LatticeElement &LHS,
                                     const LatticeElement &RHS) const {
@@ -90,23 +110,12 @@ AdvancedValueInfoMFI::applyTransferFunction(Label L,
     uint32_t BitWidth = I->getType()->getIntegerBitWidth();
     ConstantRangeSet Range(BitWidth, true);
 
-    SmallSet<Instruction *, 4> Candidates;
-    Candidates.insert(I);
-
-    if (ZeroExtendConstraints) {
-      // Steal constraints from trunc'd versions of this value and use the most
-      // accurate
-      for (User *U : I->users()) {
-        if (auto *Trunc = dyn_cast<TruncInst>(U)) {
-          Candidates.insert(Trunc);
-          for (User *U2 : Trunc->users()) {
-            if (auto *ZExt = dyn_cast<ZExtInst>(U2)) {
-              Candidates.insert(ZExt);
-            }
-          }
-        }
-      }
-    }
+    // Steal constraints from trunc'd versions of this value and use the most
+    // accurate
+    AVICandidatesCache::Set OnlyI;
+    OnlyI.insert(I);
+    const auto &Candidates = ZeroExtendConstraints ? CandidatesCache.get(I) :
+                                                     OnlyI;
 
     if (AVILogger.isEnabled()) {
       AVILogger << "Considering constraints on " << getName(I);
@@ -206,8 +215,13 @@ runAVI(const DataFlowGraph &DFG,
        const llvm::DominatorTree &DT,
        llvm::LazyValueInfo &LVI,
        DataFlowRangeAnalysis &DFRA,
-       bool ZeroExtendConstraints) {
+       bool ZeroExtendConstraints,
+       AVICandidatesCache *Candidates) {
   using namespace llvm;
+
+  AVICandidatesCache LocalCandidates;
+  if (Candidates == nullptr)
+    Candidates = &LocalCandidates;
 
   //
   // Identify nodes from the root of the DFG to all the instructions in the
@@ -304,12 +318,8 @@ runAVI(const DataFlowGraph &DFG,
   revng_assert(InitialNodes.size() > 0);
 
   // Run MFP
-  AdvancedValueInfoMFI AVIMFI(LVI,
-                              DFRA,
-                              DT,
-                              Context,
-                              Targets,
-                              ZeroExtendConstraints);
+  AdvancedValueInfoMFI
+    AVIMFI(LVI, DFRA, DT, Context, Targets, ZeroExtendConstraints, *Candidates);
 
   AdvancedValueInfoMFI::LatticeElement ExtremalValue;
   for (Instruction *I : Targets)

@@ -76,6 +76,32 @@ public:
 
 /// This class, given an Oracle, can outline functions from root
 class Outliner {
+public:
+  /// The part of the state of an Outliner that depends on the module alone.
+  ///
+  /// Preparing it takes a visit of `root` and one of the functions of the
+  /// module, so it can be shared by the outliners of a module: outlining does
+  /// not change the blocks of `root`, and the functions the pool holds are
+  /// created through it.
+  struct ModuleState {
+    OpaqueFunctionsPool<llvm::Type *> OpaqueReturnAddress;
+    llvm::CodeExtractorAnalysisCache CEAC;
+
+    explicit ModuleState(llvm::Module &M) :
+      OpaqueReturnAddress(&M, false), CEAC(*M.getFunction("root")) {
+
+      using namespace llvm;
+      auto Effects = MemoryEffects::inaccessibleMemOnly(llvm::ModRefInfo::Ref);
+      OpaqueReturnAddress.setMemoryEffects(Effects);
+      OpaqueReturnAddress.addFnAttribute(Attribute::NoUnwind);
+      OpaqueReturnAddress.addFnAttribute(Attribute::WillReturn);
+      OpaqueReturnAddress.setTags({ &FunctionTags::OpaqueReturnAddressFunction,
+                                    &FunctionTags::UniquedByPrototype });
+      OpaqueReturnAddress
+        .initializeFromReturnType(FunctionTags::OpaqueReturnAddressFunction);
+    }
+  };
+
 private:
   llvm::Module &M;
   RootFunction &RootF;
@@ -87,33 +113,21 @@ private:
   /// `unexpectedpc` of their caller.
   TemporaryOpaqueFunction UnexpectedPCMarker;
 
-  OpaqueFunctionsPool<llvm::Type *> OpaqueReturnAddress;
-
-  llvm::CodeExtractorAnalysisCache CEAC;
+  ModuleState &State;
 
 public:
+  /// \param State must outlive this object
   Outliner(llvm::Module &M,
            RootFunction &RootF,
            const CSVGlobals &Globals,
-           FunctionSummaryOracle &Oracle) :
+           FunctionSummaryOracle &Oracle,
+           ModuleState &State) :
     M(M),
     RootF(RootF),
     Globals(Globals),
     Oracle(Oracle),
     UnexpectedPCMarker(initializeUnexpectedPCMarker(M)),
-    OpaqueReturnAddress(&M, false),
-    CEAC(*M.getFunction("root")) {
-
-    using namespace llvm;
-    auto Effects = MemoryEffects::inaccessibleMemOnly(llvm::ModRefInfo::Ref);
-    OpaqueReturnAddress.setMemoryEffects(Effects);
-    OpaqueReturnAddress.addFnAttribute(Attribute::NoUnwind);
-    OpaqueReturnAddress.addFnAttribute(Attribute::WillReturn);
-    OpaqueReturnAddress.setTags({ &FunctionTags::OpaqueReturnAddressFunction,
-                                  &FunctionTags::UniquedByPrototype });
-    OpaqueReturnAddress
-      .initializeFromReturnType(FunctionTags::OpaqueReturnAddressFunction);
-  }
+    State(State) {}
 
 public:
   OutlinedFunction outline(const MetaAddress &EntryAddress,

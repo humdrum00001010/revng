@@ -146,6 +146,12 @@ private:
   /// first `llvm::CallInst` found with that prototype,
   PrototypesMapT VisitedPrototypes;
 
+  /// The access nodes that point to a node and the nodes they point to, for
+  /// `linkNodesWithSamePointee`
+  llvm::DenseSet<const LayoutTypeSystemNode *> PointerAccessNodes;
+  std::set<LayoutTypeSystemNode *, LayoutTypeSystem::NodeComparison>
+    PointeesOfAccessNodes;
+
 private:
   LayoutTypeSystemNode *getLayoutType(const llvm::Value *V, unsigned Id);
 
@@ -177,6 +183,10 @@ private:
   bool createInterproceduralTypes(llvm::Module &M,
                                   const SegmentNodeMapT &Segments);
   bool createIntraproceduralTypes(llvm::Module &M);
+
+  /// All the nodes that point to the node an access node points to have the
+  /// same type: connect them with equality links.
+  void linkNodesWithSamePointee();
 
   /// Collect LayoutTypePtrs and place them in the right position
   void createValuesList();
@@ -226,6 +236,8 @@ public:
 
     for (llvm::Module *M : Modules)
       createIntraproceduralTypes(*M);
+
+    linkNodesWithSamePointee();
 
     createValuesList();
     VisitedValues.clear();

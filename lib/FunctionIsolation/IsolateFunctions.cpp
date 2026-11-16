@@ -317,9 +317,10 @@ public:
   FunctionOutliner(llvm::Module &M,
                    const model::Binary &Binary,
                    RootFunction &Root,
-                   const CSVGlobals &Globals) :
+                   const CSVGlobals &Globals,
+                   efa::Outliner::ModuleState &State) :
     Oracle(FSOracle::importWithoutPrototypes(M, Globals, Binary)),
-    Outliner(M, Root, Globals, Oracle) {}
+    Outliner(M, Root, Globals, Oracle, State) {}
 
 public:
   efa::OutlinedFunction outline(MetaAddress Entry,
@@ -437,6 +438,13 @@ private:
 
   std::set<const llvm::GlobalVariable *> IgnorableGVs;
 
+  /// The global variables every clone gets: those that are defined and cannot
+  /// be ignored
+  std::vector<const llvm::GlobalVariable *> AlwaysClonedGVs;
+
+  /// The position of each global variable and function in the module
+  llvm::DenseMap<const llvm::GlobalValue *, size_t> Position;
+
 public:
   MinimalModuleCloner(const model::Binary &Binary, llvm::Module &Module) :
     Module(Module) {
@@ -470,6 +478,15 @@ public:
           or (FunctionTags::CSV.isTagOf(&GV) and not IsRegister(GV)))
         IgnorableGVs.insert(&GV);
     }
+
+    for (const llvm::GlobalVariable &GV : Module.globals()) {
+      Position[&GV] = Position.size();
+      if (not IgnorableGVs.contains(&GV) and not GV.isDeclaration())
+        AlwaysClonedGVs.push_back(&GV);
+    }
+
+    for (const llvm::Function &F : Module)
+      Position[&F] = Position.size();
   }
 
   std::unique_ptr<llvm::Module> cloneModule(llvm::Function &Function) {
@@ -527,7 +544,26 @@ public:
         return CloneAction::Clone;
       };
 
-    auto New = cloneFiltered(Module, ActionFunction);
+    // What ActionFunction does not omit, in the order it has in the module
+    std::vector<const llvm::GlobalVariable *> Variables(UsedGVs.begin(),
+                                                        UsedGVs.end());
+    llvm::append_range(Variables, AlwaysClonedGVs);
+    std::vector<const llvm::Function *> Functions(Visited.begin(),
+                                                  Visited.end());
+    llvm::append_range(Functions, CalledFunctions);
+
+    auto SortByPosition = [this](auto &Values) {
+      auto Before = [this](const llvm::GlobalValue *LHS,
+                           const llvm::GlobalValue *RHS) {
+        return Position.find(LHS)->second < Position.find(RHS)->second;
+      };
+      llvm::sort(Values, Before);
+      Values.erase(std::unique(Values.begin(), Values.end()), Values.end());
+    };
+    SortByPosition(Variables);
+    SortByPosition(Functions);
+
+    auto New = cloneSelected(Module, Variables, Functions, ActionFunction);
     revng::verify(New.get());
     return New;
   }
@@ -612,6 +648,7 @@ Isolate::Isolate(const class Model &Model,
   IsolatedFunctionType = createFunctionType<void>(Context);
   RootF.emplace(*ClonedModule);
   Globals.emplace(*Model.get().get(), *ClonedModule);
+  OutlinerState.emplace(*ClonedModule);
 
   auto SimpleFunctionType = createFunctionType<void>(Context);
   FunctionDispatcher = FunctionDispatcherHelper
@@ -661,7 +698,11 @@ Function *Isolate::isolateFunction(const efa::ControlFlowGraph &FM) {
 
   // Outline the function (later on we'll steal its body and move it into F)
   CallIsolatedFunction CallHandler(*this, FM);
-  FunctionOutliner Outliner(*ClonedModule, Binary, *RootF, *Globals);
+  FunctionOutliner Outliner(*ClonedModule,
+                            Binary,
+                            *RootF,
+                            *Globals,
+                            *OutlinerState);
   efa::OutlinedFunction Outlined = Outliner.outline(Entry, &CallHandler);
 
   handleUnexpectedPCCloned(Outlined);
@@ -779,6 +820,7 @@ Isolate::~Isolate() {
 
   // Drop the `root` function's body to save memory, since we're done isolating
   T.advance("Cleanup", true);
+  OutlinerState.reset();
   deleteOnlyBody(*ClonedModule->getFunction("root"));
 
   // Before emitting it in output, verify the module

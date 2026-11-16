@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Annotated, AsyncContextManager, Collection, It
 from urllib.parse import urlparse
 
 from revng.pypeline.container import ConfigurationId, ContainerID
-from revng.pypeline.model import Model, ModelDiff, ModelPathSet
+from revng.pypeline.model import Model, ModelDiff, ModelPath, ModelPathSet
 from revng.pypeline.object import ObjectID, ObjectSet
 from revng.pypeline.storage.notification_queue import LOCAL_QUEUE
 from revng.pypeline.task.pipe import ObjectDependencies, PipeCustomInvalidation
@@ -133,15 +133,37 @@ class SetModelResult:
 
 
 @dataclass
+class ObjectDependencyClasses:
+    """
+    Dependencies between the objects produced by a task and the model, as
+    classes of model paths: see `revng.pypeline.task.pipe.DependencyClasses`.
+    """
+
+    # The model paths, each once
+    paths: list[ModelPath]
+    # For each class, the indices in `paths` of its paths
+    classes: list[list[int]]
+    # The objects, each with the indices in `classes` of its classes
+    objects: list[tuple[ContainerID, ObjectID, list[int]]]
+
+
+@dataclass
 class PipeDependencies:
     pipe_id: int
     savepoints_range: SavePointsRange
     configuration: ConfigurationId
     dependencies: ObjectDependencies
     custom_invalidation: PipeCustomInvalidation
+    # Further dependencies, only for a storage provider that
+    # `supports_dependency_classes`
+    classes: ObjectDependencyClasses | None = None
 
     def empty(self) -> bool:
-        return len(self.dependencies) == 0 and not self.has_custom_invalidation()
+        return (
+            len(self.dependencies) == 0
+            and (self.classes is None or len(self.classes.objects) == 0)
+            and not self.has_custom_invalidation()
+        )
 
     def has_custom_invalidation(self):
         return not all(len(x) == 0 for x in self.custom_invalidation)
@@ -265,6 +287,13 @@ class StorageProvider(ABC):
         All the object **have to** be present, as one should call `get_available`
         first to check it.
         """
+
+    def supports_dependency_classes(self) -> bool:
+        """
+        Whether `add_objects` handles `PipeDependencies.classes`. If not, the
+        dependencies only come as `PipeDependencies.dependencies`.
+        """
+        return False
 
     @abstractmethod
     def add_objects(

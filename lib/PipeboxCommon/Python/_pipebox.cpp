@@ -259,6 +259,17 @@ NB_MODULE(_pipebox, m) {
            //       copy anyways.
            return nanobind::bytes(Buffer.data(), Buffer.size());
          })
+    .def("binaries",
+         [](const Model &Handle) {
+           // Index, Hash, CanonicalPath and Size of each of the Binaries
+           nanobind::list Result;
+           for (const auto &Binary : Handle.get()->Binaries())
+             Result.append(nanobind::make_tuple(Binary.Index(),
+                                                Binary.Hash(),
+                                                Binary.CanonicalPath(),
+                                                Binary.Size()));
+           return Result;
+         })
     .def_static("deserialize",
                 &deserializeModel,
                 "data"_a,

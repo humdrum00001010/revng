@@ -213,7 +213,10 @@ private:
   void propagatePrototypes();
 
   /// Propagate prototypes to callers
-  void propagatePrototypesInFunction(model::Function &Function);
+  /// \param NamesAreDeduplicated whether the names in the model have been
+  ///        deduplicated and nothing has changed since
+  void propagatePrototypesInFunction(model::Function &Function,
+                                     bool &NamesAreDeduplicated);
 
 private:
   /// Record in \p Inserter the registers whose lowest CSV is in \p CSVs.
@@ -232,6 +235,15 @@ private:
   model::UpcastableType
   buildPrototypeForIndirectCall(const FunctionSummary &CallerSummary,
                                 const efa::BasicBlock &CallerBlock);
+
+  /// \return the default prototype with \p FinalStackOffset as its final stack
+  ///         offset, or an empty type if that is the one it has
+  model::UpcastableType defaultPrototypeRemoving(int64_t FinalStackOffset);
+
+private:
+  /// The copies of the default prototype \ref defaultPrototypeRemoving made,
+  /// by their final stack offset
+  std::map<int64_t, model::TypeDefinition::Key> DefaultPrototypeCopies;
 };
 
 void DetectABI::computeApproximateCallGraph() {
@@ -300,8 +312,12 @@ void DetectABI::computeApproximateCallGraph() {
   BasicBlockNode *RootNode = ApproximateCallGraph.addNode(MetaAddress());
   ApproximateCallGraph.setEntryNode(RootNode);
 
-  for (const auto &[_, Node] : BasicBlockNodeMap)
-    RootNode->addSuccessor(Node);
+  // The order of the successors of the root node is the order in which the
+  // functions are analyzed: follow the model, not the addresses of the blocks
+  for (const auto &Function : Binary->Functions()) {
+    auto *Entry = Root.getBlockAt(Function.Entry());
+    RootNode->addSuccessor(BasicBlockNodeMap[Entry]);
+  }
 
   // Dump the call-graph, if requested
   if (CallGraphOutputPath.getNumOccurrences() == 1) {
@@ -916,6 +932,17 @@ void DetectABI::finalizeModel() {
             Function->CallSitePrototypes().emplace(BlockAddress,
                                                    std::move(Prototype),
                                                    IsTailCall);
+          } else if (IsDynamic and not HasInfoOnEdge) {
+            // A dynamic function without a prototype: if the analysis of the
+            // caller found that it removes its arguments, say so here, since
+            // the function is assumed not to
+            auto FSO = Analyzer.callSiteFinalStackOffset(BlockAddress);
+            auto Prototype = FSO.has_value() ? defaultPrototypeRemoving(*FSO) :
+                                               model::UpcastableType();
+            if (not Prototype.isEmpty())
+              Function->CallSitePrototypes().emplace(BlockAddress,
+                                                     std::move(Prototype),
+                                                     false);
           }
         }
       }
@@ -932,8 +959,9 @@ void DetectABI::finalizeModel() {
 }
 
 void DetectABI::propagatePrototypes() {
+  bool NamesAreDeduplicated = false;
   for (model::Function &Function : Binary->Functions()) {
-    propagatePrototypesInFunction(Function);
+    propagatePrototypesInFunction(Function, NamesAreDeduplicated);
   }
 }
 
@@ -960,7 +988,8 @@ static bool isAnyWritten(llvm::Module &M,
 }
 
 // TODO: is this still necessary after the new EFA?
-void DetectABI::propagatePrototypesInFunction(model::Function &Function) {
+void DetectABI::propagatePrototypesInFunction(model::Function &Function,
+                                              bool &NamesAreDeduplicated) {
   const MetaAddress &Entry = Function.Entry();
 
   revng_log(Log, "Trying to propagate prototypes for " << Entry.toString());
@@ -1038,6 +1067,7 @@ void DetectABI::propagatePrototypesInFunction(model::Function &Function) {
             << toString(model::copyTypeDefinition(*Prototype)) << DoLog;
       }
 
+      NamesAreDeduplicated = false;
       Function.Prototype() = Binary->makeType(Prototype->key());
 
       if (Function.Name().empty()) {
@@ -1058,7 +1088,13 @@ void DetectABI::propagatePrototypesInFunction(model::Function &Function) {
   }
 
   // TODO: should this be done at a higher abstraction level?
-  model::deduplicateCollidingNames(Binary);
+  //
+  // This visits the whole model: do it again only after a change, since the
+  // previous time left no name to rename
+  if (not NamesAreDeduplicated) {
+    model::deduplicateCollidingNames(Binary);
+    NamesAreDeduplicated = true;
+  }
 }
 
 model::UpcastableType
@@ -1091,6 +1127,34 @@ DetectABI::buildPrototypeForIndirectCall(const FunctionSummary &CallerSummary,
   Prototype.PreservedRegisters() = computePreservedRegisters(Clobbered);
 
   Prototype.FinalStackOffset() = DefaultSummary.ElectedFSO.value_or(0);
+
+  // Unless the analysis of the caller found what this callee removes
+  MetaAddress CallSite = CallerBlock.ID().notInlinedAddress();
+  if (auto FSO = Analyzer.callSiteFinalStackOffset(CallSite))
+    Prototype.FinalStackOffset() = *FSO;
+
+  return std::move(NewType);
+}
+
+model::UpcastableType
+DetectABI::defaultPrototypeRemoving(int64_t FinalStackOffset) {
+  const model::TypeDefinition *Prototype = Binary->defaultPrototype();
+  const auto *Default = dyn_cast<model::RawFunctionDefinition>(Prototype);
+  if (Default == nullptr
+      or int64_t(Default->FinalStackOffset()) == FinalStackOffset)
+    return {};
+
+  auto It = DefaultPrototypeCopies.find(FinalStackOffset);
+  if (It != DefaultPrototypeCopies.end())
+    return Binary->makeType(It->second);
+
+  auto &&[Copy, NewType] = Binary->makeRawFunctionDefinition();
+  Copy.Architecture() = Default->Architecture();
+  Copy.Arguments() = Default->Arguments();
+  Copy.ReturnValues() = Default->ReturnValues();
+  Copy.PreservedRegisters() = Default->PreservedRegisters();
+  Copy.FinalStackOffset() = FinalStackOffset;
+  DefaultPrototypeCopies.emplace(FinalStackOffset, Copy.key());
 
   return std::move(NewType);
 }

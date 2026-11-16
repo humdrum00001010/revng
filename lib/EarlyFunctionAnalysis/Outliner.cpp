@@ -226,10 +226,11 @@ void Outliner::integrateFunctionCallee(CallHandler *TheCallHandler,
       // Inject the store
       std::string Name = ("opaque_"
                           + to_string(PointeeType->getIntegerBitWidth()));
-      auto *OpaqueReturnAddressFunction = OpaqueReturnAddress.get(PointeeType,
-                                                                  PointeeType,
-                                                                  {},
-                                                                  Name);
+      auto &Pool = State.OpaqueReturnAddress;
+      auto *OpaqueReturnAddressFunction = Pool.get(PointeeType,
+                                                   PointeeType,
+                                                   {},
+                                                   Name);
       Builder.CreateStore(Builder.CreateCall(OpaqueReturnAddressFunction),
                           Pointer);
     }
@@ -409,7 +410,8 @@ Outliner::outlineFunctionInternal(CallHandler *TheCallHandler,
   }
 
   // Extract outlined function
-  llvm::Function *F = CodeExtractor(BlocksToExtract).extractCodeRegion(CEAC);
+  llvm::Function *F = CodeExtractor(BlocksToExtract)
+                        .extractCodeRegion(State.CEAC);
   F->addFnAttr(Attribute::NullPointerIsValid);
   OutlinedFunction.Function = UniqueValuePtr<llvm::Function>(F);
 

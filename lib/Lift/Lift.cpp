@@ -2,6 +2,8 @@
 // This file is distributed under the MIT License. See LICENSE.md for details.
 //
 
+#include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/YAMLParser.h"
 #include "llvm/Transforms/IPO/StripSymbols.h"
 
 #include "revng/Lift/JumpTargetReason.h"
@@ -84,6 +86,42 @@ struct llvm::yaml::CustomMappingTraits<JumpTargetMap> {
       IO.mapRequired(Key.toString().c_str(), Value);
   }
 };
+
+/// Read what `serialize` writes for a `JumpTargetMap`, in a time that does not
+/// grow with the square of its size: `llvm::yaml::Input`, hence `fromString`,
+/// looks each key of a mapping up in a vector when the mapping ends.
+static JumpTargetMap parseJumpTargets(llvm::StringRef String) {
+  using namespace llvm::yaml;
+
+  JumpTargetMap Result;
+
+  llvm::SourceMgr SourceManager;
+  Stream YAMLStream(String, SourceManager);
+  document_iterator Document = YAMLStream.begin();
+  revng_assert(Document != YAMLStream.end());
+
+  auto *Mapping = llvm::dyn_cast_or_null<MappingNode>(Document->getRoot());
+  revng_assert(Mapping != nullptr);
+
+  llvm::SmallString<64> KeyStorage;
+  llvm::SmallString<16> ValueStorage;
+  for (KeyValueNode &Entry : *Mapping) {
+    auto *Key = llvm::dyn_cast_or_null<ScalarNode>(Entry.getKey());
+    auto *Value = llvm::dyn_cast_or_null<ScalarNode>(Entry.getValue());
+    revng_assert(Key != nullptr and Value != nullptr);
+
+    llvm::StringRef ValueText = Value->getValue(ValueStorage);
+    revng_assert(ValueText == "true" or ValueText == "false");
+
+    auto Address = MetaAddress::fromString(Key->getValue(KeyStorage));
+    bool New = Result.emplace(Address, ValueText == "true").second;
+    revng_assert(New);
+  }
+
+  revng_assert(not YAMLStream.failed());
+
+  return Result;
+}
 
 static std::tuple<bool, std::map<MetaAddress, bool>>
 collectJumpTargets(const llvm::Module &Module) {
@@ -270,7 +308,7 @@ Lift::processCustomInvalidation(const InvalidationData &Data,
   auto DataBuffer = std::get<1>(LLVMModuleData[0]);
   llvm::StringRef String(reinterpret_cast<const char *>(DataBuffer.data()),
                          DataBuffer.size());
-  auto JumpTargets = llvm::cantFail(fromString<JumpTargetMap>(String));
+  JumpTargetMap JumpTargets = parseJumpTargets(String);
 
   if (shouldInvalidateRoot(JumpTargets, Diff.get()))
     return { {}, { ObjectID() } };

@@ -586,6 +586,25 @@ private:
 
   unsigned NewBranches = 0;
 
+  /// A relocation of the model, with what it belongs to
+  template<typename OwnerType>
+  struct IndexedRelocation {
+    const OwnerType *Owner;
+    const model::Relocation *Relocation;
+    uint64_t Addend;
+    uint64_t Size;
+  };
+
+  template<typename OwnerType>
+  using RelocationIndex = std::multimap<MetaAddress,
+                                        IndexedRelocation<OwnerType>>;
+
+  /// The relocations of the model by the address they apply to, for
+  /// `readFromPointer`, whose first call fills them
+  bool RelocationsAreIndexed = false;
+  RelocationIndex<model::DynamicFunction> DynamicFunctionRelocations;
+  RelocationIndex<model::Segment> SegmentRelocations;
+
   /// Code pointers found in global data and never loaded, indexed by the
   /// address where they are stored
   std::map<MetaAddress, MetaAddress> UnusedCodePointers;

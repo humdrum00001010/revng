@@ -4,8 +4,11 @@
 // This file is distributed under the MIT License. See LICENSE.md for details.
 //
 
+#include <map>
+
 #include "revng/PipeboxCommon/Concepts.h"
 #include "revng/PipeboxCommon/Model.h"
+#include "revng/TupleTree/TrackingImpl.h"
 
 //
 // ObjectDependenciesHelper
@@ -16,10 +19,20 @@
 /// functionality to automatically populate the `ObjectDependencies` object.
 class ObjectDependenciesHelper {
 private:
+  using Group = revng::ObjectTracker<model::Binary>::Group;
+
+private:
   const model::Binary &Binary;
   const revng::pypeline::Request &Outgoing;
-  revng::pypeline::ObjectDependencies Dependencies;
+  revng::ObjectTracker<model::Binary> Tracker;
+
+  /// For each container, the objects committed, each with the groups of paths
+  /// it read (see `ObjectTracker`)
+  std::vector<std::vector<std::pair<ObjectID, std::vector<Group>>>> Objects;
   bool DependenciesTaken = false;
+
+  /// Whether what is being read is for an object, see `pushReadFields`
+  bool InObject = false;
 
 public:
   ObjectDependenciesHelper(const Model &Model,
@@ -27,7 +40,8 @@ public:
                            size_t DependenciesSize) :
     Binary(*Model.get().get()),
     Outgoing(Outgoing),
-    Dependencies(DependenciesSize) {
+    Tracker(Binary),
+    Objects(DependenciesSize) {
     revng::Tracking::clearAndResume(Binary);
   }
 
@@ -45,44 +59,111 @@ public:
   /// Given the ArgumentIndex-th container, add all the read paths obtained by
   /// tracking to the specified ObjectID
   void commit(const ObjectID &Object, size_t ArgumentIndex) {
-    revng_assert(ArgumentIndex < Dependencies.size());
-    std::vector<std::string> ReadPaths = getReadPaths();
-    for (std::string &Path : ReadPaths)
-      Dependencies[ArgumentIndex].push_back({ Object, Path });
+    revng_assert(ArgumentIndex < Objects.size());
+    Objects[ArgumentIndex].push_back({ Object, getReadGroups() });
   }
 
   /// Given the ArgumentIndex-th container, add all the read paths obtained by
   /// tracking to all the requested Outgoing objects
   void commitAllFor(size_t ArgumentIndex) {
-    revng_assert(ArgumentIndex < Dependencies.size());
-    std::vector<std::string> ReadPaths = getReadPaths();
+    revng_assert(ArgumentIndex < Objects.size());
+    std::vector<Group> ReadGroups = getReadGroups();
     for (const ObjectID *Object : Outgoing[ArgumentIndex])
-      for (std::string &Path : ReadPaths)
-        Dependencies[ArgumentIndex].push_back({ *Object, Path });
+      Objects[ArgumentIndex].push_back({ *Object, ReadGroups });
   }
 
   /// In the special-case that a single ObjectID is requested, add all the read
   /// paths to it as a dependency
   void commitUniqueTarget(size_t ArgumentIndex) {
-    revng_assert(ArgumentIndex < Dependencies.size());
+    revng_assert(ArgumentIndex < Objects.size());
     revng_assert(Outgoing[ArgumentIndex].size() == 1);
     commitAllFor(ArgumentIndex);
   }
 
   /// Add a "layer" to the tracking, the paths read by the `commit*` functions
   /// will only be present until the call to `popReadFields`
-  void pushReadFields() { revng::Tracking::push(Binary); }
+  void pushReadFields() {
+    revng_assert(not InObject);
+    InObject = true;
+    Tracker.startObject();
+  }
 
   /// Remove a "layer" to the tracking, paths read since the last
   /// `pushReadFields` will no longer be present when `commit*` is called
-  void popReadFields() { revng::Tracking::pop(Binary); }
+  void popReadFields() {
+    revng_assert(InObject);
+    InObject = false;
+  }
 
   /// Retrieve the ObjectDependencies. This needs to be called exactly once,
   /// otherwise an assertion will be hit.
-  [[nodiscard]] revng::pypeline::ObjectDependencies &&takeDependencies() {
+  ///
+  /// The groups of paths that are read by exactly the same objects are merged
+  /// into a class, since no change to the model can tell them apart.
+  [[nodiscard]] revng::pypeline::ObjectDependencies takeDependencies() {
     revng_assert(not DependenciesTaken);
     DependenciesTaken = true;
-    return std::move(Dependencies);
+
+    revng::pypeline::ObjectDependencies Result;
+    const std::vector<ReadFields> &Groups = Tracker.groups();
+
+    // For each group, the objects that read it, numbered in the order they
+    // were committed
+    std::vector<std::vector<uint32_t>> Readers(Groups.size());
+    uint32_t ObjectIndex = 0;
+    for (const auto &Committed : Objects) {
+      for (const auto &[Object, ReadGroups] : Committed) {
+        for (Group ReadGroup : ReadGroups)
+          Readers[ReadGroup].push_back(ObjectIndex);
+        ++ObjectIndex;
+      }
+    }
+
+    // A class for each distinct set of readers, with the paths of its groups
+    std::map<std::vector<uint32_t>, uint32_t> ClassOfReaders;
+    std::vector<uint32_t> ClassOfGroup(Groups.size());
+    std::map<std::string, uint32_t> PathIndices;
+    for (Group I = 0; I < Groups.size(); ++I) {
+      if (Readers[I].empty())
+        continue;
+
+      auto [It, New] = ClassOfReaders.try_emplace(std::move(Readers[I]),
+                                                  Result.Classes.size());
+      if (New)
+        Result.Classes.emplace_back();
+      ClassOfGroup[I] = It->second;
+
+      auto AddPath = [&](const TupleTreePath &Path) {
+        std::string Text = *pathAsString<model::Binary>(Path);
+        auto [Index, New] = PathIndices.try_emplace(Text, Result.Paths.size());
+        if (New)
+          Result.Paths.push_back(std::move(Text));
+        Result.Classes[ClassOfGroup[I]].push_back(Index->second);
+      };
+      llvm::for_each(Groups[I].Read, AddPath);
+      llvm::for_each(Groups[I].ExactVectors, AddPath);
+    }
+
+    for (std::vector<uint32_t> &Class : Result.Classes) {
+      llvm::sort(Class);
+      Class.erase(std::unique(Class.begin(), Class.end()), Class.end());
+    }
+
+    // The classes of each object
+    for (auto &Committed : Objects) {
+      auto &ObjectsOfContainer = Result.Objects.emplace_back();
+      for (auto &[Object, ReadGroups] : Committed) {
+        std::vector<uint32_t> Classes;
+        for (Group ReadGroup : ReadGroups)
+          Classes.push_back(ClassOfGroup[ReadGroup]);
+        llvm::sort(Classes);
+        Classes.erase(std::unique(Classes.begin(), Classes.end()),
+                      Classes.end());
+        ObjectsOfContainer.emplace_back(std::move(Object), std::move(Classes));
+      }
+    }
+
+    return Result;
   }
 
 private:
@@ -120,14 +201,8 @@ public:
   }
 
 private:
-  std::vector<std::string> getReadPaths() {
-    std::vector<std::string> Result;
-    ReadFields ReadFieldsStruct = revng::Tracking::collect(Binary);
-    for (const TupleTreePath &Path : ReadFieldsStruct.Read)
-      Result.push_back(*pathAsString<model::Binary>(Path));
-    for (const TupleTreePath &Path : ReadFieldsStruct.ExactVectors)
-      Result.push_back(*pathAsString<model::Binary>(Path));
-    return Result;
+  std::vector<Group> getReadGroups() {
+    return InObject ? Tracker.finishObject() : Tracker.collect();
   }
 };
 

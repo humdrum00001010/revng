@@ -74,10 +74,24 @@ public:
   llvm::ArrayRef<char> data() const { return { Vector.data(), Vector.size() }; }
 };
 
-/// Type used to return the dependencies of objects produced by a pipe
-/// The first index maps to the i-th container of the pipe
-using ObjectDependencies = std::vector<
-  std::vector<std::pair<ObjectID, ModelPath>>>;
+/// Type used to return the dependencies of objects produced by a pipe, in a
+/// form whose size does not grow with the product of the objects and of what
+/// each one reads.
+///
+/// The model paths that are read by exactly the same objects make up a class.
+/// A class is listed once, and each object lists the classes it depends on:
+/// it depends on a path if the path is in one of them.
+struct ObjectDependencies {
+  /// The paths, each once
+  std::vector<ModelPath> Paths;
+
+  /// For each class, the indices in Paths of its paths
+  std::vector<std::vector<uint32_t>> Classes;
+
+  /// For the i-th container of the pipe, the objects produced, each with the
+  /// indices in Classes of its classes
+  std::vector<std::vector<std::pair<ObjectID, std::vector<uint32_t>>>> Objects;
+};
 
 /// Type used to return advanced invalidation data from a pipe run. Will be fed
 /// back to the pipe's `invalidate` function to determine if there are

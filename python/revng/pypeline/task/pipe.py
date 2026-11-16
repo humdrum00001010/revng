@@ -4,6 +4,7 @@
 
 from collections.abc import Buffer, Sequence
 from dataclasses import dataclass, field
+from itertools import zip_longest
 from typing import Annotated, Optional, final
 
 from revng.pypeline.container import Configuration, Container, ContainerID
@@ -35,9 +36,51 @@ PipeCustomInvalidation = Annotated[
 
 
 @dataclass
+class DependencyClasses:
+    """
+    The dependencies of the objects produced by a Pipe, in a form whose size
+    does not grow with the product of the objects and of what each one reads.
+
+    The model paths that are read by exactly the same objects make up a class.
+    A class is listed once, and each object lists the classes it depends on:
+    it depends on a path if the path is in one of them.
+    """
+
+    # The model paths, each once
+    paths: list[ModelPath]
+    # For each class, the indices in `paths` of its paths
+    classes: list[list[int]]
+    # For the i-th container in the Pipe's signature, the objects produced,
+    # each with the indices in `classes` of its classes
+    objects: list[list[tuple[ObjectID, list[int]]]]
+
+    def expand(self) -> PipeObjectDependencies:
+        """The dependencies these classes stand for, one pair per path"""
+        return [
+            [
+                (object_id, self.paths[path])
+                for object_id, classes in container_objects
+                for path in {path for index in classes for path in self.classes[index]}
+            ]
+            for container_objects in self.objects
+        ]
+
+
+@dataclass
 class PipeDependencies:
     dependencies: PipeObjectDependencies
     custom_invalidation: PipeCustomInvalidation = field(default_factory=list)
+    # Further dependencies, in another form
+    classes: DependencyClasses | None = None
+
+    def expanded(self) -> PipeObjectDependencies:
+        """All the dependencies, one pair per path"""
+        if self.classes is None:
+            return self.dependencies
+        result: PipeObjectDependencies = []
+        for pairs, from_classes in zip_longest(self.dependencies, self.classes.expand()):
+            result.append((pairs or []) + (from_classes or []))
+        return result
 
 
 ObjectDependencies = Annotated[

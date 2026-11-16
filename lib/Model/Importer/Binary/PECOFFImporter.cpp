@@ -3,6 +3,7 @@
 //
 
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Demangle/MicrosoftDemangle.h"
 #include "llvm/Object/COFF.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/Error.h"
@@ -84,11 +85,16 @@ private:
 
   using DelayDirectoryRef = const DelayImportDirectoryEntryRef;
   void recordDelayImportedFunctions(DelayDirectoryRef &I,
-                                    ImportedSymbolRange Range);
+                                    ImportedSymbolRange Range,
+                                    uint64_t AddressTable);
 
   /// Parse the base relocation table, which describes the absolute pointers
   /// in the image
   void parseBaseRelocations();
+
+  /// Give the imported C++ functions that have no prototype the one their
+  /// decorated name describes.
+  void importPrototypesFromDecoratedNames();
 };
 
 Error PECOFFImporter::parseSectionsHeaders() {
@@ -513,7 +519,10 @@ void PECOFFImporter::parseImportedSymbols() {
 }
 
 void PECOFFImporter::recordDelayImportedFunctions(DelayDirectoryRef &I,
-                                                  ImportedSymbolRange Range) {
+                                                  ImportedSymbolRange Range,
+                                                  uint64_t AddressTable) {
+  auto Architecture = Model->Architecture();
+  uint64_t PointerSize = model::Architecture::getPointerSize(Architecture);
   // Index of entries within import table.
   int32_t Index = -1;
   for (const ImportedSymbolRef &S : Range) {
@@ -551,7 +560,13 @@ void PECOFFImporter::recordDelayImportedFunctions(DelayDirectoryRef &I,
     if (Sym.empty() or Model->ImportedDynamicFunctions().contains(Sym.str()))
       continue;
 
-    MetaAddress AddressOfDelayImportEntry = ImageBase + u64(Addr);
+    // The loader stores the address of the function in the entry of the delay
+    // import address table: that entry is what the code goes through. What
+    // `getImportAddress` returns is the content of the entry in the file,
+    // which points to the code that binds the function at its first use.
+    MetaAddress AddressOfDelayImportEntry = ImageBase
+                                            + (AddressTable
+                                               + Index * PointerSize);
 
     // Lets make Relocation.
     using namespace model::RelocationType;
@@ -585,7 +600,13 @@ void PECOFFImporter::parseDelayImportedSymbols() {
     if (not Model->ImportedLibraries().insert(Name.str()).second)
       continue;
 
-    recordDelayImportedFunctions(I, I.imported_symbols());
+    // The fields of the table are RVAs if the first bit of the attributes is
+    // set, virtual addresses otherwise (the format of older linkers)
+    uint64_t AddressTable = Table->DelayImportAddressTable;
+    if ((Table->Attributes & 1) == 0)
+      AddressTable -= ImageBase.address();
+
+    recordDelayImportedFunctions(I, I.imported_symbols(), AddressTable);
   }
 }
 
@@ -640,6 +661,209 @@ void PECOFFImporter::parseBaseRelocations() {
                 "Cannot read the target of the base relocation at "
                   << Address.toString() << ". Ignoring.");
     }
+  }
+}
+
+/// \return the type of an argument or of a return value that a decorated name
+///         gives \p Node as the type of, or an empty type if it is not a
+///         scalar: the name does not tell how large a class is.
+static model::UpcastableType
+scalarFromDecoratedName(const ms_demangle::TypeNode &Node,
+                        model::Architecture::Values Architecture) {
+  using namespace ms_demangle;
+  using model::PrimitiveType;
+
+  switch (Node.kind()) {
+  case NodeKind::PrimitiveType:
+    switch (static_cast<const PrimitiveTypeNode &>(Node).PrimKind) {
+    case PrimitiveKind::Void:
+      return PrimitiveType::makeVoid();
+    case PrimitiveKind::Bool:
+    case PrimitiveKind::Uchar:
+    case PrimitiveKind::Char8:
+      return PrimitiveType::makeUnsigned(1);
+    case PrimitiveKind::Char:
+    case PrimitiveKind::Schar:
+      return PrimitiveType::makeSigned(1);
+    case PrimitiveKind::Ushort:
+    case PrimitiveKind::Wchar:
+    case PrimitiveKind::Char16:
+      return PrimitiveType::makeUnsigned(2);
+    case PrimitiveKind::Short:
+      return PrimitiveType::makeSigned(2);
+    case PrimitiveKind::Uint:
+    case PrimitiveKind::Ulong:
+    case PrimitiveKind::Char32:
+      return PrimitiveType::makeUnsigned(4);
+    case PrimitiveKind::Int:
+    case PrimitiveKind::Long:
+      return PrimitiveType::makeSigned(4);
+    case PrimitiveKind::Uint64:
+      return PrimitiveType::makeUnsigned(8);
+    case PrimitiveKind::Int64:
+      return PrimitiveType::makeSigned(8);
+    case PrimitiveKind::Float:
+      return PrimitiveType::makeFloat(4);
+    case PrimitiveKind::Double:
+    case PrimitiveKind::Ldouble:
+      return PrimitiveType::makeFloat(8);
+    case PrimitiveKind::Nullptr:
+      return model::PointerType::make(PrimitiveType::makeVoid(), Architecture);
+    }
+    return {};
+
+  case NodeKind::PointerType: {
+    // Pointers and references. A pointer to a member can be larger than a
+    // pointer.
+    const auto &Pointer = static_cast<const PointerTypeNode &>(Node);
+    if (Pointer.ClassParent != nullptr or Pointer.Pointee == nullptr)
+      return {};
+
+    // What it points to is kept if it is a scalar too
+    auto Pointee = scalarFromDecoratedName(*Pointer.Pointee, Architecture);
+    if (Pointee.isEmpty())
+      Pointee = PrimitiveType::makeVoid();
+    if (Pointer.Pointee->Quals & Q_Const)
+      Pointee->IsConst() = true;
+    return model::PointerType::make(std::move(Pointee), Architecture);
+  }
+
+  case NodeKind::TagType:
+    if (static_cast<const TagTypeNode &>(Node).Tag == TagKind::Enum)
+      return PrimitiveType::makeSigned(4);
+    return {};
+
+  default:
+    return {};
+  }
+}
+
+/// \return the prototype the decorated name \p Name of a C++ function
+///         describes, or an empty type if \p Name is not such a name or does
+///         not tell what the function takes from the stack.
+static model::UpcastableType prototypeFromDecoratedName(model::Binary &Binary,
+                                                        llvm::StringRef Name) {
+  using namespace ms_demangle;
+
+  if (not Name.startswith("?"))
+    return {};
+
+  Demangler Demangler;
+  StringView View(Name.data(), Name.size());
+  SymbolNode *Symbol = Demangler.parse(View);
+  if (Demangler.Error or Symbol == nullptr
+      or Symbol->kind() != NodeKind::FunctionSymbol)
+    return {};
+
+  // Thunks and functions with a variable number of arguments are left alone
+  const FunctionSignatureNode
+    *Signature = static_cast<const FunctionSymbolNode *>(Symbol)->Signature;
+  if (Signature == nullptr or Signature->kind() != NodeKind::FunctionSignature
+      or Signature->IsVariadic)
+    return {};
+
+  model::ABI::Values ABI = model::ABI::Invalid;
+  switch (Signature->CallConvention) {
+  case ms_demangle::CallingConv::Cdecl:
+    ABI = model::ABI::Microsoft_x86_cdecl;
+    break;
+  case ms_demangle::CallingConv::Stdcall:
+    ABI = model::ABI::Microsoft_x86_stdcall;
+    break;
+  case ms_demangle::CallingConv::Thiscall:
+    ABI = model::ABI::Microsoft_x86_thiscall;
+    break;
+  case ms_demangle::CallingConv::Fastcall:
+    ABI = model::ABI::Microsoft_x86_fastcall;
+    break;
+  default:
+    return {};
+  }
+
+  model::Architecture::Values Architecture = Binary.Architecture();
+  auto Pointer = [Architecture]() {
+    return model::PointerType::make(model::PrimitiveType::makeVoid(),
+                                    Architecture);
+  };
+
+  // Collect the types first: nothing is added to the model for a name that
+  // turns out not to tell enough
+  SmallVector<model::UpcastableType, 8> Arguments;
+  model::UpcastableType ReturnType;
+
+  // A non-static member function takes `this` first
+  const unsigned Member = FC_Public | FC_Protected | FC_Private;
+  bool HasThis = (Signature->FunctionClass & Member) != 0
+                 and (Signature->FunctionClass & FC_Static) == 0;
+  if (HasThis)
+    Arguments.push_back(Pointer());
+
+  auto IsObject = [](const TypeNode &Type) {
+    return Type.kind() == NodeKind::TagType
+           and static_cast<const TagTypeNode &>(Type).Tag != TagKind::Enum;
+  };
+
+  const TypeNode *Returned = Signature->ReturnType;
+  if (Returned == nullptr) {
+    // A constructor returns `this`, a destructor returns nothing
+    const IdentifierNode *Identifier = Symbol->Name->getUnqualifiedIdentifier();
+    if (Identifier->kind() != NodeKind::StructorIdentifier)
+      return {};
+    auto *Structor = static_cast<const StructorIdentifierNode *>(Identifier);
+    if (not Structor->IsDestructor)
+      ReturnType = Pointer();
+  } else if (IsObject(*Returned)) {
+    // A member function returns an object through a pointer the caller passes
+    // after `this` and gets back. For the other functions it depends on the
+    // definition of the class.
+    if (not HasThis)
+      return {};
+    Arguments.push_back(Pointer());
+    ReturnType = Pointer();
+  } else {
+    ReturnType = scalarFromDecoratedName(*Returned, Architecture);
+    if (ReturnType.isEmpty())
+      return {};
+    if (ReturnType->isVoidPrimitive())
+      ReturnType = model::UpcastableType();
+  }
+
+  if (Signature->Params != nullptr) {
+    const NodeArrayNode &List = *Signature->Params;
+    for (size_t I = 0; I < List.Count; ++I) {
+      const auto &Parameter = static_cast<const TypeNode &>(*List.Nodes[I]);
+      auto Type = scalarFromDecoratedName(Parameter, Architecture);
+      if (Type.isEmpty() or Type->isVoidPrimitive())
+        return {};
+      Arguments.push_back(std::move(Type));
+    }
+  }
+
+  auto &&[Prototype, Type] = Binary.makeCABIFunctionDefinition();
+  Prototype.ABI() = ABI;
+  for (model::UpcastableType &Argument : Arguments)
+    Prototype.addArgument(std::move(Argument));
+  if (not ReturnType.isEmpty())
+    Prototype.ReturnType() = std::move(ReturnType);
+
+  return std::move(Type);
+}
+
+void PECOFFImporter::importPrototypesFromDecoratedNames() {
+  // The calling conventions these names can tell apart are those of x86
+  if (Model->Architecture() != model::Architecture::x86)
+    return;
+
+  for (model::DynamicFunction &Function : Model->ImportedDynamicFunctions()) {
+    if (not Function.Prototype().isEmpty())
+      continue;
+
+    auto Prototype = prototypeFromDecoratedName(*Model, Function.Name());
+    if (Prototype.isEmpty())
+      continue;
+
+    revng_log(Log, "Prototype from the name of " << Function.Name());
+    Function.Prototype() = std::move(Prototype);
   }
 }
 
@@ -717,6 +941,11 @@ Error PECOFFImporter::import(const ImporterOptions &Options) {
       revng_log(Log, "Couldn't find an appropriate rootfs");
     }
   }
+
+  // An imported function without a prototype is assumed to leave its
+  // arguments on the stack, which the member functions of C++ classes do not:
+  // their names tell
+  importPrototypesFromDecoratedNames();
 
   model::flattenPrimitiveTypedefs(Model);
   model::deduplicateCollidingNames(Model);

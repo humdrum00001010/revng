@@ -127,8 +127,13 @@ void SDSAPI::segregateAccesses(Function &F) {
           I.setOperand(isa<LoadInst>(&I) ? 0 : 1, BitCast);
 
           DirectStackAccesses.emplace_back(&I);
+        } else if (auto *GEP = dyn_cast<GetElementPtrInst>(Pointer);
+                   GEP != nullptr and GEP->hasAllConstantIndices()
+                   and skipCasts(GEP->getPointerOperand()) == LoadSP) {
+          // An access this pass has already rewritten, in a previous run
+          DirectStackAccesses.emplace_back(&I);
         } else if (match(Pointer, m_c_Add(m_Value(LHS), m_ConstantInt(Offset)))
-                   && LHS == LoadSP) {
+                   && skipCasts(LHS) == LoadSP) {
           // Do we have a inttoptr whose pointer operand is an instruction `add
           // i64 LHS, X` with X negative constant and LHS the stack pointer? If
           // so, canonicalize the i2p + add into a gep whose value is bitcasted

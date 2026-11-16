@@ -4,7 +4,11 @@
 // This file is distributed under the MIT License. See LICENSE.md for details.
 //
 
+#include <map>
 #include <memory>
+#include <optional>
+#include <set>
+#include <string>
 
 #include "llvm/ADT/SmallVector.h"
 
@@ -27,6 +31,24 @@ class Function;
 
 namespace efa {
 
+/// A call to something else than a function of the binary: what its callee
+/// removes from the stack is assumed
+struct UnknownCall {
+  /// The address of the block of the call
+  MetaAddress Block;
+
+  /// The name of the dynamic function called, empty for an indirect call
+  std::string Symbol;
+
+  /// The bytes the block pushes before the call and does not pop: the callee
+  /// can remove them, but not more
+  uint64_t Pushed = 0;
+
+  /// The same, without what the block pushes up to the last register it
+  /// saves: what holds if the block is the first of its function
+  uint64_t PushedAfterSaves = 0;
+};
+
 class CallSummarizer : public CallHandler {
 private:
   llvm::Module *M = nullptr;
@@ -37,13 +59,31 @@ private:
   llvm::SmallSet<MetaAddress, 4> *ReturnBlocks = nullptr;
   OpaqueRegisterUser Clobberer;
 
+  /// The final stack offset of the callee of a call site, where one has been
+  /// found, by the address of the block of the call
+  const std::map<MetaAddress, int64_t> *CallSiteFSO = nullptr;
+
+  /// The calls to something else than a function of the binary met while
+  /// outlining
+  llvm::SmallVectorImpl<UnknownCall> *UnknownCalls = nullptr;
+
+  /// The registers the callees met while outlining clobber
+  CSVSet *CalleeClobbered = nullptr;
+
+  /// The registers a function saves before using them
+  const CSVSet *CalleeSaved = nullptr;
+
 public:
   CallSummarizer(llvm::Module *M,
                  llvm::Function *PreCallHook,
                  llvm::Function *PostCallHook,
                  llvm::Function *RetHook,
                  llvm::GlobalVariable *SPCSV,
-                 llvm::SmallSet<MetaAddress, 4> *ReturnBlocks);
+                 llvm::SmallSet<MetaAddress, 4> *ReturnBlocks,
+                 const std::map<MetaAddress, int64_t> *CallSiteFSO,
+                 llvm::SmallVectorImpl<UnknownCall> *UnknownCalls,
+                 CSVSet *CalleeClobbered,
+                 const CSVSet *CalleeSaved);
 
 public:
   void handleCall(MetaAddress CallerBlock,
@@ -85,11 +125,29 @@ private:
   TemporaryOpaqueFunction PostCallHook;
   TemporaryOpaqueFunction RetHook;
 
+  Outliner::ModuleState OutlinerState;
   Outliner Outliner;
 
   OpaqueFunctionsPool<llvm::Type *> OpaqueBranchConditionsPool;
   std::unique_ptr<llvm::raw_ostream> OutputAAWriter;
   std::unique_ptr<llvm::raw_ostream> OutputIBI;
+
+  /// The final stack offset found for the callee of a call site, by the
+  /// address of the block of the call
+  std::map<MetaAddress, int64_t> CallSiteFSO;
+
+  /// The calls of the function outlined last to something else than a function
+  /// of the binary
+  llvm::SmallVector<UnknownCall, 4> UnknownCalls;
+
+  /// The registers the callees of the function outlined last clobber
+  CSVSet CalleeClobbered;
+
+  /// The registers the default prototype preserves
+  CSVSet CalleeSaved;
+
+  /// The functions for which no assumption about their call sites helped
+  std::set<MetaAddress> Unsolved;
 
 public:
   CFGAnalyzer(llvm::Module &M,
@@ -108,6 +166,19 @@ public:
   FunctionSummary analyze(const MetaAddress &Entry);
 
   OutlinedFunction outline(const MetaAddress &Entry);
+
+  /// \return the final stack offset found for the callee of the call in the
+  ///         block at \p CallerBlock, if one has been
+  std::optional<int64_t>
+  callSiteFinalStackOffset(const MetaAddress &CallerBlock) const {
+    auto It = CallSiteFSO.find(CallerBlock);
+    if (It == CallSiteFSO.end())
+      return std::nullopt;
+    return It->second;
+  }
+
+private:
+  FunctionSummary analyzeOnce(const MetaAddress &Entry);
 
 private:
   static llvm::FunctionType *createCallMarkerType(llvm::Module &M);

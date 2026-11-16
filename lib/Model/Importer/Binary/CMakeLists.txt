@@ -14,6 +14,6 @@ revng_add_analyses_library_internal(
   PECOFFLDDTree.cpp
   ImportBinaryAnalysis.cpp)
 
-llvm_map_components_to_libnames(LLVM_LIBRARIES Object)
+llvm_map_components_to_libnames(LLVM_LIBRARIES Demangle Object)
 target_link_libraries(revngModelImporterBinary revngModel revngModelImporter
                       revngModelImporterDebugInfo revngABI ${LLVM_LIBRARIES})

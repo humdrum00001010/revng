@@ -421,56 +421,84 @@ MaterializedValue JumpTargetManager::readFromPointer(MetaAddress LoadAddress,
   unsigned MatchCount = 0;
   MaterializedValue Result;
 
-  // Check dynamic functions-related relocations
-  for (const model::DynamicFunction &Function :
-       Model->ImportedDynamicFunctions()) {
-    for (const model::Relocation &Relocation : Function.Relocations()) {
-      uint64_t Addend = Relocation.Addend();
-      uint64_t RelocationSize = Relocation.Size();
-      if (LoadAddress == Relocation.Address() and LoadSize == RelocationSize) {
-        revng_log(ReadFromPointerLog,
-                  "Found a DynamicFunction relocation:\n"
-                    << Relocation.toString());
+  // Looking at every relocation at each call would take a time that grows
+  // with their number: index them at the first one
+  if (not RelocationsAreIndexed) {
+    auto Index = [](const auto &Owner, auto &Relocations) {
+      for (const model::Relocation &Relocation : Owner.Relocations())
+        Relocations.insert({ Relocation.Address(),
+                             { &Owner,
+                               &Relocation,
+                               Relocation.Addend(),
+                               Relocation.Size() } });
+    };
 
-        // TODO: add this to model verify
-        revng_assert(not StringRef(Function.Name()).contains('\0'));
-        if (Relocation.Type() == model::RelocationType::Absolute) {
-          Result = MaterializedValue::fromSymbol(Function.Name(),
-                                                 NewAPInt(Addend));
-        } else {
-          // The distance from a symbol cannot be represented
-          Result = MaterializedValue::invalid();
-        }
-        ++MatchCount;
+    for (const auto &Function : Model->ImportedDynamicFunctions())
+      Index(Function, DynamicFunctionRelocations);
+    for (const model::Segment &Segment : Model->Segments())
+      Index(Segment, SegmentRelocations);
+    RelocationsAreIndexed = true;
+  }
+
+  // Check dynamic functions-related relocations
+  auto DynamicRange = DynamicFunctionRelocations.equal_range(LoadAddress);
+  for (const auto &[_, Entry] : llvm::make_range(DynamicRange)) {
+    const model::DynamicFunction &Function = *Entry.Owner;
+    const model::Relocation &Relocation = *Entry.Relocation;
+    if (LoadSize == Entry.Size) {
+      revng_log(ReadFromPointerLog,
+                "Found a DynamicFunction relocation:\n"
+                  << Relocation.toString());
+
+      // TODO: add this to model verify
+      revng_assert(not StringRef(Function.Name()).contains('\0'));
+      if (Relocation.Type() == model::RelocationType::Absolute) {
+        Result = MaterializedValue::fromSymbol(Function.Name(),
+                                               NewAPInt(Entry.Addend));
+      } else {
+        // The distance from a symbol cannot be represented
+        Result = MaterializedValue::invalid();
       }
+      ++MatchCount;
     }
   }
 
+  // The entry of a delay import table also has a base relocation, for the
+  // address it holds until the function is bound: that of the code that binds
+  // it. The function is what a call through the entry is for.
+  if (MatchCount == 1) {
+    if (ReadFromPointerLog.isEnabled()) {
+      ReadFromPointerLog << "Returning ";
+      Result.dump(ReadFromPointerLog);
+      ReadFromPointerLog << DoLog;
+    }
+    return Result;
+  }
+
   // Check segment-related relocations
-  for (const model::Segment &Segment : Model->Segments()) {
-    for (const model::Relocation &Relocation : Segment.Relocations()) {
-      uint64_t Addend = Relocation.Addend();
-      uint64_t RelocationSize = Relocation.Size();
-      if (LoadAddress == Relocation.Address() and LoadSize == RelocationSize) {
-        MetaAddress Address = Segment.StartAddress() + Addend;
-        if (Address.isValid()) {
-          revng_log(ReadFromPointerLog,
-                    "Found a Segment relocation:\n"
-                      << Relocation.toString());
-          APInt Value = NewAPInt(Address.address());
+  auto SegmentRange = SegmentRelocations.equal_range(LoadAddress);
+  for (const auto &[_, Entry] : llvm::make_range(SegmentRange)) {
+    const model::Segment &Segment = *Entry.Owner;
+    const model::Relocation &Relocation = *Entry.Relocation;
+    if (LoadSize == Entry.Size) {
+      MetaAddress Address = Segment.StartAddress() + Entry.Addend;
+      if (Address.isValid()) {
+        revng_log(ReadFromPointerLog,
+                  "Found a Segment relocation:\n"
+                    << Relocation.toString());
+        APInt Value = NewAPInt(Address.address());
 
-          // A PC-relative relocation writes the distance from where it applies
-          if (Relocation.Type() == model::RelocationType::PCRelative)
-            Value -= NewAPInt(LoadAddress.address());
+        // A PC-relative relocation writes the distance from where it applies
+        if (Relocation.Type() == model::RelocationType::PCRelative)
+          Value -= NewAPInt(LoadAddress.address());
 
-          if (BinaryView.isReadOnly(LoadAddress, LoadSize))
-            Result = MaterializedValue::fromConstant(Value);
-          else
-            Result = MaterializedValue::fromMutable(Value);
-          ++MatchCount;
-        } else {
-          // TODO: log message
-        }
+        if (BinaryView.isReadOnly(LoadAddress, LoadSize))
+          Result = MaterializedValue::fromConstant(Value);
+        else
+          Result = MaterializedValue::fromMutable(Value);
+        ++MatchCount;
+      } else {
+        // TODO: log message
       }
     }
   }

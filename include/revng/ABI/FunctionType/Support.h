@@ -5,6 +5,8 @@
 //
 
 #include <concepts>
+#include <map>
+#include <set>
 
 #include "llvm/Support/MathExtras.h"
 
@@ -13,6 +15,8 @@
 #include "revng/Model/Binary.h"
 #include "revng/Model/DefinedType.h"
 #include "revng/Support/AlignmentHelpers.h"
+#include "revng/TupleTree/TupleTree.h"
+#include "revng/TupleTree/Visits.h"
 
 namespace abi::FunctionType {
 
@@ -42,6 +46,76 @@ inline void replaceTypeDefinition(const model::TypeDefinition::Key &O,
                                   TupleTree<model::Binary> &B) {
   return replaceTypeDefinition(O, llvm::cast<model::DefinedType>(N), B);
 }
+
+/// Where the references to each type definition are.
+///
+/// `replaceTypeDefinition` visits every reference of the model to find the
+/// ones to a single definition: who replaces many definitions, one at a time,
+/// can build this once and then only touch the references involved. It has to
+/// be told about every definition that enters or leaves the model in the
+/// meantime.
+class TypeDefinitionReferenceIndex {
+public:
+  using Reference = model::TypeDefinitionReference;
+  using Key = model::TypeDefinition::Key;
+
+private:
+  std::map<Key, std::set<Reference *>> Referrers;
+
+public:
+  explicit TypeDefinitionReferenceIndex(TupleTree<model::Binary> &Binary) {
+    record(*Binary);
+  }
+
+  TypeDefinitionReferenceIndex(const TypeDefinitionReferenceIndex &) = delete;
+  TypeDefinitionReferenceIndex &
+  operator=(const TypeDefinitionReferenceIndex &) = delete;
+
+public:
+  /// Record the references in \p Definition, which has just been added to the
+  /// model
+  void add(model::UpcastableTypeDefinition &Definition) { record(Definition); }
+
+  /// Forget the references in \p Definition, which is about to be removed
+  /// from the model
+  void remove(model::UpcastableTypeDefinition &Definition) {
+    forEachReferenceIn(Definition, [this](Reference &R) {
+      Referrers[R.getConst()->key()].erase(&R);
+    });
+  }
+
+  /// What `replaceTypeDefinition(Old, New, Binary)` does
+  void replace(const Key &Old, const Reference &New) {
+    auto It = Referrers.find(Old);
+    if (It == Referrers.end())
+      return;
+
+    std::set<Reference *> ToReplace = std::move(It->second);
+    Referrers.erase(It);
+
+    for (Reference *R : ToReplace)
+      *R = New;
+
+    if (not New.empty())
+      Referrers[New.getConst()->key()].merge(ToReplace);
+  }
+
+private:
+  void record(auto &Root) {
+    forEachReferenceIn(Root, [this](Reference &R) {
+      Referrers[R.getConst()->key()].insert(&R);
+    });
+  }
+
+  static void forEachReferenceIn(auto &Root, auto &&Callable) {
+    auto Visitor = [&Callable]<typename T>(T &Element) {
+      if constexpr (std::is_same_v<T, Reference>)
+        if (not Element.empty())
+          Callable(Element);
+    };
+    visitTupleTree(Root, Visitor, [](auto &) {});
+  }
+};
 
 /// Filters a list of upcastable types.
 ///

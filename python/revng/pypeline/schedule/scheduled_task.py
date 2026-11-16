@@ -12,8 +12,8 @@ from revng.pypeline.container import ConfigurationId, ContainerDeclaration, Cont
 from revng.pypeline.model import ReadOnlyModel
 from revng.pypeline.pipeline_node import PipelineConfiguration, PipelineNode
 from revng.pypeline.runner_context import RunnerContext
-from revng.pypeline.storage.storage_provider import PipeDependencies, StorageProvider
-from revng.pypeline.storage.storage_provider import StorageProviderFileProvider
+from revng.pypeline.storage.storage_provider import ObjectDependencyClasses, PipeDependencies
+from revng.pypeline.storage.storage_provider import StorageProvider, StorageProviderFileProvider
 from revng.pypeline.task.pipe import ObjectDependencies, Pipe
 from revng.pypeline.task.requests import Requests
 from revng.pypeline.task.savepoint import SavePoint
@@ -183,8 +183,7 @@ class PipeScheduledTask(ScheduledTask):
         for index, decl in enumerate(bindings):
             containers[decl] = pipe_containers[index]
 
-        dependencies: ObjectDependencies = []
-        for index, index_deps in enumerate(pipe_output.dependencies):
+        def container_name(index: int, index_deps: list) -> str:
             container_type = task.signature()[index]
             if container_type.access == TaskArgumentAccess.READ:
                 assert len(index_deps) == 0, (
@@ -192,9 +191,26 @@ class PipeScheduledTask(ScheduledTask):
                     f"dependencies. For container {container_type.name} got dependencies "
                     f"{index_deps}"
                 )
-            dependencies.extend(
-                (self.node.bindings[index].name, obj, path) for obj, path in index_deps
+            return self.node.bindings[index].name
+
+        # The dependencies that come as classes are kept that way if the
+        # storage provider can store them, and are turned into pairs otherwise
+        classes: ObjectDependencyClasses | None = None
+        pairs = pipe_output.dependencies
+        if pipe_output.classes is None or not self.storage_provider.supports_dependency_classes():
+            pairs = pipe_output.expanded()
+        else:
+            classes = ObjectDependencyClasses(
+                pipe_output.classes.paths, pipe_output.classes.classes, []
             )
+            for index, index_objects in enumerate(pipe_output.classes.objects):
+                name = container_name(index, index_objects)
+                classes.objects.extend((name, obj, indexes) for obj, indexes in index_objects)
+
+        dependencies: ObjectDependencies = []
+        for index, index_deps in enumerate(pairs):
+            name = container_name(index, index_deps)
+            dependencies.extend((name, obj, path) for obj, path in index_deps)
 
         # Check if the pipe output
         if not all(len(x) == 0 for x in pipe_output.custom_invalidation):
@@ -218,6 +234,7 @@ class PipeScheduledTask(ScheduledTask):
             configuration_id,
             dependencies,
             pipe_output.custom_invalidation,
+            classes,
         )
 
 

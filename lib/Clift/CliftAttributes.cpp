@@ -120,6 +120,11 @@ llvm::StringRef MutableStringAttr::getValue() const {
 }
 
 void MutableStringAttr::setValue(llvm::StringRef Value) {
+  // Mutating copies the string into the allocator of the context, where it
+  // stays as long as the context, even when it is the value already there
+  if (getValue() == Value)
+    return;
+
   (void) Base::mutate(Value);
 }
 

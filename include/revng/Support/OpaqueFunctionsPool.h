@@ -72,6 +72,8 @@ public:
   auto end() const { return Pool.end(); }
 
 public:
+  bool contains(const KeyT &Key) const { return Pool.contains(Key); }
+
   void record(KeyT Key, llvm::Function *F) {
     auto It = Pool.find(Key);
     if (It == Pool.end()) {

@@ -20,6 +20,15 @@ struct ReadFields {
   llvm::SmallVector<TupleTreePath> Read;
   llvm::SmallVector<TupleTreePath> ExactVectors;
 
+  bool operator==(const ReadFields &) const = default;
+
+  bool empty() const { return Read.empty() and ExactVectors.empty(); }
+
+  void append(const ReadFields &Other) {
+    Read.append(Other.Read.begin(), Other.Read.end());
+    ExactVectors.append(Other.ExactVectors.begin(), Other.ExactVectors.end());
+  }
+
   void deduplicate() {
     llvm::sort(Read);
     Read.erase(std::unique(Read.begin(), Read.end()), Read.end());

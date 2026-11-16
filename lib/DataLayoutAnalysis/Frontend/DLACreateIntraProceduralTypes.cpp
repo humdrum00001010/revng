@@ -864,6 +864,84 @@ bool Builder::connectToFuncsWithSamePrototype(const llvm::CallInst *Call) {
   return Changed;
 }
 
+void Builder::linkNodesWithSamePointee() {
+  // An equality link from each access node to every node that points to its
+  // pointee before it would say the same, with a number of links that grows
+  // with the square of the nodes pointing to a pointee.
+  //
+  // The only reader of those links is CollapseEqualitySCC, which merges each
+  // component they connect into one node per size, the one its depth-first
+  // visit finds last. So, for each pointee, link its pointers in a chain, in
+  // the order that visit would find them going through all the links: the
+  // component and the order of the visit stay the same.
+  auto IsAccess = [this](const LayoutTypeSystemNode *Node) {
+    return PointerAccessNodes.contains(Node);
+  };
+
+  // The nodes pointing to the pointee at hand, in order of ID, which is the
+  // order in which they started pointing to it
+  std::vector<LayoutTypeSystemNode *> Pointers;
+  for (LayoutTypeSystemNode *Pointee : PointeesOfAccessNodes) {
+    Pointers.clear();
+    bool OnlyPointToPointee = true;
+    for (const auto &Link : Pointee->Predecessors) {
+      if (isPointerEdge(Link)) {
+        Pointers.push_back(Link.first);
+        OnlyPointToPointee &= Link.first->Successors.size() == 1;
+      }
+    }
+
+    if (not OnlyPointToPointee) {
+      // Some of them have other links, which the visit would follow too:
+      // make all the links
+      for (size_t I = 1; I < Pointers.size(); ++I)
+        if (IsAccess(Pointers[I]))
+          for (size_t J = 0; J < I; ++J)
+            TS.addEqualityLink(Pointers[J], Pointers[I]);
+      continue;
+    }
+
+    // With all the links, an access node is linked to every node before it
+    // and to every access node after it, any other node to every access node
+    // after it. The visit starts from the first node and, from each node, it
+    // goes to the first linked node not visited yet, or back if there is
+    // none. Whenever it is on a node, all those before that node have been
+    // visited, unless the node is an access node, whose unvisited neighbors
+    // start with the first unvisited node, if that comes before it.
+    size_t Unvisited = 1;
+    size_t UnvisitedAccess = 0;
+    std::vector<bool> Visited(Pointers.size(), false);
+    Visited[0] = true;
+    std::vector<size_t> Path = { 0 };
+    size_t Previous = 0;
+    while (not Path.empty()) {
+      while (Unvisited < Pointers.size() and Visited[Unvisited])
+        ++Unvisited;
+      while (UnvisitedAccess < Pointers.size()
+             and (Visited[UnvisitedAccess]
+                  or not IsAccess(Pointers[UnvisitedAccess])))
+        ++UnvisitedAccess;
+
+      size_t Current = Path.back();
+      size_t Next = UnvisitedAccess;
+      if (IsAccess(Pointers[Current]) and Unvisited < Current)
+        Next = Unvisited;
+
+      if (Next == Pointers.size()) {
+        Path.pop_back();
+      } else {
+        TS.addEqualityLink(Pointers[Previous], Pointers[Next]);
+        Visited[Next] = true;
+        Path.push_back(Next);
+        Previous = Next;
+      }
+    }
+  }
+
+  PointeesOfAccessNodes = {};
+  PointerAccessNodes = {};
+}
+
 bool Builder::createIntraproceduralTypes(llvm::Module &M) {
   bool Changed = false;
   InstanceLinkAdder ILA(Model, *this);
@@ -992,19 +1070,14 @@ bool Builder::createIntraproceduralTypes(llvm::Module &M) {
           TS.addPointerLink(AccessNode, PointeeNode);
 
           // If the pointee already has nodes that point to it, their type must
-          // be the same as the type of PointerNode, so add an equality link.
-          using PointerGraph = EdgeFilteredGraph<LayoutTypeSystemNode *,
-                                                 isPointerEdge>;
-          using InversePointerGraph = llvm::Inverse<PointerGraph>;
-          for (LayoutTypeSystemNode *PointerToPointee :
-               llvm::children<InversePointerGraph>(PointeeNode)) {
-            revng_assert(couldHoldAPointer(AccessSize, Model, DL));
-            // Two values of different widths can both hold a pointer, so the
-            // sizes need not match, they only both have to fit one.
-            revng_assert(couldHoldAPointer(PointerToPointee->Size, Model, DL));
-            if (PointerToPointee != AccessNode)
-              TS.addEqualityLink(PointerToPointee, AccessNode);
-          }
+          // be the same as the type of PointerNode: linkNodesWithSamePointee
+          // adds the equality links, when all the nodes pointing to each
+          // pointee are known.
+          //
+          // Two values of different widths can both hold a pointer, so the
+          // sizes need not match, they only both have to fit one.
+          PointerAccessNodes.insert(AccessNode);
+          PointeesOfAccessNodes.insert(PointeeNode);
 
           continue;
         }

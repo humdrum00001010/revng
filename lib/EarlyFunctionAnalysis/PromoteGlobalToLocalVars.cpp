@@ -39,17 +39,18 @@ PromoteGlobalToLocalPass::run(llvm::Function &F,
   revng::IRBuilder Builder(&F.getEntryBlock().front());
 
   // Create an equivalent local variable, replace all the uses of the CSV.
-  for (GlobalVariable *CSV : toSortedByName(llvm::make_first_range(CSVMap))) {
+  auto SortedCSVs = toSortedByName(llvm::make_first_range(CSVMap));
+  for (GlobalVariable *CSV : SortedCSVs) {
     auto *CSVTy = CSV->getValueType();
-    auto *Alloca = Builder.CreateAlloca(CSVTy, nullptr, CSV->getName());
-    replaceAllUsesInFunctionWith(&F, CSV, Alloca);
-
-    CSVMap[CSV] = Alloca;
+    CSVMap[CSV] = Builder.CreateAlloca(CSVTy, nullptr, CSV->getName());
   }
 
-  // Load all the CSVs and store their value onto the local variables.
-  for (const auto &[CSV, Alloca] : CSVMap)
-    Builder.CreateStore(Builder.createLoad(CSV), Alloca);
+  replaceAllUsesInFunctionWith(&F, CSVMap);
+
+  // Load all the CSVs and store their value onto the local variables, in the
+  // order of the names: the map is ordered by the addresses of the CSVs
+  for (GlobalVariable *CSV : SortedCSVs)
+    Builder.CreateStore(Builder.createLoad(CSV), CSVMap[CSV]);
 
   return PreservedAnalyses::none();
 }

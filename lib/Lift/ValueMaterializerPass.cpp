@@ -92,6 +92,9 @@ PreservedAnalyses ValueMaterializerPass::run(Function &F,
   auto &LVI = FAM.getResult<LazyValueAnalysis>(F);
   auto &DT = FAM.getResult<DominatorTreeAnalysis>(F);
 
+  // The function does not change while the markers are processed
+  AVICandidatesCache Candidates;
+
   BasicBlock *Entry = &F.getEntryBlock();
   auto GetConstantArgument = [](CallBase *Call, unsigned Index) {
     return cast<ConstantInt>(Call->getArgOperand(Index))->getLimitedValue();
@@ -121,7 +124,8 @@ PreservedAnalyses ValueMaterializerPass::run(Function &F,
                                                      DFRA,
                                                      DT,
                                                      Limits,
-                                                     Oracle);
+                                                     Oracle,
+                                                     &Candidates);
     if (Results.values())
       Values = std::move(*Results.values());
 
