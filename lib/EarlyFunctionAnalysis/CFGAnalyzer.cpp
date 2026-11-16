@@ -659,6 +659,13 @@ void CFGAnalyzer::runOptimizationPipeline(llvm::Function *F) {
     FPM.addPass(InstCombinePass());
     FPM.addPass(GVNPass());
 
+    // The address of an access can become the stack pointer plus a constant
+    // only now, where the paths that reach it leave the stack pointer the
+    // same: such an access was taken for one that is not to the stack, and
+    // what was stored there is not found. Tell the accesses apart again.
+    FPM.addPass(SegregateDirectStackAccessesPass(Globals.spReg()));
+    FPM.addPass(GVNPass());
+
     // Third stage: if enabled, serialize the results and dump the functions on
     // disk with the alias information included as comments.
     if (IndirectBranchInfoSummaryPath.getNumOccurrences() == 1)
