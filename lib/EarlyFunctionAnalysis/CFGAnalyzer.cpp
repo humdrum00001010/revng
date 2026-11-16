@@ -183,10 +183,17 @@ OutlinedFunction CFGAnalyzer::outline(const MetaAddress &Entry) {
                             RetHook.get(),
                             Globals.spReg(),
                             HasCFG ? &ReturnBlocks : nullptr,
-                            &IndirectCallFSO,
-                            &IndirectCalls);
+                            &CallSiteFSO,
+                            &UnknownCalls,
+                            &CalleeClobbered,
+                            &CalleeSaved);
 
-  IndirectCalls.clear();
+  UnknownCalls.clear();
+  CalleeClobbered.clear();
+  if (CalleeSaved.empty())
+    for (llvm::GlobalVariable *CSV : ABICSVs)
+      if (not Oracle.getDefault().ClobberedRegisters.contains(CSV))
+        CalleeSaved.insert(CSV);
   OutlinedFunction Result = Outliner.outline(Entry, &Summarizer);
 
   // Make sure we start a new block before a PreCallHook and for each jump
@@ -1065,50 +1072,218 @@ FunctionSummary CFGAnalyzer::milkInfo(OutlinedFunction *OutlinedFunction,
   return Result;
 }
 
+namespace {
+
+/// How well an analysis explains a function
+struct AnalysisScore {
+  /// The indirect branches that are returns
+  unsigned Returns = 0;
+
+  /// The indirect branches taken for a longjmp
+  unsigned LongJmps = 0;
+
+  /// The registers the function clobbers although neither the default
+  /// prototype nor one of its callees does
+  unsigned Clobbered = 0;
+
+  bool leavesNothingToExplain() const {
+    return LongJmps == 0 and Clobbered == 0;
+  }
+
+  bool leavesSomethingToExplain() const {
+    return LongJmps != 0 or (Returns != 0 and Clobbered != 0);
+  }
+
+  /// Either more returns in place of longjmps, or the same branches and
+  /// fewer registers clobbered. A return that does not come with the
+  /// registers the function saved is not one: it is where code that is not
+  /// reached, such as what follows a call that never returns, happens to end.
+  bool isBetterThan(const AnalysisScore &Other) const {
+    if (Returns > Other.Returns and LongJmps < Other.LongJmps)
+      return Clobbered <= Other.Clobbered;
+    return Returns == Other.Returns and LongJmps == Other.LongJmps
+           and Clobbered < Other.Clobbered;
+  }
+
+  auto rank() const {
+    return std::tuple(Returns, -int64_t(LongJmps), -int64_t(Clobbered));
+  }
+};
+
+/// A call site nothing is known about
+struct UnknownCallSite {
+  MetaAddress Block;
+
+  /// Whether the call is in the block its function starts with
+  bool IsFirst = false;
+
+  /// What its callee most likely removes from the stack, in words, and the
+  /// most it can remove
+  uint64_t Likeliest = 0;
+  uint64_t Most = 0;
+};
+
+} // namespace
+
 FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
   FunctionSummary Result = analyzeOnce(Entry);
 
-  using namespace efa::FunctionEdgeType;
-  auto Count = [](const FunctionSummary &Summary, Values Type) {
-    unsigned Result = 0;
-    for (const efa::BasicBlock &Block : Summary.CFG)
-      for (const auto &Edge : Block.Successors())
-        if (Edge->Type() == Type)
-          ++Result;
-    return Result;
-  };
-
-  // The callee of an indirect call is assumed to leave the stack as the
-  // default prototype says. Where it removes its arguments, as the member
+  // The callee of an indirect call, and a dynamic function without a
+  // prototype, are assumed to leave the stack as the default prototype says.
+  // Where they remove their arguments, as the member functions and the system
   // functions of 32-bit Windows code do, the stack pointer is off from there
-  // on, and the returns of the function are not recognized. With a single
-  // such call in the function, what the callee removes can be found by
-  // trying: only with the right amount is the return address where the
-  // returns look for it. This also holds where the stack pointer is unknown
-  // at a return because the paths that reach it disagree on it.
-  if (Binary->Architecture() != model::Architecture::x86
-      or IndirectCalls.size() != 1 or Count(Result, LongJmp) == 0)
-    return Result;
-
-  MetaAddress CallSite = IndirectCalls.front();
+  // on: the function does not find its return address where it looks for it,
+  // or it does, through a frame pointer, but restores the registers it saved
+  // from the wrong place. What the callees remove can be found by trying: only
+  // with the right amounts are the return address and the saved registers
+  // where the function left them. This also holds where the stack pointer is
+  // unknown at a return because the paths that reach it disagree on it.
+  //
+  // This is for the functions detect-abi describes the call sites of: what
+  // is found goes in their prototypes.
   const model::Function *Function = Binary->Functions().tryGet(Entry);
   std::optional<int64_t> Default = Oracle.getDefault().ElectedFSO;
-  if (Function == nullptr or Function->CallSitePrototypes().contains(CallSite)
-      or IndirectCallFSO.contains(CallSite) or not Default.has_value())
+  if (Binary->Architecture() != model::Architecture::x86 or Function == nullptr
+      or not Function->Prototype().isEmpty() or not Default.has_value())
     return Result;
 
-  constexpr unsigned MaxArguments = 8;
-  auto Word = model::Architecture::getPointerSize(Binary->Architecture());
-  for (unsigned I = 1; I <= MaxArguments; ++I) {
-    IndirectCallFSO[CallSite] = *Default + I * Word;
-    FunctionSummary Attempt = analyzeOnce(Entry);
-    if (Count(Attempt, Return) > Count(Result, Return)
-        and Count(Attempt, LongJmp) < Count(Result, LongJmp))
-      return Attempt;
+  const CSVSet &ByDefault = Oracle.getDefault().ClobberedRegisters;
+  auto ScoreOf = [this, &ByDefault](const FunctionSummary &Summary) {
+    AnalysisScore Score;
+    for (const efa::BasicBlock &Block : Summary.CFG) {
+      for (const auto &Edge : Block.Successors()) {
+        if (Edge->Type() == efa::FunctionEdgeType::Return)
+          ++Score.Returns;
+        else if (Edge->Type() == efa::FunctionEdgeType::LongJmp)
+          ++Score.LongJmps;
+      }
+    }
+
+    for (llvm::GlobalVariable *CSV : Summary.ClobberedRegisters)
+      if (not ByDefault.contains(CSV) and not CalleeClobbered.contains(CSV))
+        ++Score.Clobbered;
+
+    return Score;
+  };
+
+  // A callee removes at most what the block of its call pushed, and most
+  // often all of it: the rest is a register the block saves first. The
+  // arguments of the only such call of a function can also have been pushed
+  // in another block, without making what the others remove uncertain.
+  constexpr uint64_t MaxWords = 8;
+  uint64_t Word = model::Architecture::getPointerSize(Binary->Architecture());
+  llvm::SmallVector<UnknownCallSite, 4> Sites;
+  bool HasAssumptions = false;
+  for (const UnknownCall &Call : UnknownCalls) {
+    // The call sites of the functions inlined in this one are theirs
+    if (not Result.CFG.contains(BasicBlockID(Call.Block))
+        or Function->CallSitePrototypes().contains(Call.Block))
+      continue;
+
+    if (not Call.Symbol.empty()) {
+      const auto &Imported = Binary->ImportedDynamicFunctions();
+      auto It = Imported.find(Call.Symbol);
+      if (It == Imported.end() or not It->Prototype().isEmpty())
+        continue;
+    }
+
+    auto IsSame = [&Call](const UnknownCallSite &Other) {
+      return Other.Block == Call.Block;
+    };
+    if (llvm::any_of(Sites, IsSame))
+      continue;
+
+    HasAssumptions = HasAssumptions or CallSiteFSO.contains(Call.Block);
+    UnknownCallSite &New = Sites.emplace_back();
+    New.Block = Call.Block;
+    New.IsFirst = Call.Block == Entry;
+    uint64_t Pushed = New.IsFirst ? Call.PushedAfterSaves : Call.Pushed;
+    New.Likeliest = std::min(MaxWords, Pushed / Word);
+    New.Most = New.Likeliest;
   }
 
-  IndirectCallFSO.erase(CallSite);
-  return Result;
+  AnalysisScore Base = ScoreOf(Result);
+  if (Sites.empty() or not Base.leavesSomethingToExplain())
+    return Result;
+
+  // What was assumed when the callees were known less well does not hold
+  // anymore: start again
+  auto Forget = [this, &Sites]() {
+    for (const UnknownCallSite &Site : Sites)
+      CallSiteFSO.erase(Site.Block);
+  };
+  if (HasAssumptions) {
+    Forget();
+    Result = analyzeOnce(Entry);
+    Base = ScoreOf(Result);
+    if (not Base.leavesSomethingToExplain())
+      return Result;
+  }
+
+  if (Sites.size() == 1)
+    Sites[0].Most = MaxWords;
+
+  // An assumption: the words each callee removes
+  using Assumption = llvm::SmallVector<uint64_t, 4>;
+  auto Assume = [this, &Sites, &Default, Word](const Assumption &Words) {
+    for (size_t I = 0; I < Sites.size(); ++I)
+      CallSiteFSO[Sites[I].Block] = *Default + Words[I] * Word;
+  };
+
+  // Start from the likeliest assumption and, as long as something is left to
+  // explain, move to the best of those that differ from it at one call site.
+  // If the likeliest assumption changes nothing, the callees are not what is
+  // wrong, unless it is about the call the function starts with, whose block
+  // also pushes what the function saves, or about its only call.
+  Assumption Current;
+  for (const UnknownCallSite &Site : Sites)
+    Current.push_back(Site.Likeliest);
+
+  Assume(Current);
+  FunctionSummary Best = analyzeOnce(Entry);
+  AnalysisScore BestScore = ScoreOf(Best);
+  bool IsOver = BestScore.leavesNothingToExplain() or Unsolved.contains(Entry);
+  for (size_t Round = 0; not IsOver and Round < Sites.size(); ++Round) {
+    bool OnlyFirst = Round == 0 and BestScore.rank() == Base.rank()
+                     and Sites.size() != 1;
+    Assumption Next;
+    for (size_t I = 0; not IsOver and I < Sites.size(); ++I) {
+      if (OnlyFirst and not Sites[I].IsFirst)
+        continue;
+
+      for (uint64_t Words = Sites[I].Most + 1; not IsOver and Words > 0;) {
+        --Words;
+        if (Words == Current[I])
+          continue;
+
+        Assumption Other = Current;
+        Other[I] = Words;
+        Assume(Other);
+        FunctionSummary Attempt = analyzeOnce(Entry);
+        AnalysisScore AttemptScore = ScoreOf(Attempt);
+        if (AttemptScore.rank() <= BestScore.rank())
+          continue;
+
+        Best = std::move(Attempt);
+        BestScore = AttemptScore;
+        Next = Other;
+        IsOver = BestScore.leavesNothingToExplain();
+      }
+    }
+
+    if (Next.empty())
+      break;
+    Current = Next;
+  }
+
+  if (not BestScore.isBetterThan(Base)) {
+    Unsolved.insert(Entry);
+    Forget();
+    return Result;
+  }
+
+  Assume(Current);
+  return Best;
 }
 
 FunctionSummary CFGAnalyzer::analyzeOnce(const MetaAddress &Entry) {
@@ -1184,9 +1359,10 @@ CallSummarizer::CallSummarizer(llvm::Module *M,
                                GlobalVariable *SPCSV,
                                llvm::SmallSet<MetaAddress, 4> *ReturnBlocks,
                                const std::map<MetaAddress, int64_t>
-                                 *IndirectCallFSO,
-                               llvm::SmallVectorImpl<MetaAddress>
-                                 *IndirectCalls) :
+                                 *CallSiteFSO,
+                               llvm::SmallVectorImpl<UnknownCall> *UnknownCalls,
+                               CSVSet *CalleeClobbered,
+                               const CSVSet *CalleeSaved) :
   M(M),
   PreCallHook(PreCallHook),
   PostCallHook(PostCallHook),
@@ -1194,8 +1370,127 @@ CallSummarizer::CallSummarizer(llvm::Module *M,
   SPCSV(SPCSV),
   ReturnBlocks(ReturnBlocks),
   Clobberer(M),
-  IndirectCallFSO(IndirectCallFSO),
-  IndirectCalls(IndirectCalls) {
+  CallSiteFSO(CallSiteFSO),
+  UnknownCalls(UnknownCalls),
+  CalleeClobbered(CalleeClobbered),
+  CalleeSaved(CalleeSaved) {
+}
+
+/// \return the bytes the instructions of \p BB before \p End push and do not
+///         pop, the return address of the call they end with aside. If
+///         \p Saved is not null, what precedes the push of one of those
+///         registers that still has the value it had at the start of \p BB
+///         does not count: the block is the first of a function, saving it.
+static uint64_t pushedBeforeCall(llvm::BasicBlock &BB,
+                                 const llvm::Instruction *End,
+                                 const llvm::GlobalVariable *SPCSV,
+                                 const CSVSet *Saved) {
+  using namespace llvm;
+  int64_t Word = SPCSV->getValueType()->getIntegerBitWidth() / 8;
+
+  // The values the stack pointer is known to have at this point
+  SmallPtrSet<const Value *, 4> Current;
+
+  // The registers written so far, and the values that are what a register
+  // to save had at the start of the block
+  SmallPtrSet<const Value *, 4> Written;
+  SmallPtrSet<const Value *, 4> ToSave;
+
+  int64_t Pushed = 0;
+  for (Instruction &I : BB) {
+    if (&I == End)
+      break;
+
+    if (auto *Load = dyn_cast<LoadInst>(&I)) {
+      auto *CSV = dyn_cast<GlobalVariable>(Load->getPointerOperand());
+      if (CSV == SPCSV)
+        Current.insert(Load);
+      else if (Saved != nullptr and CSV != nullptr and Saved->contains(CSV)
+               and not Written.contains(CSV))
+        ToSave.insert(Load);
+      continue;
+    }
+
+    auto *Store = dyn_cast<StoreInst>(&I);
+    if (Store == nullptr)
+      continue;
+
+    if (Store->getPointerOperand() != SPCSV) {
+      // The value of a register to save going to memory is its being pushed
+      if (isa<GlobalVariable>(Store->getPointerOperand()))
+        Written.insert(Store->getPointerOperand());
+      else if (ToSave.contains(Store->getValueOperand()))
+        Pushed = -Word;
+      continue;
+    }
+
+    // How far does this move the stack pointer?
+    const Value *New = Store->getValueOperand();
+    std::optional<int64_t> Delta;
+    if (Current.contains(New)) {
+      Delta = 0;
+    } else if (auto *Operator = dyn_cast<BinaryOperator>(New)) {
+      auto *Amount = dyn_cast<ConstantInt>(Operator->getOperand(1));
+      bool IsAdd = Operator->getOpcode() == Instruction::Add;
+      bool IsSub = Operator->getOpcode() == Instruction::Sub;
+      if (Amount != nullptr and (IsAdd or IsSub)
+          and Current.contains(Operator->getOperand(0)))
+        Delta = IsAdd ? Amount->getSExtValue() : -Amount->getSExtValue();
+    }
+
+    if (Delta == -Word)
+      Pushed += Word;
+    else if (Delta.has_value() and *Delta >= 0)
+      Pushed = std::max<int64_t>(0, Pushed - *Delta);
+    else
+      Pushed = 0;
+
+    Current.clear();
+    Current.insert(New);
+  }
+
+  return std::max<int64_t>(0, Pushed - Word);
+}
+
+/// \return the bytes the code after the call \p BB ends with removes from the
+///         stack before doing anything else with it, if all it does is add to
+///         the stack pointer: the caller removing the arguments of the call
+static uint64_t removedAfterCall(llvm::BasicBlock &BB,
+                                 const llvm::GlobalVariable *SPCSV) {
+  using namespace llvm;
+
+  // The block of a call that returns ends with a branch to where it returns
+  auto *Branch = dyn_cast<BranchInst>(BB.getTerminator());
+  if (Branch == nullptr or Branch->isConditional())
+    return 0;
+  llvm::BasicBlock *Next = Branch->getSuccessor(0);
+
+  // The first instruction of the program that changes the stack pointer, and
+  // whether it reads memory, as a `pop` does
+  bool ReadsMemory = false;
+  for (Instruction &I : *Next) {
+    if (NewPCHelper.getCall(&I).has_value()) {
+      ReadsMemory = false;
+    } else if (auto *Load = dyn_cast<LoadInst>(&I)) {
+      if (not isa<GlobalVariable>(Load->getPointerOperand()))
+        ReadsMemory = true;
+    } else if (auto *Store = dyn_cast<StoreInst>(&I);
+               Store != nullptr and Store->getPointerOperand() == SPCSV) {
+      auto *Add = dyn_cast<BinaryOperator>(Store->getValueOperand());
+      if (ReadsMemory or Add == nullptr or Add->getOpcode() != Instruction::Add)
+        return 0;
+
+      auto *Base = dyn_cast<LoadInst>(Add->getOperand(0));
+      auto *Amount = dyn_cast<ConstantInt>(Add->getOperand(1));
+      if (Base == nullptr or Base->getPointerOperand() != SPCSV
+          or Amount == nullptr or Amount->getSExtValue() <= 0)
+        return 0;
+
+      return Amount->getSExtValue();
+    }
+  }
+
+  return 0;
 }
 
 void CallSummarizer::handleCall(MetaAddress CallerBlock,
@@ -1225,15 +1520,30 @@ void CallSummarizer::handleCall(MetaAddress CallerBlock,
   // ordered by the addresses of the CSVs
   for (GlobalVariable *Register : toSortedByName(ClobberedRegisters))
     Clobberer.clobber(Builder, Register);
+  CalleeClobbered->insert(ClobberedRegisters.begin(), ClobberedRegisters.end());
 
-  // For an indirect call, what has been found about its callee, if anything,
-  // replaces the default
+  // For a call to something else than a function of the binary, what has been
+  // found about this call site, if anything, replaces what is assumed
   std::optional<int64_t> FSO = MaybeFSO;
-  if (not IsTailCall and Callee.isInvalid()
-      and isa<ConstantPointerNull>(SymbolNamePointer)) {
-    IndirectCalls->push_back(CallerBlock);
-    auto It = IndirectCallFSO->find(CallerBlock);
-    if (FSO.has_value() and It != IndirectCallFSO->end())
+  if (not IsTailCall and Callee.isInvalid()) {
+    UnknownCall &New = UnknownCalls->emplace_back();
+    New.Block = CallerBlock;
+    if (not isa<ConstantPointerNull>(SymbolNamePointer))
+      New.Symbol = extractFromConstantStringPtr(SymbolNamePointer).str();
+    llvm::BasicBlock &Block = *Builder.GetInsertBlock();
+    const Instruction *End = &*Builder.GetInsertPoint();
+    New.Pushed = pushedBeforeCall(Block, End, SPCSV, nullptr);
+    New.PushedAfterSaves = pushedBeforeCall(Block, End, SPCSV, CalleeSaved);
+
+    // If the caller removes what it pushed, the callee does not
+    uint64_t Removed = removedAfterCall(Block, SPCSV);
+    if (Removed != 0 and Removed <= New.Pushed) {
+      New.Pushed = 0;
+      New.PushedAfterSaves = 0;
+    }
+
+    auto It = CallSiteFSO->find(CallerBlock);
+    if (FSO.has_value() and It != CallSiteFSO->end())
       FSO = It->second;
   }
 
@@ -1279,6 +1589,8 @@ void CallSummarizer::handleIndirectJump(revng::IRBuilder &Builder,
     // Emulate registers being clobbered, in the order of the names
     for (GlobalVariable *Register : toSortedByName(ClobberedRegisters))
       Clobberer.clobber(Builder, Register);
+    CalleeClobbered->insert(ClobberedRegisters.begin(),
+                            ClobberedRegisters.end());
 
     NewPostCallHook = Builder.CreateCall(PostCallHook,
                                          { Block.toValue(M),

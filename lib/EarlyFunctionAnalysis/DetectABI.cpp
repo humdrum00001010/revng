@@ -235,6 +235,15 @@ private:
   model::UpcastableType
   buildPrototypeForIndirectCall(const FunctionSummary &CallerSummary,
                                 const efa::BasicBlock &CallerBlock);
+
+  /// \return the default prototype with \p FinalStackOffset as its final stack
+  ///         offset, or an empty type if that is the one it has
+  model::UpcastableType defaultPrototypeRemoving(int64_t FinalStackOffset);
+
+private:
+  /// The copies of the default prototype \ref defaultPrototypeRemoving made,
+  /// by their final stack offset
+  std::map<int64_t, model::TypeDefinition::Key> DefaultPrototypeCopies;
 };
 
 void DetectABI::computeApproximateCallGraph() {
@@ -923,6 +932,17 @@ void DetectABI::finalizeModel() {
             Function->CallSitePrototypes().emplace(BlockAddress,
                                                    std::move(Prototype),
                                                    IsTailCall);
+          } else if (IsDynamic and not HasInfoOnEdge) {
+            // A dynamic function without a prototype: if the analysis of the
+            // caller found that it removes its arguments, say so here, since
+            // the function is assumed not to
+            auto FSO = Analyzer.callSiteFinalStackOffset(BlockAddress);
+            auto Prototype = FSO.has_value() ? defaultPrototypeRemoving(*FSO) :
+                                               model::UpcastableType();
+            if (not Prototype.isEmpty())
+              Function->CallSitePrototypes().emplace(BlockAddress,
+                                                     std::move(Prototype),
+                                                     false);
           }
         }
       }
@@ -1110,8 +1130,31 @@ DetectABI::buildPrototypeForIndirectCall(const FunctionSummary &CallerSummary,
 
   // Unless the analysis of the caller found what this callee removes
   MetaAddress CallSite = CallerBlock.ID().notInlinedAddress();
-  if (auto FSO = Analyzer.indirectCallFinalStackOffset(CallSite))
+  if (auto FSO = Analyzer.callSiteFinalStackOffset(CallSite))
     Prototype.FinalStackOffset() = *FSO;
+
+  return std::move(NewType);
+}
+
+model::UpcastableType
+DetectABI::defaultPrototypeRemoving(int64_t FinalStackOffset) {
+  const model::TypeDefinition *Prototype = Binary->defaultPrototype();
+  const auto *Default = dyn_cast<model::RawFunctionDefinition>(Prototype);
+  if (Default == nullptr
+      or int64_t(Default->FinalStackOffset()) == FinalStackOffset)
+    return {};
+
+  auto It = DefaultPrototypeCopies.find(FinalStackOffset);
+  if (It != DefaultPrototypeCopies.end())
+    return Binary->makeType(It->second);
+
+  auto &&[Copy, NewType] = Binary->makeRawFunctionDefinition();
+  Copy.Architecture() = Default->Architecture();
+  Copy.Arguments() = Default->Arguments();
+  Copy.ReturnValues() = Default->ReturnValues();
+  Copy.PreservedRegisters() = Default->PreservedRegisters();
+  Copy.FinalStackOffset() = FinalStackOffset;
+  DefaultPrototypeCopies.emplace(FinalStackOffset, Copy.key());
 
   return std::move(NewType);
 }

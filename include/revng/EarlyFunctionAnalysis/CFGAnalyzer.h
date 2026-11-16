@@ -7,6 +7,8 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
+#include <string>
 
 #include "llvm/ADT/SmallVector.h"
 
@@ -29,6 +31,24 @@ class Function;
 
 namespace efa {
 
+/// A call to something else than a function of the binary: what its callee
+/// removes from the stack is assumed
+struct UnknownCall {
+  /// The address of the block of the call
+  MetaAddress Block;
+
+  /// The name of the dynamic function called, empty for an indirect call
+  std::string Symbol;
+
+  /// The bytes the block pushes before the call and does not pop: the callee
+  /// can remove them, but not more
+  uint64_t Pushed = 0;
+
+  /// The same, without what the block pushes up to the last register it
+  /// saves: what holds if the block is the first of its function
+  uint64_t PushedAfterSaves = 0;
+};
+
 class CallSummarizer : public CallHandler {
 private:
   llvm::Module *M = nullptr;
@@ -39,12 +59,19 @@ private:
   llvm::SmallSet<MetaAddress, 4> *ReturnBlocks = nullptr;
   OpaqueRegisterUser Clobberer;
 
-  /// The final stack offset of the callee of an indirect call, where one has
-  /// been found, by the address of the block of the call
-  const std::map<MetaAddress, int64_t> *IndirectCallFSO = nullptr;
+  /// The final stack offset of the callee of a call site, where one has been
+  /// found, by the address of the block of the call
+  const std::map<MetaAddress, int64_t> *CallSiteFSO = nullptr;
 
-  /// The blocks of the indirect calls met while outlining
-  llvm::SmallVectorImpl<MetaAddress> *IndirectCalls = nullptr;
+  /// The calls to something else than a function of the binary met while
+  /// outlining
+  llvm::SmallVectorImpl<UnknownCall> *UnknownCalls = nullptr;
+
+  /// The registers the callees met while outlining clobber
+  CSVSet *CalleeClobbered = nullptr;
+
+  /// The registers a function saves before using them
+  const CSVSet *CalleeSaved = nullptr;
 
 public:
   CallSummarizer(llvm::Module *M,
@@ -53,8 +80,10 @@ public:
                  llvm::Function *RetHook,
                  llvm::GlobalVariable *SPCSV,
                  llvm::SmallSet<MetaAddress, 4> *ReturnBlocks,
-                 const std::map<MetaAddress, int64_t> *IndirectCallFSO,
-                 llvm::SmallVectorImpl<MetaAddress> *IndirectCalls);
+                 const std::map<MetaAddress, int64_t> *CallSiteFSO,
+                 llvm::SmallVectorImpl<UnknownCall> *UnknownCalls,
+                 CSVSet *CalleeClobbered,
+                 const CSVSet *CalleeSaved);
 
 public:
   void handleCall(MetaAddress CallerBlock,
@@ -103,12 +132,22 @@ private:
   std::unique_ptr<llvm::raw_ostream> OutputAAWriter;
   std::unique_ptr<llvm::raw_ostream> OutputIBI;
 
-  /// The final stack offset found for the callee of an indirect call, by the
+  /// The final stack offset found for the callee of a call site, by the
   /// address of the block of the call
-  std::map<MetaAddress, int64_t> IndirectCallFSO;
+  std::map<MetaAddress, int64_t> CallSiteFSO;
 
-  /// The blocks of the indirect calls of the function outlined last
-  llvm::SmallVector<MetaAddress, 4> IndirectCalls;
+  /// The calls of the function outlined last to something else than a function
+  /// of the binary
+  llvm::SmallVector<UnknownCall, 4> UnknownCalls;
+
+  /// The registers the callees of the function outlined last clobber
+  CSVSet CalleeClobbered;
+
+  /// The registers the default prototype preserves
+  CSVSet CalleeSaved;
+
+  /// The functions for which no assumption about their call sites helped
+  std::set<MetaAddress> Unsolved;
 
 public:
   CFGAnalyzer(llvm::Module &M,
@@ -128,12 +167,12 @@ public:
 
   OutlinedFunction outline(const MetaAddress &Entry);
 
-  /// \return the final stack offset found for the callee of the indirect call
-  ///         in the block at \p CallerBlock, if it is not the default one
+  /// \return the final stack offset found for the callee of the call in the
+  ///         block at \p CallerBlock, if one has been
   std::optional<int64_t>
-  indirectCallFinalStackOffset(const MetaAddress &CallerBlock) const {
-    auto It = IndirectCallFSO.find(CallerBlock);
-    if (It == IndirectCallFSO.end())
+  callSiteFinalStackOffset(const MetaAddress &CallerBlock) const {
+    auto It = CallSiteFSO.find(CallerBlock);
+    if (It == CallSiteFSO.end())
       return std::nullopt;
     return It->second;
   }
