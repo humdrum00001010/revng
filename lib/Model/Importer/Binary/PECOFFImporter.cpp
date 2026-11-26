@@ -78,7 +78,8 @@ private:
   /// Parse dynamic symbols from the file.
   void parseImportedSymbols();
   using ImportedSymbolRange = iterator_range<imported_symbol_iterator>;
-  void recordImportedFunctions(ImportedSymbolRange Range,
+  void recordImportedFunctions(llvm::StringRef Library,
+                               ImportedSymbolRange Range,
                                uint32_t ImportAddressTableEntry);
   /// Parse delay dynamic symbols from the file.
   void parseDelayImportedSymbols();
@@ -394,7 +395,28 @@ void PECOFFImporter::parseExports() {
   }
 }
 
-void PECOFFImporter::recordImportedFunctions(ImportedSymbolRange Range,
+/// \return the name of the function \p Library exports as number
+///         \p Ordinal, for a function that is imported by its number alone
+static std::string nameOfOrdinal(StringRef Library, uint16_t Ordinal) {
+  std::string Result = Library.str();
+  for (char &Character : Result)
+    if (Character == '/')
+      Character = '_';
+  return Result + "_ordinal_" + std::to_string(Ordinal);
+}
+
+/// \return whether \p Symbol is imported by its number and not by a name
+static bool isImportedByOrdinal(const ImportedSymbolRef &Symbol) {
+  bool Result = false;
+  if (Error E = Symbol.isOrdinal(Result)) {
+    consumeError(std::move(E));
+    return false;
+  }
+  return Result;
+}
+
+void PECOFFImporter::recordImportedFunctions(StringRef Library,
+                                             ImportedSymbolRange Range,
                                              uint32_t ImportAddressTableEntry) {
 
   // Index of entries within import table.
@@ -418,8 +440,16 @@ void PECOFFImporter::recordImportedFunctions(ImportedSymbolRange Range,
       continue;
     }
 
-    // Dynamic functions must have a name, so skip those without it.
-    // TODO: handle imports by ordinal
+    // Dynamic functions must have a name: one that is imported by its number
+    // gets the name of the library and the number, so that the calls to it
+    // are calls to one function and not jumps through a pointer nothing is
+    // known about.
+    std::string OrdinalName;
+    if (Sym.empty() and isImportedByOrdinal(I)) {
+      OrdinalName = nameOfOrdinal(Library, Ordinal);
+      Sym = OrdinalName;
+    }
+
     if (Sym.empty() or Model->ImportedDynamicFunctions().contains(Sym.str()))
       continue;
 
@@ -510,10 +540,13 @@ void PECOFFImporter::parseImportedSymbols() {
     // The import lookup table can be missing with certain older linkers, so
     // fall back to the import address table in that case.
     if (HasImportLookupTableEntry) {
-      recordImportedFunctions(I.lookup_table_symbols(),
+      recordImportedFunctions(Name,
+                              I.lookup_table_symbols(),
                               ImportAddressTableEntry);
     } else {
-      recordImportedFunctions(I.imported_symbols(), ImportAddressTableEntry);
+      recordImportedFunctions(Name,
+                              I.imported_symbols(),
+                              ImportAddressTableEntry);
     }
   }
 }
@@ -555,8 +588,19 @@ void PECOFFImporter::recordDelayImportedFunctions(DelayDirectoryRef &I,
       continue;
     }
 
-    // Dynamic functions must have a name, so skip those without it.
-    // TODO: handle imports by ordinal
+    // Dynamic functions must have a name: see recordImportedFunctions for
+    // those that are imported by their number
+    std::string OrdinalName;
+    if (Sym.empty() and isImportedByOrdinal(S)) {
+      StringRef Library;
+      if (Error E = I.getName(Library)) {
+        consumeError(std::move(E));
+      } else {
+        OrdinalName = nameOfOrdinal(Library, Ordinal);
+        Sym = OrdinalName;
+      }
+    }
+
     if (Sym.empty() or Model->ImportedDynamicFunctions().contains(Sym.str()))
       continue;
 
@@ -849,6 +893,61 @@ static model::UpcastableType prototypeFromDecoratedName(model::Binary &Binary,
   return std::move(Type);
 }
 
+/// \return for the decorated name \p Name of a C function that removes its
+///         arguments from the stack (`_Name@N`, where N is how many bytes
+///         they take), the default prototype with those N bytes of arguments
+///         on the stack, removed by the function; an empty type for any
+///         other name. The name does not say what the arguments are, nor
+///         what the function returns: that stays as it is for a function
+///         nothing is known about.
+static model::UpcastableType prototypeFromStdcallName(model::Binary &Binary,
+                                                      llvm::StringRef Name) {
+  if (not Name.consume_front("_"))
+    return {};
+
+  size_t At = Name.rfind('@');
+  uint64_t Bytes = 0;
+  if (At == llvm::StringRef::npos or At == 0
+      or Name.substr(At + 1).getAsInteger(10, Bytes))
+    return {};
+
+  uint64_t Word = model::Architecture::getPointerSize(Binary.Architecture());
+  constexpr uint64_t MostWords = 64;
+  if (Bytes % Word != 0 or Bytes / Word > MostWords)
+    return {};
+
+  const model::TypeDefinition *Default = Binary.defaultPrototype();
+  const auto *Raw = dyn_cast_or_null<model::RawFunctionDefinition>(Default);
+  if (Raw == nullptr)
+    return {};
+
+  // Collect what is copied first: making a type can move the others
+  auto Architecture = Raw->Architecture();
+  auto Arguments = Raw->Arguments();
+  auto ReturnValues = Raw->ReturnValues();
+  auto PreservedRegisters = Raw->PreservedRegisters();
+  uint64_t FinalStackOffset = Raw->FinalStackOffset() + Bytes;
+
+  model::UpcastableType OnStack;
+  if (Bytes != 0) {
+    auto &&[Struct, StructType] = Binary.makeStructDefinition(Bytes);
+    for (uint64_t Offset = 0; Offset < Bytes; Offset += Word)
+      Struct.addField(Offset, model::PrimitiveType::makeGeneric(Word));
+    OnStack = std::move(StructType);
+  }
+
+  auto &&[Prototype, Type] = Binary.makeRawFunctionDefinition();
+  Prototype.Architecture() = Architecture;
+  Prototype.Arguments() = std::move(Arguments);
+  Prototype.ReturnValues() = std::move(ReturnValues);
+  Prototype.PreservedRegisters() = std::move(PreservedRegisters);
+  Prototype.FinalStackOffset() = FinalStackOffset;
+  if (not OnStack.isEmpty())
+    Prototype.StackArgumentsType() = std::move(OnStack);
+
+  return std::move(Type);
+}
+
 void PECOFFImporter::importPrototypesFromDecoratedNames() {
   // The calling conventions these names can tell apart are those of x86
   if (Model->Architecture() != model::Architecture::x86)
@@ -859,6 +958,8 @@ void PECOFFImporter::importPrototypesFromDecoratedNames() {
       continue;
 
     auto Prototype = prototypeFromDecoratedName(*Model, Function.Name());
+    if (Prototype.isEmpty())
+      Prototype = prototypeFromStdcallName(*Model, Function.Name());
     if (Prototype.isEmpty())
       continue;
 
