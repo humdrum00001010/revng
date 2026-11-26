@@ -1570,6 +1570,26 @@ private:
     Sum Slot;
   };
 
+  /// A register the function is left with after reading it from the stack:
+  /// what it had when the function was entered, the instruction that reads
+  /// it back and the height it is read at
+  struct ReadBack {
+    llvm::Value *Initial = nullptr;
+    llvm::Instruction *Read = nullptr;
+    Sum From;
+  };
+
+  /// Something read from the stack at the height From that the function
+  /// stores on the stack again, at the height Slot: if what was read is a
+  /// register the function had saved there, this saves it once more. The
+  /// heights are vague if they are not sums of what the equations are about.
+  struct Resave {
+    llvm::Instruction *Store = nullptr;
+    Sum Slot;
+    Sum From;
+    bool IsVague = false;
+  };
+
 private:
   unsigned Callees = 0;
   llvm::Function *StackEffect = nullptr;
@@ -1577,6 +1597,8 @@ private:
   const CSVSet *CalleeSaved = nullptr;
   std::vector<Site> Sites;
   std::vector<Save> Saves;
+  std::vector<ReadBack> ReadBacks;
+  int64_t Least = 0;
   llvm::DenseMap<llvm::Value *, unsigned> Others;
 
   /// The values of the unknowns that are not a callee's, in their order
@@ -1595,14 +1617,18 @@ private:
   std::vector<Sum> Restores;
 
 public:
+  /// \p Least is what a callee that removes nothing amounts to: none amounts
+  /// to less
   StackEquations(unsigned Callees,
                  llvm::Function *StackEffect,
                  llvm::GlobalVariable *StackPointer,
-                 const CSVSet *CalleeSaved) :
+                 const CSVSet *CalleeSaved,
+                 int64_t Least) :
     Callees(Callees),
     StackEffect(StackEffect),
     StackPointer(StackPointer),
-    CalleeSaved(CalleeSaved) {}
+    CalleeSaved(CalleeSaved),
+    Least(Least) {}
 
   /// The callee \p Unknown is called where \p Hook is, with the stack at the
   /// height \p Hook has
@@ -1630,8 +1656,7 @@ public:
 
   /// \p Difference is what a register had when the function was entered
   /// minus what it has where the function is left. If it is read from the
-  /// stack there, and the function saved it in one place, that is the place
-  /// it is read from: no evidence is stronger, so these equations go first.
+  /// stack there, where from is kept for \ref visitRestores.
   void visitRestore(llvm::Value *Difference) {
     using namespace llvm;
     using namespace llvm::PatternMatch;
@@ -1647,22 +1672,100 @@ public:
     if (not Restored.has_value())
       return;
 
-    const Save *Only = nullptr;
-    for (const Save &Save : Saves) {
-      if (cast<StoreInst>(Save.Store)->getValueOperand() != Initial)
-        continue;
-      if (Only != nullptr and not(Only->Slot == Save.Slot))
-        return;
-      Only = &Save;
+    auto *Read = dyn_cast<Instruction>(cast<User>(Difference)->getOperand(1));
+    ReadBacks.push_back({ Initial, Read, std::move(*Restored) });
+  }
+
+  /// A register the function is left with after reading it from the stack,
+  /// and that it saved in one place, is read from that place: no evidence is
+  /// stronger, so these equations go first.
+  ///
+  /// Not if the function can have saved it twice: with code after the place
+  /// where it restores its registers (another function it ends with), what
+  /// it reads back there can be pushed again, and where the last read comes
+  /// from is then one of two places. That second save does not look like
+  /// one: as long as the heights are not known, what is pushed is something
+  /// read from the stack, not the register.
+  void visitRestores(llvm::Function &F, const llvm::DominatorTree &DT) {
+    using namespace llvm;
+
+    // What is read from the stack and stored there again. The heights are
+    // of anything here, not of the stack pointer: what is met on the way
+    // must not give equations, so it is forgotten afterwards.
+    std::vector<Resave> Resaves;
+    {
+      auto OldKnown = Known;
+      auto OldOthers = Others;
+      auto OldValueOf = ValueOf;
+      unsigned First = Callees + Others.size();
+      auto IsVague = [First](const Sum &Height) {
+        return not Height.IsValid
+               or (not Height.Terms.empty()
+                   and Height.Terms.rbegin()->first >= First);
+      };
+
+      for (Instruction &I : instructions(F)) {
+        auto *Store = dyn_cast<StoreInst>(&I);
+        if (Store == nullptr)
+          continue;
+        auto *Value = dyn_cast<LoadInst>(Store->getValueOperand());
+        if (Value == nullptr
+            or isa<GlobalVariable>(skipCasts(Value->getPointerOperand())))
+          continue;
+
+        std::optional<Sum> From = heightOf(Value->getPointerOperand());
+        if (not From.has_value())
+          continue;
+        std::optional<Sum> Slot = heightOf(Store->getPointerOperand());
+        if (not Slot.has_value())
+          continue;
+
+        bool Vague = IsVague(*From) or IsVague(*Slot);
+        Resaves.push_back({ Store, std::move(*Slot), std::move(*From), Vague });
+      }
+
+      Known = std::move(OldKnown);
+      Others = std::move(OldOthers);
+      ValueOf = std::move(OldValueOf);
+      Pending.clear();
     }
 
-    if (Only == nullptr)
-      return;
+    for (const ReadBack &Back : ReadBacks) {
+      const Save *Only = nullptr;
+      bool IsOnly = true;
+      for (const Save &Save : Saves) {
+        if (cast<StoreInst>(Save.Store)->getValueOperand() != Back.Initial)
+          continue;
+        IsOnly = IsOnly and (Only == nullptr or Only->Slot == Save.Slot);
+        Only = &Save;
+      }
 
-    Sum Equation = *Restored;
-    Equation.add(Only->Slot, -1);
-    if (Equation.IsValid and not Equation.Terms.empty())
-      Restores.push_back(std::move(Equation));
+      if (Only == nullptr or not IsOnly)
+        continue;
+
+      bool SavedAgain = false;
+      for (const Resave &Again : Resaves) {
+        if (Back.Read == nullptr or not DT.dominates(Again.Store, Back.Read))
+          continue;
+        if (Again.IsVague) {
+          SavedAgain = true;
+          continue;
+        }
+        if (Again.Slot == Only->Slot)
+          continue;
+        Sum Apart = Again.From;
+        Apart.add(Only->Slot, -1);
+        SavedAgain = SavedAgain or canBeZero(Apart);
+      }
+
+      if (SavedAgain)
+        continue;
+
+      Sum Equation = Back.From;
+      Equation.add(Only->Slot, -1);
+      if (Equation.IsValid and not Equation.Terms.empty())
+        Restores.push_back(std::move(Equation));
+    }
   }
 
   /// \return for each callee, the most it can move the stack pointer by: not
@@ -1845,6 +1948,33 @@ public:
   }
 
 private:
+  /// \return whether \p Value, a sum, is zero for some amounts the callees
+  ///         can remove: each of them at least what one that removes nothing
+  ///         amounts to. What is not a callee's can be anything.
+  bool canBeZero(const Sum &Value) const {
+    if (not Value.IsValid)
+      return true;
+    if (Value.Terms.empty())
+      return Value.Constant == 0;
+
+    bool AllPositive = true;
+    bool AllNegative = true;
+    int64_t AtLeast = Value.Constant;
+    for (const auto &[Unknown, Coefficient] : Value.Terms) {
+      if (Unknown >= Callees)
+        return true;
+      AllPositive = AllPositive and Coefficient > 0;
+      AllNegative = AllNegative and Coefficient < 0;
+      AtLeast += Coefficient * Least;
+    }
+
+    if (AllPositive)
+      return AtLeast <= 0;
+    if (AllNegative)
+      return AtLeast >= 0;
+    return true;
+  }
+
   /// \return the height of the stack at the address \p Pointer, if it is the
   ///         stack pointer the function is entered with plus a sum
   std::optional<Sum> heightOf(llvm::Value *Pointer) {
@@ -2051,10 +2181,12 @@ CFGAnalyzer::solveCallEffects(const MetaAddress &Entry,
 
   // The heights the optimizations were left with: those at the calls and at
   // the starts of the blocks, and those the function is left with
+  int64_t Least = Oracle.getDefault().ElectedFSO.value_or(0);
   StackEquations Equations(Likeliest.size(),
                            StackEffect.get(),
                            Globals.spReg(),
-                           &CalleeSaved);
+                           &CalleeSaved,
+                           Least);
   for (CallBase *Call : callers(StackHeightHook.get())) {
     if (Call->getFunction() != F)
       continue;
@@ -2082,8 +2214,8 @@ CFGAnalyzer::solveCallEffects(const MetaAddress &Entry,
   }
 
   DominatorTree DT(*F);
+  Equations.visitRestores(*F, DT);
   Most = Equations.bounds(DT);
-  int64_t Least = Oracle.getDefault().ElectedFSO.value_or(0);
   return Equations.solve(Likeliest, IsAmbiguous, Most, Least);
 }
 

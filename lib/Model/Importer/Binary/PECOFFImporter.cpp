@@ -396,11 +396,12 @@ void PECOFFImporter::parseExports() {
 }
 
 /// \return the name of the function \p Library exports as number
-///         \p Ordinal, for a function that is imported by its number alone
+///         \p Ordinal, for a function that is imported by its number alone:
+///         one that can be used as it is where the function is named in C
 static std::string nameOfOrdinal(StringRef Library, uint16_t Ordinal) {
   std::string Result = Library.str();
   for (char &Character : Result)
-    if (Character == '/')
+    if (not isAlnum(Character))
       Character = '_';
   return Result + "_ordinal_" + std::to_string(Ordinal);
 }
