@@ -40,6 +40,9 @@ struct UnknownCall {
   /// The address of the block of the call
   MetaAddress Block;
 
+  /// The address of the instruction that makes the call, if it is known
+  MetaAddress Instruction;
+
   /// Whether the function calls itself here
   bool IsRecursive = false;
 
@@ -185,8 +188,9 @@ private:
 
   /// The call sites where the function says what a group of callees removes
   /// from the stack together, but not how much each: what is assumed there is
-  /// one of the possible answers
-  std::set<MetaAddress> AmbiguousSites;
+  /// one of the possible answers. With each, the address of the instruction
+  /// that makes the call.
+  std::map<MetaAddress, MetaAddress> AmbiguousSites;
 
   /// The registers the callees of the function outlined last clobber
   CSVSet CalleeClobbered;
@@ -219,14 +223,16 @@ public:
 
   OutlinedFunction outline(const MetaAddress &Entry);
 
-  /// \return the final stack offset found for the callee of the call in the
-  ///         block at \p CallerBlock, if one has been
-  /// \return whether what the callee of \p CallerBlock removes is one of
-  ///         several answers the function allows
-  bool isCallSiteAmbiguous(const MetaAddress &CallerBlock) const {
-    return AmbiguousSites.contains(CallerBlock);
+  /// \return the address of the instruction that makes the call of
+  ///         \p CallerBlock, if what its callee removes is one of several
+  ///         answers the function allows and the instruction is known
+  MetaAddress ambiguousCall(const MetaAddress &CallerBlock) const {
+    auto It = AmbiguousSites.find(CallerBlock);
+    return It == AmbiguousSites.end() ? MetaAddress::invalid() : It->second;
   }
 
+  /// \return the final stack offset found for the callee of the call in the
+  ///         block at \p CallerBlock, if one has been
   std::optional<int64_t>
   callSiteFinalStackOffset(const MetaAddress &CallerBlock) const {
     auto It = CallSiteFSO.find(CallerBlock);

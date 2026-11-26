@@ -204,8 +204,8 @@ private:
   void computeApproximateCallGraph();
   void preliminaryFunctionAnalysis();
 
-  /// Code no function reaches, lying between the blocks of a function, is
-  /// most often where that function goes on after an exception is handled.
+  /// Code no function reaches, right after a block of a function, is most
+  /// often where that function goes on after an exception is handled.
   /// If the function, analyzed as being resumed there, still makes sense, the
   /// code is its own; otherwise it is left to become a function.
   void attachResumeBlocks();
@@ -360,14 +360,15 @@ void DetectABI::attachResumeBlocks() {
     }
   }
 
-  // Code that lies between two blocks of the same function
+  // Code that follows a block of a function, with no block of another one
+  // in between, is offered to that function: whether it is its own is for
+  // tryToAttach to say
   for (const MetaAddress &Candidate : Candidates) {
     auto Above = Owners.upper_bound(Candidate);
-    if (Above == Owners.end() or Above == Owners.begin())
+    if (Above == Owners.begin())
       continue;
     auto Below = std::prev(Above);
-    if (Below->first == Candidate or Below->second.isInvalid()
-        or Below->second != Above->second)
+    if (Below->first == Candidate or Below->second.isInvalid())
       continue;
 
     tryToAttach(Binary->Functions().at(Below->second), Candidate);
@@ -1040,6 +1041,28 @@ void DetectABI::finalizeModel() {
           }
         }
       }
+    }
+  }
+
+  // Where the function says what a group of calls removes from the stack
+  // together, but not how much each, what is assumed is one of the answers:
+  // say so where the call is, instead of leaving it to look known
+  for (auto &Function : Functions) {
+    auto &Summary = Oracle.getLocalFunction(Function->Entry());
+    for (auto &Block : Summary.CFG) {
+      if (Block.ID().isInlined())
+        continue;
+      MetaAddress Call = Analyzer.ambiguousCall(Block.ID().notInlinedAddress());
+      if (Call.isInvalid())
+        continue;
+
+      model::StatementComment Comment;
+      Comment.Index() = Function->Comments().size();
+      Comment.Location().insert(Call);
+      Comment.Body() = "The stack arguments of this call may belong to a call "
+                       "next to it: the function only says how many words "
+                       "these calls remove from the stack together.";
+      Function->Comments().insert(std::move(Comment));
     }
   }
 

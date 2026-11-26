@@ -4,9 +4,13 @@
 // This file is distributed under the MIT License. See LICENSE.md for details.
 //
 
+#include <set>
+
 #include "boost/icl/interval_set.hpp"
 #include "boost/icl/right_open_interval.hpp"
 
+#include "llvm/IR/InstIterator.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
 
 #include "revng/EarlyFunctionAnalysis/CollectFunctionsFromUnusedAddresses.h"
@@ -55,9 +59,81 @@ private:
     }
   }
 
+  /// \return whether \p I, which computes with an address, is only ever used
+  ///         to say where memory is read or written: the address is then
+  ///         that of data, a table for instance, whatever segment it is in
+  static bool isOnlyAnAddress(const llvm::Instruction *I, unsigned Depth = 0) {
+    using namespace llvm;
+    if (Depth > 6 or I->use_empty())
+      return false;
+
+    for (const User *U : I->users()) {
+      if (auto *Load = dyn_cast<LoadInst>(U)) {
+        if (Load->getPointerOperand() != I)
+          return false;
+      } else if (auto *Store = dyn_cast<StoreInst>(U)) {
+        if (Store->getPointerOperand() != I or Store->getValueOperand() == I)
+          return false;
+      } else if (auto *Next = dyn_cast<Instruction>(U);
+                 Next != nullptr
+                 and (Next->getOpcode() == Instruction::Add
+                      or isa<ZExtInst>(Next) or isa<IntToPtrInst>(Next)
+                      or isa<GetElementPtrInst>(Next))) {
+        if (not isOnlyAnAddress(Next, Depth + 1))
+          return false;
+      } else {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  /// The addresses of code that the program only uses, plus something, as
+  /// the place memory is accessed at: `[table + index]`. A table of a
+  /// `switch` the lifter could not resolve is one, and it is not code.
+  std::set<uint64_t> addressesOfData() {
+    using namespace llvm;
+    Function &Root = *M.getFunction("root");
+
+    std::set<uint64_t> Candidates;
+    for (BasicBlock &BB : Root) {
+      if (getType(&BB) != BlockType::JumpTargetBlock)
+        continue;
+      uint32_t Reasons = JumpTargetReason::getReasons(&BB);
+      if (hasReason(Reasons, JumpTargetReason::SimpleLiteral))
+        Candidates.insert(getBasicBlockAddress(getJumpTargetBlock(&BB))
+                            .address());
+    }
+
+    std::set<uint64_t> AsAddress;
+    std::set<uint64_t> Otherwise;
+    for (Instruction &I : instructions(Root)) {
+      for (const Use &Operand : I.operands()) {
+        auto *Constant = dyn_cast<ConstantInt>(Operand.get());
+        if (Constant == nullptr or Constant->getBitWidth() > 64
+            or not Candidates.contains(Constant->getZExtValue()))
+          continue;
+
+        bool IsSum = I.getOpcode() == Instruction::Add;
+        if (IsSum and isOnlyAnAddress(&I))
+          AsAddress.insert(Constant->getZExtValue());
+        else
+          Otherwise.insert(Constant->getZExtValue());
+      }
+    }
+
+    std::set<uint64_t> Result;
+    for (uint64_t Address : AsAddress)
+      if (not Otherwise.contains(Address))
+        Result.insert(Address);
+    return Result;
+  }
+
   void collectFunctionsFromUnusedAddresses() {
     using namespace llvm;
     Function &Root = *M.getFunction("root");
+    std::set<uint64_t> Data = addressesOfData();
 
     for (BasicBlock &BB : Root) {
       if (getType(&BB) != BlockType::JumpTargetBlock)
@@ -105,6 +181,12 @@ private:
           revng_log(Log,
                     "Ignoring " << Entry.toString()
                                 << " since it's target of a memory operation");
+
+        } else if (IsSimpleLiteral and not IsUnusedGlobalData
+                   and not IsMemoryStore and Data.contains(Entry.address())) {
+          revng_log(Log,
+                    "Ignoring " << Entry.toString()
+                                << " since it is only used to address memory");
 
         } else {
           if (IsMemoryStore and not IsUnusedGlobalData) {

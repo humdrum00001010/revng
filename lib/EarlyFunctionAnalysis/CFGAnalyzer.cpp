@@ -1395,6 +1395,9 @@ struct UnknownCallSite {
   /// removes the same
   std::string Symbol;
 
+  /// For each block, the address of the instruction that makes the call
+  llvm::SmallVector<MetaAddress, 1> Instructions;
+
   /// Whether the function leaves no choice about what the callee removes
   bool IsRequired = false;
 
@@ -2008,6 +2011,7 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
       It = llvm::find_if(Sites, IsSameSymbol);
     if (It != Sites.end()) {
       It->Blocks.push_back(Call.Block);
+      It->Instructions.push_back(Call.Instruction);
       It->Likeliest = std::max(It->Likeliest, Likeliest);
       It->Most = MaxWords;
       continue;
@@ -2015,6 +2019,7 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
 
     UnknownCallSite &New = Sites.emplace_back();
     New.Blocks.push_back(Call.Block);
+    New.Instructions.push_back(Call.Instruction);
     New.IsFirst = IsFirst;
     New.IsRecursive = Call.IsRecursive;
     New.Symbol = Call.Symbol;
@@ -2098,8 +2103,8 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
         Sites[I].Most = std::max(Sites[I].Most, *Words);
       Sites[I].IsRequired = Required[I].has_value();
       if (IsAmbiguous[I])
-        for (const MetaAddress &Block : Sites[I].Blocks)
-          AmbiguousSites.insert(Block);
+        for (size_t J = 0; J < Sites[I].Blocks.size(); ++J)
+          AmbiguousSites[Sites[I].Blocks[J]] = Sites[I].Instructions[J];
     }
   }
 
@@ -2547,6 +2552,12 @@ void CallSummarizer::handleCall(MetaAddress CallerBlock,
       New.Symbol = extractFromConstantStringPtr(SymbolNamePointer).str();
     llvm::BasicBlock &Block = *Builder.GetInsertBlock();
     const Instruction *End = &*Builder.GetInsertPoint();
+    for (Instruction &I : Block) {
+      if (&I == End)
+        break;
+      if (std::optional NewPC = NewPCHelper.getCall(&I))
+        New.Instruction = blockIDFromNewPC(*NewPC).start();
+    }
     New.Pushed = pushedBeforeCall(Block, End, SPCSV, nullptr);
     New.PushedAfterSaves = pushedBeforeCall(Block, End, SPCSV, CalleeSaved);
 
