@@ -749,16 +749,11 @@ llvm::Function *Outliner::exceptionHelper(llvm::StringRef Name, bool IsResume) {
   return Helper;
 }
 
-void Outliner::connectResumePoint(OutlinedFunction *Outlined) {
+std::pair<llvm::SmallVector<llvm::StoreInst *, 2>, int64_t>
+Outliner::stackPointerSaves(llvm::Function &F) const {
   using namespace llvm;
   using namespace llvm::PatternMatch;
-  using llvm::BasicBlock;
 
-  BasicBlock *Resume = Outlined->ResumeCloned;
-  if (Resume == nullptr)
-    return;
-
-  Function *F = Outlined->Function.get();
   GlobalVariable *StackPointer = Globals.spReg();
   GlobalVariable *FramePointer = M.getGlobalVariable("_ebp", true);
 
@@ -768,10 +763,12 @@ void Outliner::connectResumePoint(OutlinedFunction *Outlined) {
   // structured one. From there on the function can be resumed.
   SmallVector<StoreInst *, 2> Anchors;
   std::optional<int64_t> Offset;
-  bool IsUnique = FramePointer != nullptr;
+  if (FramePointer == nullptr)
+    return { Anchors, 0 };
+
   for (Instruction &I : instructions(F)) {
     auto *Store = dyn_cast<StoreInst>(&I);
-    if (Store == nullptr or not IsUnique)
+    if (Store == nullptr)
       continue;
 
     auto *Stored = dyn_cast<LoadInst>(Store->getValueOperand());
@@ -796,11 +793,31 @@ void Outliner::connectResumePoint(OutlinedFunction *Outlined) {
     if (Slot != -0x10 and Slot != -0x18)
       continue;
 
+    // Saved in two different places: neither is to be trusted
     if (Offset.has_value() and *Offset != Slot)
-      IsUnique = false;
+      return { {}, 0 };
     Offset = Slot;
     Anchors.push_back(Store);
   }
+
+  return { Anchors, Offset.value_or(0) };
+}
+
+void Outliner::connectResumePoint(OutlinedFunction *Outlined) {
+  using namespace llvm;
+  using namespace llvm::PatternMatch;
+  using llvm::BasicBlock;
+
+  BasicBlock *Resume = Outlined->ResumeCloned;
+  if (Resume == nullptr)
+    return;
+
+  Function *F = Outlined->Function.get();
+  GlobalVariable *StackPointer = Globals.spReg();
+  GlobalVariable *FramePointer = M.getGlobalVariable("_ebp", true);
+  auto &&[Anchors, SlotOffset] = stackPointerSaves(*F);
+  std::optional<int64_t> Offset = SlotOffset;
+  bool IsUnique = true;
 
   if (not IsUnique or Anchors.empty()) {
     // Nothing leads to the code the function would be resumed at: it goes

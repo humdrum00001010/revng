@@ -274,6 +274,16 @@ public:
   analyzeElidedCleanups(const MetaAddress &Entry,
                         std::map<MetaAddress, uint64_t> &Found);
 
+  /// \return whether the function at \p Entry saves its stack pointer in its
+  ///         frame where the code that handles exceptions restores it from:
+  ///         only such a function can be resumed somewhere
+  bool savesStackPointer(const MetaAddress &Entry) {
+    OutlinedFunction Outlined = outline(Entry);
+    if (Outlined.Function == nullptr)
+      return false;
+    return not Outliner.stackPointerSaves(*Outlined.Function).first.empty();
+  }
+
   /// Analyze the function to see whether what the model has just been made
   /// to say about it holds. If it does not, the function can come out with a
   /// path that leads nowhere, which is an error anywhere else: here the block

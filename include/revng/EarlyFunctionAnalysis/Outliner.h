@@ -139,6 +139,13 @@ public:
   OutlinedFunction outline(const MetaAddress &EntryAddress,
                            CallHandler *TheCallHandler);
 
+  /// \return the instructions of \p F, an outlined function, that save the
+  ///         stack pointer in the frame where the code that handles
+  ///         exceptions restores it from, if they all save it in the same
+  ///         place, and where that is from the frame pointer
+  std::pair<llvm::SmallVector<llvm::StoreInst *, 2>, int64_t>
+  stackPointerSaves(llvm::Function &F) const;
+
 private:
   static TemporaryOpaqueFunction initializeUnexpectedPCMarker(llvm::Module &M) {
     return { llvm::FunctionType::get(llvm::Type::getVoidTy(M.getContext()),

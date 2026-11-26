@@ -145,6 +145,10 @@ private:
   CallGraph ApproximateCallGraph;
   BasicBlockToNodeMap BasicBlockNodeMap;
 
+  /// Whether each function that has been looked at saves its stack pointer
+  /// in its frame, see CFGAnalyzer::savesStackPointer
+  std::map<MetaAddress, bool> SavesStackPointer;
+
 public:
   DetectABI(llvm::Module &M,
             RootFunction &Root,
@@ -207,6 +211,11 @@ public:
   /// them and their call sites, as every later step does.
   void attachResumeBlocks();
 
+  /// Offer to the functions found before them the functions that were made
+  /// since \p Before was taken and that do not leave as functions do. To be
+  /// called as attachResumeBlocks.
+  void reattachFunctions(const std::set<MetaAddress> &Before);
+
   /// Where a function has something left unexplained, see whether a caller
   /// that left out the code that removes the arguments of a call explains
   /// it, and say so at that call site. To be called as attachResumeBlocks.
@@ -217,6 +226,8 @@ private:
   void preliminaryFunctionAnalysis();
 
   bool tryToAttach(model::Function &Function, const MetaAddress &Address);
+  bool offer(const MetaAddress &Candidate,
+             const std::map<MetaAddress, MetaAddress> &Owners);
   void analyzeABI();
   Changes analyzeFunctionABI(const model::Function &Function,
                              OutlinedFunction &OutlinedFunction,
@@ -345,6 +356,14 @@ void DetectABI::computeApproximateCallGraph() {
   }
 }
 
+/// The code at \p Entry is what another function is resumed at: forget the
+/// function that was made of it. (A function of its own: what is dropped can
+/// be watched from a debugger.)
+[[gnu::noinline]] static void
+dropFunctionNowPartOfAnother(model::Binary &Binary, const MetaAddress &Entry) {
+  Binary.Functions().erase(Entry);
+}
+
 void DetectABI::inferElidedCleanups() {
   for (model::Function &Function : Binary->Functions()) {
     if (Function.Prototype().isEmpty())
@@ -447,19 +466,89 @@ void DetectABI::attachResumeBlocks() {
     }
   }
 
-  // Code that follows a block of a function, with no block of another one
-  // in between, is offered to that function: whether it is its own is for
-  // tryToAttach to say
-  for (const MetaAddress &Candidate : Candidates) {
-    auto Above = Owners.upper_bound(Candidate);
-    if (Above == Owners.begin())
-      continue;
-    auto Below = std::prev(Above);
-    if (Below->first == Candidate or Below->second.isInvalid())
+  for (const MetaAddress &Candidate : Candidates)
+    offer(Candidate, Owners);
+}
+
+bool DetectABI::offer(const MetaAddress &Candidate,
+                      const std::map<MetaAddress, MetaAddress> &Owners) {
+  // Code that follows the blocks of a function is offered to that function:
+  // whether it is its own is for tryToAttach to say. Between the function and
+  // the code there can be the handlers the function is resumed from, which
+  // are functions of their own: so the few functions before it are tried in
+  // turn, the nearest first.
+  constexpr unsigned MostOwners = 4;
+  llvm::SmallVector<MetaAddress, MostOwners> Tried;
+  auto It = Owners.upper_bound(Candidate);
+  while (It != Owners.begin() and Tried.size() < MostOwners) {
+    --It;
+    const MetaAddress &Owner = It->second;
+    if (It->first == Candidate or Owner.isInvalid() or Owner == Candidate
+        or llvm::is_contained(Tried, Owner))
       continue;
 
-    tryToAttach(Binary->Functions().at(Below->second), Candidate);
+    Tried.push_back(Owner);
+
+    // Only a function that saves its stack pointer for whoever resumes it
+    // can be resumed: looking for that is much cheaper than trying
+    auto [SavesIt, IsNew] = SavesStackPointer.try_emplace(Owner, false);
+    if (IsNew)
+      SavesIt->second = Analyzer.savesStackPointer(Owner);
+    if (not SavesIt->second)
+      continue;
+
+    if (tryToAttach(Binary->Functions().at(Owner), Candidate))
+      return true;
   }
+
+  return false;
+}
+
+void DetectABI::reattachFunctions(const std::set<MetaAddress> &Before) {
+  // A function made from code nothing jumps to, that does not leave as a
+  // function does, may be what a function that was found at the same time is
+  // resumed at: the first time around its function was not there to be
+  // offered it. If the function takes it now, it is not a function.
+  auto LeavesProperly = [this](const model::Function &Function) {
+    if (not Function.Attributes().empty())
+      return false;
+
+    bool Returns = false;
+    for (const efa::BasicBlock &Block :
+         FMC.getControlFlowGraph(Function.Entry()).Blocks()) {
+      for (const auto &Edge : Block.Successors()) {
+        using namespace efa::FunctionEdgeType;
+        if (Edge->Type() == Return)
+          Returns = true;
+        else if (Edge->Type() != DirectBranch and Edge->Type() != FunctionCall)
+          return false;
+      }
+    }
+    return Returns;
+  };
+
+  std::vector<MetaAddress> Candidates;
+  std::map<MetaAddress, MetaAddress> Owners;
+  for (const model::Function &Function : Binary->Functions()) {
+    if (not Before.contains(Function.Entry())
+        and not LeavesProperly(Function)) {
+      Candidates.push_back(Function.Entry());
+      continue;
+    }
+
+    for (const efa::BasicBlock &Block :
+         FMC.getControlFlowGraph(Function.Entry()).Blocks()) {
+      if (Block.ID().isInlined())
+        continue;
+      auto [It, IsNew] = Owners.emplace(Block.ID().start(), Function.Entry());
+      if (not IsNew and It->second != Function.Entry())
+        It->second = MetaAddress::invalid();
+    }
+  }
+
+  for (const MetaAddress &Candidate : Candidates)
+    if (offer(Candidate, Owners))
+      dropFunctionNowPartOfAnother(*Binary, Candidate);
 }
 
 bool DetectABI::tryToAttach(model::Function &Function,
@@ -474,10 +563,27 @@ bool DetectABI::tryToAttach(model::Function &Function,
   FunctionSummary New = Analyzer.tryOut(Entry);
 
   // The function has to be what it was, plus code that leads back into it
-  // or returns as it does
+  // or returns as it does: every block it had leaves it as it did (a return
+  // that removes another amount from the stack would turn the returns of the
+  // function into something else), and it removes what it removed
+  auto ExitsOf = [](const efa::BasicBlock &Block) {
+    llvm::SmallVector<efa::FunctionEdgeType::Values, 2> Result;
+    for (const auto &Edge : Block.Successors())
+      if (Edge->Type() != efa::FunctionEdgeType::DirectBranch)
+        Result.push_back(Edge->Type());
+    llvm::sort(Result);
+    return Result;
+  };
+
   bool IsFine = New.CFG.contains(BasicBlockID(Address));
-  for (const efa::BasicBlock &Block : Old)
-    IsFine = IsFine and New.CFG.contains(Block.ID());
+  for (const efa::BasicBlock &Block : Old) {
+    auto It = New.CFG.find(Block.ID());
+    IsFine = IsFine and It != New.CFG.end() and ExitsOf(*It) == ExitsOf(Block);
+  }
+
+  uint64_t OldFSO = abi::FunctionType::finalStackOffset(*Function.prototype());
+  IsFine = IsFine and New.ElectedFSO.has_value()
+           and uint64_t(*New.ElectedFSO) == OldFSO;
 
   for (const efa::BasicBlock &Block : New.CFG) {
     if (Old.contains(Block.ID()))
@@ -1567,6 +1673,19 @@ Changes DetectABI::runAnalyses(MetaAddress EntryAddress,
   return Changes;
 }
 
+static void reattachFunctions(Module &M,
+                              RootFunction &Root,
+                              const CSVGlobals &Globals,
+                              ControlFlowGraphCache &FMC,
+                              TupleTree<model::Binary> &Binary,
+                              const std::set<MetaAddress> &Before) {
+  using FSOracle = FunctionSummaryOracle;
+  FSOracle Oracle = FSOracle::importFullPrototypes(M, Globals, *Binary);
+  CFGAnalyzer Analyzer(M, Root, Globals, Binary, Oracle);
+  DetectABI Attacher(M, Root, Globals, FMC, Binary, Oracle, Analyzer);
+  Attacher.reattachFunctions(Before);
+}
+
 /// \p Entry is the address of data, not the entry of a function: forget the
 /// function that was made of it. (A function of its own: what is dropped can
 /// be watched from a debugger.)
@@ -1673,6 +1792,10 @@ llvm::Error DetectABI::run(Model &Model,
       NotFunctions.push_back(Function.Entry());
   for (const MetaAddress &Entry : NotFunctions)
     efa::dropFunctionAtDataAddress(Binary, Entry);
+
+  // What is left of them and does not leave as a function does may be code
+  // that one of the others is resumed at
+  efa::reattachFunctions(Module, Root, Globals, FMC, TupleModel, Before);
 
   return llvm::Error::success();
 }
