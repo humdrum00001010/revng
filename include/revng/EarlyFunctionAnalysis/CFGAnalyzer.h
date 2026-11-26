@@ -79,6 +79,11 @@ private:
   /// outlining
   llvm::SmallVectorImpl<UnknownCall> *UnknownCalls = nullptr;
 
+  /// For each call to something known, by the block of the call: what the
+  /// block pushes before it and what the callee is known to leave the stack
+  /// pointer at
+  std::map<MetaAddress, std::pair<uint64_t, int64_t>> *KnownCalls = nullptr;
+
   /// The registers the callees met while outlining clobber
   CSVSet *CalleeClobbered = nullptr;
 
@@ -100,6 +105,8 @@ public:
                  const std::map<MetaAddress, int64_t> *CallSiteFSO,
                  const std::map<MetaAddress, unsigned> *SymbolicSites,
                  llvm::SmallVectorImpl<UnknownCall> *UnknownCalls,
+                 std::map<MetaAddress, std::pair<uint64_t, int64_t>>
+                   *KnownCalls,
                  CSVSet *CalleeClobbered,
                  const CSVSet *CalleeSaved,
                  MetaAddress Caller);
@@ -173,6 +180,14 @@ private:
   /// of the binary
   llvm::SmallVector<UnknownCall, 4> UnknownCalls;
 
+  /// The calls of the function being analyzed to something known
+  std::map<MetaAddress, std::pair<uint64_t, int64_t>> KnownCalls;
+
+  /// The call sites where the function says what a group of callees removes
+  /// from the stack together, but not how much each: what is assumed there is
+  /// one of the possible answers
+  std::set<MetaAddress> AmbiguousSites;
+
   /// The registers the callees of the function outlined last clobber
   CSVSet CalleeClobbered;
 
@@ -206,6 +221,12 @@ public:
 
   /// \return the final stack offset found for the callee of the call in the
   ///         block at \p CallerBlock, if one has been
+  /// \return whether what the callee of \p CallerBlock removes is one of
+  ///         several answers the function allows
+  bool isCallSiteAmbiguous(const MetaAddress &CallerBlock) const {
+    return AmbiguousSites.contains(CallerBlock);
+  }
+
   std::optional<int64_t>
   callSiteFinalStackOffset(const MetaAddress &CallerBlock) const {
     auto It = CallSiteFSO.find(CallerBlock);
@@ -223,8 +244,13 @@ private:
 
   /// \return for each of the \p Unknowns of SymbolicSites, what the paths of
   ///         the function that join require it to be, if they require it
+  /// \p Likeliest is what each unknown is taken to be if the function does
+  /// not say; those that are only known together with others are changed to
+  /// agree with what the function says, and \p IsAmbiguous is set for them
   std::vector<std::optional<int64_t>>
-  solveCallEffects(const MetaAddress &Entry, unsigned Unknowns);
+  solveCallEffects(const MetaAddress &Entry,
+                   std::vector<int64_t> &Likeliest,
+                   std::vector<bool> &IsAmbiguous);
 
 private:
   static llvm::FunctionType *createCallMarkerType(llvm::Module &M);

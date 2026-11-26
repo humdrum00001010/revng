@@ -2,7 +2,11 @@
 // This file is distributed under the MIT License. See LICENSE.md for details.
 //
 
+#include <map>
+#include <string>
+
 #include "revng/CliftPipes/EmitCAsSingleFile.h"
+#include "revng/Model/NameBuilder.h"
 #include "revng/PTML/CTokenEmitter.h"
 #include "revng/PTML/Constants.h"
 #include "revng/PTML/PTMLEmitter.h"
@@ -52,8 +56,39 @@ void EmitCAsSingleFile::run() {
   ptml::PTMLTagEmitter Document = Root.initializeOpenTag(ptml::tags::Div);
   Document.finalizeOpenTag();
 
+  // A function with a broken return is, as the model puts it, not a function
+  // at all: it leaves the stack pointer where no function does, so its code
+  // only makes sense in its callers, which all have it. On its own it has no
+  // body to show, unless a call to it is left somewhere.
+  std::map<ObjectID, std::string> Fragments;
+  {
+    model::CNameBuilder NameBuilder(Binary);
+    using model::FunctionAttribute::HasOneBrokenReturn;
+    for (const model::Function &Function : Binary.Functions())
+      if (Function.Attributes().contains(HasOneBrokenReturn))
+        Fragments.emplace(ObjectID(Function.Entry()),
+                          NameBuilder.name(Function));
+  }
+
+  auto IsCalled = [this](const ObjectID &Fragment, llvm::StringRef Name) {
+    for (const auto &Object : Input.objects())
+      if (Object != Fragment
+          and Input.getMemoryBuffer(Object)->getBuffer().contains(Name))
+        return true;
+    return false;
+  };
+
   *Out << Header << '\n';
   for (const auto &Object : Input.objects()) {
+    auto It = Fragments.find(Object);
+    if (It != Fragments.end() and not IsCalled(Object, It->second)) {
+      *Out << "/* " << It->second
+           << " is not a function: it returns leaving the stack as its caller"
+              " does not expect.\n   Its code is part of each of its callers."
+              " */\n\n";
+      continue;
+    }
+
     auto Buffer = Input.getMemoryBuffer(Object);
     *Out << Buffer->getBuffer() << "\n";
   }

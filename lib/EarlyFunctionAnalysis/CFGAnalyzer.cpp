@@ -15,6 +15,7 @@
 #include "llvm/CodeGen/UnreachableBlockElim.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/CommandLine.h"
@@ -205,11 +206,13 @@ OutlinedFunction CFGAnalyzer::outline(const MetaAddress &Entry) {
                             &CallSiteFSO,
                             &SymbolicSites,
                             &UnknownCalls,
+                            &KnownCalls,
                             &CalleeClobbered,
                             &CalleeSaved,
                             Entry);
 
   UnknownCalls.clear();
+  KnownCalls.clear();
   CalleeClobbered.clear();
   if (CalleeSaved.empty())
     for (llvm::GlobalVariable *CSV : ABICSVs)
@@ -722,6 +725,97 @@ public:
   }
 };
 
+/// The helper that probes the stack before a large frame is allocated
+/// computes the new stack pointer as "the stack pointer minus the size or,
+/// if that wraps around, zero", so that probing from there faults. Where the
+/// function goes on, the frame did fit: the difference is the stack pointer,
+/// and what comes after has a known height again.
+class AssumeStackAllocationFitsPass
+  : public llvm::PassInfoMixin<AssumeStackAllocationFitsPass> {
+private:
+  llvm::GlobalVariable *StackPointer = nullptr;
+
+public:
+  AssumeStackAllocationFitsPass(llvm::GlobalVariable *StackPointer) :
+    StackPointer(StackPointer) {}
+
+  llvm::PreservedAnalyses run(llvm::Function &F,
+                              llvm::FunctionAnalysisManager &) {
+    using namespace llvm;
+    using namespace llvm::PatternMatch;
+
+    SmallVector<std::pair<Instruction *, Value *>, 4> ToReplace;
+    for (Instruction &I : instructions(F)) {
+      Value *From = nullptr;
+      Value *Size = nullptr;
+      Value *Difference = nullptr;
+      ICmpInst::Predicate Predicate;
+
+      // Either as a saturating subtraction or as the select it comes from
+      bool IsSaturating = match(&I,
+                                m_Intrinsic<Intrinsic::usub_sat>(m_Value(From),
+                                                                 m_Value(Size)));
+      bool IsSelect = match(&I,
+                            m_Select(m_ICmp(Predicate,
+                                            m_Value(From),
+                                            m_Value(Size)),
+                                     m_Zero(),
+                                     m_Value(Difference)))
+                      and Predicate == ICmpInst::ICMP_ULT
+                      and match(Difference,
+                                m_Sub(m_Specific(From), m_Specific(Size)));
+      if (not IsSelect) {
+        IsSelect = match(&I,
+                         m_Select(m_ICmp(Predicate,
+                                         m_Value(From),
+                                         m_Value(Size)),
+                                  m_Value(Difference),
+                                  m_Zero()))
+                   and Predicate == ICmpInst::ICMP_UGE
+                   and match(Difference,
+                             m_Sub(m_Specific(From), m_Specific(Size)));
+      }
+
+      if ((not IsSaturating and not IsSelect) or not isStackAddress(From))
+        continue;
+
+      if (IsSaturating)
+        Difference = BinaryOperator::CreateSub(From, Size, "", &I);
+      ToReplace.emplace_back(&I, Difference);
+    }
+
+    for (auto &[Old, New] : ToReplace) {
+      Old->replaceAllUsesWith(New);
+      Old->eraseFromParent();
+    }
+
+    return ToReplace.empty() ? PreservedAnalyses::all() :
+                               PreservedAnalyses::none();
+  }
+
+private:
+  /// \return whether \p V is the stack pointer the function is entered with,
+  ///         or what a call left of it, plus a constant
+  bool isStackAddress(llvm::Value *V) const {
+    using namespace llvm;
+    using namespace llvm::PatternMatch;
+
+    for (unsigned Depth = 0; Depth < 16; ++Depth) {
+      Value *Base = nullptr;
+      if (match(V, m_Add(m_Value(Base), m_ConstantInt()))
+          or match(V, m_Sub(m_Value(Base), m_ConstantInt()))) {
+        V = Base;
+        continue;
+      }
+
+      auto *Load = dyn_cast<LoadInst>(V);
+      return Load != nullptr and Load->getPointerOperand() == StackPointer;
+    }
+
+    return false;
+  }
+};
+
 } // namespace
 
 void CFGAnalyzer::runOptimizationPipeline(llvm::Function *F) {
@@ -764,6 +858,7 @@ void CFGAnalyzer::runOptimizationPipeline(llvm::Function *F) {
 
     FPM.addPass(UnreachableBlockElimPass());
     FPM.addPass(InstCombinePass());
+    FPM.addPass(AssumeStackAllocationFitsPass(Globals.spReg()));
     FPM.addPass(EarlyCSEPass(true));
     FPM.addPass(SimplifyCFGPass());
     FPM.addPass(MergedLoadStoreMotionPass());
@@ -1393,8 +1488,12 @@ public:
     }
   }
 
-  /// \return for each callee, the amount the equations leave no choice about
-  std::vector<std::optional<int64_t>> solve() {
+  /// \return for each callee, the amount the equations leave no choice about.
+  ///         Where they only say what some callees amount to together,
+  ///         \p Likeliest, what each is taken to be otherwise, is made to
+  ///         agree with them, and \p IsAmbiguous is set for those callees.
+  std::vector<std::optional<int64_t>>
+  solve(std::vector<int64_t> &Likeliest, std::vector<bool> &IsAmbiguous) {
     struct Row {
       Sum Equation;
       unsigned Pivot = 0;
@@ -1429,12 +1528,25 @@ public:
     std::vector<std::optional<int64_t>> Result(Callees);
     for (const Row &Row : Rows) {
       const Sum &Equation = Row.Equation;
-      if (Row.Pivot >= Callees or not Equation.IsValid
-          or Equation.Terms.size() != 1)
+      if (Row.Pivot >= Callees or not Equation.IsValid)
         continue;
-      int64_t Coefficient = Equation.Terms.begin()->second;
-      if (Equation.Constant % Coefficient == 0)
-        Result[Row.Pivot] = -Equation.Constant / Coefficient;
+
+      // The rows of the callees have no other unknowns: those went first
+      int64_t Coefficient = Equation.Terms.find(Row.Pivot)->second;
+      int64_t Rest = Equation.Constant;
+      for (const auto &[Unknown, Other] : Equation.Terms)
+        if (Unknown != Row.Pivot)
+          Rest += Other * Likeliest[Unknown];
+      if (Rest % Coefficient != 0)
+        continue;
+
+      if (Equation.Terms.size() == 1) {
+        Result[Row.Pivot] = -Rest / Coefficient;
+      } else {
+        Likeliest[Row.Pivot] = -Rest / Coefficient;
+        for (const auto &[Unknown, Other] : Equation.Terms)
+          IsAmbiguous[Unknown] = true;
+      }
     }
 
     return Result;
@@ -1518,7 +1630,9 @@ private:
 } // namespace
 
 std::vector<std::optional<int64_t>>
-CFGAnalyzer::solveCallEffects(const MetaAddress &Entry, unsigned Unknowns) {
+CFGAnalyzer::solveCallEffects(const MetaAddress &Entry,
+                              std::vector<int64_t> &Likeliest,
+                              std::vector<bool> &IsAmbiguous) {
   using namespace llvm;
 
   auto &&[OutlinedFunction, CFG] = optimize(Entry);
@@ -1526,7 +1640,7 @@ CFGAnalyzer::solveCallEffects(const MetaAddress &Entry, unsigned Unknowns) {
 
   // The heights the optimizations were left with: those at the calls and at
   // the starts of the blocks, and those the function is left with
-  StackEquations Equations(Unknowns, StackEffect.get());
+  StackEquations Equations(Likeliest.size(), StackEffect.get());
   for (CallBase *Call : callers(StackHeightHook.get()))
     if (Call->getFunction() == F)
       Equations.visit(Call->getArgOperand(1));
@@ -1535,7 +1649,7 @@ CFGAnalyzer::solveCallEffects(const MetaAddress &Entry, unsigned Unknowns) {
     if (Call->getFunction() == F)
       Equations.visit(Call->getArgOperand(StackPointerOffsetIndex));
 
-  return Equations.solve();
+  return Equations.solve(Likeliest, IsAmbiguous);
 }
 
 FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
@@ -1618,6 +1732,19 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
     HasAssumptions = HasAssumptions or CallSiteFSO.contains(Call.Block);
     bool IsFirst = Call.Block == Entry;
     uint64_t Pushed = IsFirst ? Call.PushedAfterSaves : Call.Pushed;
+
+    // What the block pushed is not for this call if the next one, to
+    // something known, removes more than its own block pushes: an argument
+    // of a call is pushed before the call that computes the next one
+    auto BlockIt = Result.CFG.find(BasicBlockID(Call.Block));
+    auto NextIt = KnownCalls.find(BlockIt->End());
+    if (NextIt != KnownCalls.end()) {
+      const auto &[PushedByNext, NextFSO] = NextIt->second;
+      int64_t Missing = NextFSO - *Default - int64_t(PushedByNext);
+      if (Missing > 0)
+        Pushed -= std::min<uint64_t>(Pushed, Missing);
+    }
+
     uint64_t Likeliest = std::min(MaxWords, Pushed / Word);
 
     // The function removes the same wherever it calls itself, and its
@@ -1654,9 +1781,12 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
   // What was assumed when the callees were known less well does not hold
   // anymore: start again
   auto Forget = [this, &Sites]() {
-    for (const UnknownCallSite &Site : Sites)
-      for (const MetaAddress &Block : Site.Blocks)
+    for (const UnknownCallSite &Site : Sites) {
+      for (const MetaAddress &Block : Site.Blocks) {
         CallSiteFSO.erase(Block);
+        AmbiguousSites.erase(Block);
+      }
+    }
   };
   if (HasAssumptions) {
     Forget();
@@ -1675,21 +1805,41 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
   // pushes: arguments are also pushed before a call that computes another.
   {
     constexpr int64_t MostRequiredWords = 64;
-    for (size_t I = 0; I < Sites.size(); ++I)
-      for (const MetaAddress &Block : Sites[I].Blocks)
+    auto WordsOf = [&](int64_t Effect) -> std::optional<uint64_t> {
+      int64_t Extra = Effect - *Default;
+      if (Extra < 0 or Extra % int64_t(Word) != 0
+          or Extra / int64_t(Word) > MostRequiredWords)
+        return std::nullopt;
+      return Extra / Word;
+    };
+
+    std::vector<int64_t> Effects;
+    for (size_t I = 0; I < Sites.size(); ++I) {
+      Effects.push_back(*Default + Sites[I].Likeliest * Word);
+      for (const MetaAddress &Block : Sites[I].Blocks) {
         SymbolicSites[Block] = I;
-    auto Required = solveCallEffects(Entry, Sites.size());
+        AmbiguousSites.erase(Block);
+      }
+    }
+    std::vector<bool> IsAmbiguous(Sites.size(), false);
+    auto Required = solveCallEffects(Entry, Effects, IsAmbiguous);
     SymbolicSites.clear();
 
     for (size_t I = 0; I < Sites.size(); ++I) {
-      if (not Required[I].has_value())
+      std::optional<uint64_t> Words;
+      if (Required[I].has_value())
+        Words = WordsOf(*Required[I]);
+      else if (IsAmbiguous[I])
+        Words = WordsOf(Effects[I]);
+      if (not Words.has_value())
         continue;
-      int64_t Extra = *Required[I] - *Default;
-      if (Extra < 0 or Extra % int64_t(Word) != 0
-          or Extra / int64_t(Word) > MostRequiredWords)
-        continue;
-      Sites[I].Likeliest = Extra / Word;
-      Sites[I].IsRequired = true;
+
+      Sites[I].Likeliest = *Words;
+      Sites[I].Most = std::max(Sites[I].Most, *Words);
+      Sites[I].IsRequired = Required[I].has_value();
+      if (IsAmbiguous[I])
+        for (const MetaAddress &Block : Sites[I].Blocks)
+          AmbiguousSites.insert(Block);
     }
   }
 
@@ -1900,6 +2050,9 @@ CallSummarizer::CallSummarizer(llvm::Module *M,
                                const std::map<MetaAddress, unsigned>
                                  *SymbolicSites,
                                llvm::SmallVectorImpl<UnknownCall> *UnknownCalls,
+                               std::map<MetaAddress,
+                                        std::pair<uint64_t, int64_t>>
+                                 *KnownCalls,
                                CSVSet *CalleeClobbered,
                                const CSVSet *CalleeSaved,
                                MetaAddress Caller) :
@@ -1915,6 +2068,7 @@ CallSummarizer::CallSummarizer(llvm::Module *M,
   CallSiteFSO(CallSiteFSO),
   SymbolicSites(SymbolicSites),
   UnknownCalls(UnknownCalls),
+  KnownCalls(KnownCalls),
   CalleeClobbered(CalleeClobbered),
   CalleeSaved(CalleeSaved),
   Caller(Caller) {
@@ -2103,6 +2257,11 @@ void CallSummarizer::handleCall(MetaAddress CallerBlock,
     auto UnknownIt = SymbolicSites->find(CallerBlock);
     if (UnknownIt != SymbolicSites->end())
       Unknown = UnknownIt->second;
+  } else if (not IsTailCall and FSO.has_value()) {
+    llvm::BasicBlock &Block = *Builder.GetInsertBlock();
+    const Instruction *End = &*Builder.GetInsertPoint();
+    uint64_t Pushed = pushedBeforeCall(Block, End, SPCSV, nullptr);
+    KnownCalls->insert_or_assign(CallerBlock, std::pair(Pushed, *FSO));
   }
 
   // Adjust back the stack pointer
