@@ -2754,11 +2754,14 @@ FunctionSummary CFGAnalyzer::searchCalleeEffects(const MetaAddress &Entry) {
     if (auto It = Reserved.find(Call.Block); It != Reserved.end())
       Pushed -= std::min<uint64_t>(Pushed, It->second);
 
-    uint64_t Likeliest = std::min(MaxWords, Pushed / Word);
+    // (All of it is the likeliest, however much: only the other amounts
+    // that are tried are limited)
+    constexpr uint64_t MostLikelyWords = 64;
+    uint64_t Likeliest = std::min(MostLikelyWords, Pushed / Word);
 
     // What the caller removes later, the callee most likely leaves: but the
     // callee can still be tried with what its block pushed
-    uint64_t MostLikely = Likeliest;
+    uint64_t MostLikely = std::min(MaxWords, Likeliest);
     if (LeftToCaller.contains(Call.Block))
       Likeliest = 0;
 
@@ -3404,6 +3407,11 @@ CallSummarizer::CallSummarizer(llvm::Module *M,
 ///         \p Saved is not null, what precedes the push of one of those
 ///         registers that still has the value it had at the start of \p BB
 ///         does not count: the block is the first of a function, saving it.
+///
+/// Room made by lowering the stack pointer by a few words, after something
+/// was pushed, is pushed too: an argument passed by value that is larger
+/// than a word is written into such room. (Before anything is pushed it can
+/// be the frame: the code after a helper that sets the frame up starts so.)
 static uint64_t pushedBeforeCall(llvm::BasicBlock &BB,
                                  const llvm::Instruction *End,
                                  const llvm::GlobalVariable *SPCSV,
@@ -3461,8 +3469,13 @@ static uint64_t pushedBeforeCall(llvm::BasicBlock &BB,
         Delta = IsAdd ? Amount->getSExtValue() : -Amount->getSExtValue();
     }
 
+    constexpr int64_t MostRoomWords = 64;
+    bool IsRoom = Delta.has_value() and *Delta < -Word and *Delta % Word == 0
+                  and *Delta >= -MostRoomWords * Word and Pushed > 0;
     if (Delta == -Word)
       Pushed += Word;
+    else if (IsRoom)
+      Pushed += -*Delta;
     else if (Delta.has_value() and *Delta >= 0)
       Pushed = std::max<int64_t>(0, Pushed - *Delta);
     else
