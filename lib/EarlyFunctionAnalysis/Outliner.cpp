@@ -2,8 +2,10 @@
 // This file is distributed under the MIT License. See LICENSE.md for details.
 //
 
+#include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/ADT/SCCIterator.h"
 #include "llvm/IR/GlobalValue.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
@@ -17,6 +19,7 @@
 #include "revng/EarlyFunctionAnalysis/CallHandler.h"
 #include "revng/EarlyFunctionAnalysis/Outliner.h"
 #include "revng/Lift/Helpers.h"
+#include "revng/Model/FunctionTags.h"
 #include "revng/Model/IRHelpers.h"
 #include "revng/Support/BlockType.h"
 #include "revng/Support/EmitAbort.h"
@@ -423,6 +426,45 @@ Outliner::outlineFunctionInternal(CallHandler *TheCallHandler,
   // Remove the only user (call to the outlined function) in `root`
   auto It = OutlinedFunction.Function->user_begin();
   cast<Instruction>(*It)->getParent()->eraseFromParent();
+
+  // The code does not go on after it raises an exception: what the lifter
+  // emits after such a call, a jump to wherever the program counter is left,
+  // is how the emulator resumes, not something the program does. Without this
+  // a software interrupt is a jump to an unknown place, and the bytes that pad
+  // the code, which are interrupts, lead into whatever follows them.
+  SmallVector<Instruction *, 4> Raising;
+  for (Instruction &I : llvm::instructions(F))
+    if (auto *Call = dyn_cast<CallInst>(&I))
+      if (const Function *Callee = getCalledFunction(Call))
+        if (FunctionTags::Exceptional.isTagOf(Callee))
+          Raising.push_back(Call);
+
+  for (Instruction *Call : Raising) {
+    BasicBlock *BB = Call->getParent();
+    BB->splitBasicBlock(Call->getNextNode());
+    Instruction *OldTerminator = BB->getTerminator();
+    new UnreachableInst(M.getContext(), BB);
+    eraseFromParent(OldTerminator);
+  }
+
+  if (not Raising.empty()) {
+    // `anypc` and `unexpectedpc` stay: they are looked for later on
+    df_iterator_default_set<BasicBlock *, 32> Reachable;
+    for (BasicBlock *Root : { &F->getEntryBlock(),
+                              OutlinedFunction.AnyPCCloned,
+                              OutlinedFunction.UnexpectedPCCloned }) {
+      if (Root == nullptr or Root->getParent() != F)
+        continue;
+      for (BasicBlock *BB : depth_first_ext(Root, Reachable))
+        (void) BB;
+    }
+
+    SmallVector<BasicBlock *, 8> Dead;
+    for (BasicBlock &BB : *F)
+      if (not Reachable.contains(&BB))
+        Dead.push_back(&BB);
+    DeleteDeadBlocks(Dead);
+  }
 
   // Integrate function callee
   for (auto &BB : *OutlinedFunction.Function) {
