@@ -202,9 +202,17 @@ FunctionSummaryOracle::getExactCallSite(MetaAddress Entry,
       AttributesSet Attributes;
       for (auto &ToCopy : CallSite->Attributes())
         Attributes.insert(ToCopy);
+      FunctionSummary Summary = Importer.prototype(Attributes,
+                                                   CallSite->prototype());
+
+      // What the caller leaves on the stack without ever removing it is
+      // taken as removed
+      if (Summary.ElectedFSO.has_value())
+        *Summary.ElectedFSO += CallSite->ElidedStackCleanup();
+
       registerCallSite(Function.Entry(),
                        BasicBlockID(CallSite->CallerBlockAddress()),
-                       Importer.prototype(Attributes, CallSite->prototype()),
+                       std::move(Summary),
                        CallSite->IsTailCall());
     }
   }

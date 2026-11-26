@@ -213,6 +213,7 @@ OutlinedFunction CFGAnalyzer::outline(const MetaAddress &Entry) {
                             &SymbolicSites,
                             &UnknownCalls,
                             &KnownCalls,
+                            &ElidedCleanups,
                             &CalleeClobbered,
                             &CalleeSaved,
                             Entry);
@@ -1910,6 +1911,103 @@ CFGAnalyzer::solveCallEffects(const MetaAddress &Entry,
 }
 
 FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
+  return analyzeCallees(Entry);
+}
+
+std::optional<FunctionSummary>
+CFGAnalyzer::analyzeElidedCleanups(const MetaAddress &Entry,
+                                   std::map<MetaAddress, uint64_t> &Found) {
+  // A caller that pushes the arguments of a call has to remove them, unless
+  // the callee does. The code that removes them can be missing: after a call
+  // that does not return, and where the function sets its stack pointer again
+  // from its frame pointer before the difference matters. The stack is then
+  // one height on that path and another on those it joins, or a register the
+  // function saved comes back from the wrong slot, or the function returns
+  // to something that is not its return address. None of that says which of
+  // the two it is, and one does not have to: taking the arguments as removed
+  // is right if the call returns and harmless if it does not. It is recorded
+  // at the call site, see ElidedStackCleanup in the model.
+  //
+  // This is for when all the callees are known: before that, a callee that
+  // has not been analyzed yet looks like one that removes nothing.
+  const model::Function *Function = Binary->Functions().tryGet(Entry);
+  std::optional<int64_t> Default = Oracle.getDefault().ElectedFSO;
+  if (Function == nullptr or not Default.has_value())
+    return std::nullopt;
+
+  const CSVSet &ByDefault = Oracle.getDefault().ClobberedRegisters;
+  auto RankOf = [this, &ByDefault](const FunctionSummary &Summary) {
+    int64_t Exits = 0;
+    int64_t LongJmps = 0;
+    for (const efa::BasicBlock &Block : Summary.CFG) {
+      for (const auto &Edge : Block.Successors()) {
+        const auto *Call = llvm::dyn_cast<efa::CallEdge>(Edge.get());
+        if (Edge->Type() == efa::FunctionEdgeType::Return
+            or (Call != nullptr and Call->IsTailCall()))
+          ++Exits;
+        else if (Edge->Type() == efa::FunctionEdgeType::LongJmp)
+          ++LongJmps;
+      }
+    }
+
+    int64_t Clobbered = 0;
+    for (llvm::GlobalVariable *CSV : Summary.ClobberedRegisters)
+      if (not ByDefault.contains(CSV) and not CalleeClobbered.contains(CSV))
+        ++Clobbered;
+
+    return std::tuple(Exits, -LongJmps, -Clobbered, -int64_t(UnknownHeights));
+  };
+
+  ElidedCleanups.clear();
+  std::optional<FunctionSummary> Best;
+  FunctionSummary Base = analyzeOnce(Entry);
+  auto BestRank = RankOf(Base);
+  if (std::get<1>(BestRank) == 0 and std::get<2>(BestRank) == 0
+      and std::get<3>(BestRank) == 0)
+    return std::nullopt;
+
+  // What the block of the call pushed, a register it saves first aside
+  llvm::SmallVector<std::pair<MetaAddress, uint64_t>, 4> Candidates;
+  for (const auto &[Block, Known] : KnownCalls) {
+    uint64_t Pushed = Block == Entry ? Known.PushedAfterSaves : Known.Pushed;
+    if (Pushed != 0 and Known.Removed == 0
+        and Known.FinalStackOffset == *Default
+        and Base.CFG.contains(BasicBlockID(Block))
+        and not Function->CallSitePrototypes().contains(Block))
+      Candidates.emplace_back(Block, Pushed);
+  }
+
+  // A dynamic function with a prototype is known too
+  for (const UnknownCall &Call : UnknownCalls) {
+    if (Call.Symbol.empty() or Call.FinalStackOffset != Default)
+      continue;
+    const auto &Imported = Binary->ImportedDynamicFunctions();
+    auto It = Imported.find(Call.Symbol);
+    uint64_t Pushed = Call.Block == Entry ? Call.PushedAfterSaves : Call.Pushed;
+    if (It != Imported.end() and not It->Prototype().isEmpty() and Pushed != 0
+        and Base.CFG.contains(BasicBlockID(Call.Block))
+        and not Function->CallSitePrototypes().contains(Call.Block))
+      Candidates.emplace_back(Call.Block, Pushed);
+  }
+
+  for (const auto &[Block, Pushed] : Candidates) {
+    ElidedCleanups[Block] = Pushed;
+    FunctionSummary Attempt = analyzeOnce(Entry);
+    auto Rank = RankOf(Attempt);
+    if (Rank > BestRank) {
+      BestRank = Rank;
+      Best = std::move(Attempt);
+    } else {
+      ElidedCleanups.erase(Block);
+    }
+  }
+
+  Found = std::move(ElidedCleanups);
+  ElidedCleanups.clear();
+  return Best;
+}
+
+FunctionSummary CFGAnalyzer::analyzeCallees(const MetaAddress &Entry) {
   FunctionSummary Result = analyzeOnce(Entry);
 
   // The callee of an indirect call, and a dynamic function without a
@@ -1982,9 +2080,9 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
         ByEnd[It->End()] = &Call;
     }
 
-    for (const auto &[Block, PushedAndFSO] : KnownCalls) {
-      const auto &[PushedByIt, FSO] = PushedAndFSO;
-      int64_t Missing = FSO - *Default - int64_t(PushedByIt);
+    for (const auto &[Block, Known] : KnownCalls) {
+      int64_t Missing = Known.FinalStackOffset - *Default
+                        - int64_t(Known.Pushed);
       MetaAddress At = Block;
       while (Missing > 0) {
         auto It = ByEnd.find(At);
@@ -2060,6 +2158,14 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
   }
 
   AnalysisScore Base = ScoreOf(Result);
+  auto Leave = [this](const AnalysisScore &Score) {
+    Leftover = { Score.Returns,
+                 Score.LongJmps,
+                 Score.Clobbered,
+                 Score.UnknownHeights };
+    HasLeftover = Score.leavesSomethingToExplain();
+  };
+  Leave(Base);
   if (Sites.empty() or not Base.leavesSomethingToExplain())
     return Result;
 
@@ -2077,6 +2183,7 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
     Forget();
     Result = analyzeOnce(Entry);
     Base = ScoreOf(Result);
+    Leave(Base);
     if (not Base.leavesSomethingToExplain())
       return Result;
   }
@@ -2264,6 +2371,7 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
     return Result;
   }
 
+  Leave(BestScore);
   Assume(Current);
   return Best;
 }
@@ -2393,9 +2501,9 @@ CallSummarizer::CallSummarizer(llvm::Module *M,
                                const std::map<MetaAddress, unsigned>
                                  *SymbolicSites,
                                llvm::SmallVectorImpl<UnknownCall> *UnknownCalls,
-                               std::map<MetaAddress,
-                                        std::pair<uint64_t, int64_t>>
-                                 *KnownCalls,
+                               std::map<MetaAddress, KnownCall> *KnownCalls,
+                               const std::map<MetaAddress, uint64_t>
+                                 *ElidedCleanups,
                                CSVSet *CalleeClobbered,
                                const CSVSet *CalleeSaved,
                                MetaAddress Caller) :
@@ -2412,6 +2520,7 @@ CallSummarizer::CallSummarizer(llvm::Module *M,
   SymbolicSites(SymbolicSites),
   UnknownCalls(UnknownCalls),
   KnownCalls(KnownCalls),
+  ElidedCleanups(ElidedCleanups),
   CalleeClobbered(CalleeClobbered),
   CalleeSaved(CalleeSaved),
   Caller(Caller) {
@@ -2580,6 +2689,7 @@ void CallSummarizer::handleCall(MetaAddress CallerBlock,
   if (not IsTailCall and (Callee.isInvalid() or IsRecursive)) {
     UnknownCall &New = UnknownCalls->emplace_back();
     New.Block = CallerBlock;
+    New.FinalStackOffset = MaybeFSO;
     New.IsRecursive = IsRecursive;
     if (not isa<ConstantPointerNull>(SymbolNamePointer))
       New.Symbol = extractFromConstantStringPtr(SymbolNamePointer).str();
@@ -2611,8 +2721,20 @@ void CallSummarizer::handleCall(MetaAddress CallerBlock,
   } else if (not IsTailCall and FSO.has_value()) {
     llvm::BasicBlock &Block = *Builder.GetInsertBlock();
     const Instruction *End = &*Builder.GetInsertPoint();
-    uint64_t Pushed = pushedBeforeCall(Block, End, SPCSV, nullptr);
-    KnownCalls->insert_or_assign(CallerBlock, std::pair(Pushed, *FSO));
+    KnownCall New;
+    New.Pushed = pushedBeforeCall(Block, End, SPCSV, nullptr);
+    New.PushedAfterSaves = pushedBeforeCall(Block, End, SPCSV, CalleeSaved);
+    New.FinalStackOffset = *FSO;
+    New.Removed = removedAfterCall(Block, SPCSV);
+    KnownCalls->insert_or_assign(CallerBlock, New);
+  }
+
+  // What the caller is taken to have removed without code that does it, see
+  // CFGAnalyzer::analyzeElidedCleanups
+  if (not IsTailCall and FSO.has_value()) {
+    auto It = ElidedCleanups->find(CallerBlock);
+    if (It != ElidedCleanups->end())
+      FSO = *FSO + It->second;
   }
 
   // Adjust back the stack pointer

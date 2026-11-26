@@ -207,6 +207,11 @@ public:
   /// them and their call sites, as every later step does.
   void attachResumeBlocks();
 
+  /// Where a function has something left unexplained, see whether a caller
+  /// that left out the code that removes the arguments of a call explains
+  /// it, and say so at that call site. To be called as attachResumeBlocks.
+  void inferElidedCleanups();
+
 private:
   void computeApproximateCallGraph();
   void preliminaryFunctionAnalysis();
@@ -337,6 +342,86 @@ void DetectABI::computeApproximateCallGraph() {
     raw_fd_ostream OutputCG(CallGraphOutputPath, EC);
     revng_assert(!EC);
     llvm::WriteGraph(OutputCG, &ApproximateCallGraph);
+  }
+}
+
+void DetectABI::inferElidedCleanups() {
+  for (model::Function &Function : Binary->Functions()) {
+    if (Function.Prototype().isEmpty())
+      continue;
+
+    // Only the functions with something left to explain: a jump to nowhere,
+    // or a block where the height of the stack is not known
+    MetaAddress Entry = Function.Entry();
+    bool HasLeftover = false;
+    for (const efa::BasicBlock &Block :
+         FMC.getControlFlowGraph(Entry).Blocks()) {
+      if (not Block.ID().isInlined() and Block.ID().start() != Entry
+          and not Block.HasStackDepth())
+        HasLeftover = true;
+      for (const auto &Edge : Block.Successors())
+        if (Edge->Type() == efa::FunctionEdgeType::LongJmp)
+          HasLeftover = true;
+    }
+    if (not HasLeftover)
+      continue;
+
+    std::map<MetaAddress, uint64_t> Found;
+    auto New = Analyzer.analyzeElidedCleanups(Entry, Found);
+    if (not New.has_value())
+      continue;
+
+    for (const efa::BasicBlock &Block : New->CFG) {
+      if (Block.ID().isInlined())
+        continue;
+      MetaAddress BlockAddress = Block.ID().notInlinedAddress();
+      auto FoundIt = Found.find(BlockAddress);
+      if (FoundIt == Found.end())
+        continue;
+
+      for (const auto &Edge : Block.Successors()) {
+        const auto *CE = llvm::dyn_cast<efa::CallEdge>(Edge.get());
+        if (CE == nullptr)
+          continue;
+
+        // The call site is the callee's, with what the caller left out
+        const model::TypeDefinition *CalleePrototype = nullptr;
+        std::vector<model::FunctionAttribute::Values> Attributes;
+        if (CE->Destination().isValid()) {
+          MetaAddress Callee = CE->Destination().notInlinedAddress();
+          const auto &Local = Binary->Functions().at(Callee);
+          CalleePrototype = Local.prototype();
+          for (auto Attribute : Local.Attributes())
+            Attributes.push_back(Attribute);
+        } else if (not CE->DynamicFunction().empty()) {
+          const auto &Imported = Binary->ImportedDynamicFunctions()
+                                   .at(CE->DynamicFunction());
+          CalleePrototype = Imported.prototype();
+          for (auto Attribute : Imported.Attributes())
+            Attributes.push_back(Attribute);
+        }
+
+        if (CalleePrototype == nullptr
+            or Function.CallSitePrototypes().contains(BlockAddress))
+          continue;
+
+        auto It = Function.CallSitePrototypes()
+                    .emplace(BlockAddress,
+                             Binary->makeType(CalleePrototype->key()),
+                             false)
+                    .first;
+        It->ElidedStackCleanup() = FoundIt->second;
+        for (auto Attribute : Attributes)
+          It->Attributes().insert(Attribute);
+      }
+    }
+
+    TupleTree<efa::FunctionBundle> Bundle;
+    efa::ControlFlowGraph &Main = Bundle->MainFunction();
+    Main.Entry() = Entry;
+    Main.Blocks() = New->CFG;
+    Main.simplify(*Binary);
+    FMC.set(std::move(Bundle));
   }
 }
 
@@ -1503,8 +1588,15 @@ static void runDetectABI(Module &M,
     ABIDetector.run();
   }
 
-  // Give the functions the code they are resumed at, with what the model
-  // now says about them
+  // With what the model now says about the functions: find the clean-ups
+  // their callers left out, then give them the code they are resumed at
+  {
+    FSOracle Oracle = FSOracle::importFullPrototypes(M, Globals, *Binary);
+    CFGAnalyzer Analyzer(M, Root, Globals, Binary, Oracle);
+    DetectABI Cleaner(M, Root, Globals, FMC, Binary, Oracle, Analyzer);
+    Cleaner.inferElidedCleanups();
+  }
+
   FSOracle Oracle = FSOracle::importFullPrototypes(M, Globals, *Binary);
   CFGAnalyzer Analyzer(M, Root, Globals, Binary, Oracle);
   DetectABI Attacher(M, Root, Globals, FMC, Binary, Oracle, Analyzer);

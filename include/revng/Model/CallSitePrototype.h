@@ -23,6 +23,7 @@ public:
     generated::CallSitePrototype(CallerAddress,
                                  std::move(Prototype),
                                  IsTailCall,
+                                 0,
                                  {}) {}
 
 public:

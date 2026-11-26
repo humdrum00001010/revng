@@ -1135,6 +1135,16 @@ definitions:
         doc: Whether this call site is a tail call or not.
         type: bool
 
+      - name: ElidedStackCleanup
+        doc: |-
+          The size of the arguments the caller pushes for this call that
+          neither it nor the callee removes from the stack: the code that
+          would remove them is not there, because the call does not return or
+          because the function sets its stack pointer again in another way
+          before it matters. From this call on the stack is as high as if
+          they had been removed.
+        type: uint64_t
+
       - name: Attributes
         doc: Attributes for this call site.
         sequence:
