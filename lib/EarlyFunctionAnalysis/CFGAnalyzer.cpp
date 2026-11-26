@@ -1579,6 +1579,27 @@ struct AnalysisScore {
   }
 };
 
+/// The height of the stack at a call of the function at \p Entry is not a
+/// constant: \p Hook has it, and \p Top is the top of the frame there, if a
+/// block allocated at run time is all that stands in the way. (A function of
+/// its own: what the height is made of, and whether it was understood, can
+/// be watched from a debugger.)
+[[gnu::noinline]] static void
+noteHeightAtCall(const MetaAddress &Entry,
+                 const llvm::CallBase *Hook,
+                 const std::optional<int64_t> &Top) {
+  if (not Log.isEnabled())
+    return;
+  const llvm::Value *Height = Hook->getArgOperand(1);
+  Log << "Height at a call of " << Entry.toString() << ": "
+      << dumpToString(Height) << " is ";
+  if (Top.has_value())
+    Log << *Top << " without the blocks";
+  else
+    Log << "not known";
+  Log << DoLog;
+}
+
 /// The search for what the callees of the function at \p Entry remove is
 /// over: what it started from, the best it found and whether that is kept.
 /// (A function of its own: how a search ended can be watched from a
@@ -3084,19 +3105,17 @@ CFGAnalyzer::optimize(const MetaAddress &Entry) {
   resolveCallees(F);
 
   // The stack pointer the function is entered with: what is read from the
-  // register at the start, before anything is written to it
-  Value *EntryStackPointer = nullptr;
+  // register at the start, before anything is written to it. (It can be read
+  // more than once there: as a number, and as a pointer for what the
+  // function reads from its stack.)
+  SmallVector<Value *, 2> EntryStackPointers;
   for (Instruction &I : F->getEntryBlock()) {
     if (auto *Store = dyn_cast<StoreInst>(&I)) {
       if (skipCasts(Store->getPointerOperand()) == Globals.spReg())
         break;
     } else if (auto *Load = dyn_cast<LoadInst>(&I)) {
-      if (skipCasts(Load->getPointerOperand()) != Globals.spReg())
-        continue;
-      if (EntryStackPointer == nullptr)
-        EntryStackPointer = Load;
-      else
-        Load->replaceAllUsesWith(EntryStackPointer);
+      if (skipCasts(Load->getPointerOperand()) == Globals.spReg())
+        EntryStackPointers.push_back(Load);
     }
   }
 
@@ -3112,8 +3131,18 @@ CFGAnalyzer::optimize(const MetaAddress &Entry) {
   // callees there. So at a call the height is the top of the frame, see
   // StackTops. At the start of a block the height recorded is where the
   // stack pointer is (the isolation sets it from that), block included.
+  //
+  // The height is the stack pointer at the call minus the one at the entry.
+  // It is looked at in the two forms the optimizations leave it in: that
+  // difference, where the entry value is one of EntryStackPointers under the
+  // casts between pointers and numbers; and, where the entry value has
+  // cancelled out, a number the blocks were carved out of.
+  constexpr bool ThroughCasts = true;
   SameOnAllPaths Same;
-  StackTops Tops(EntryStackPointer);
+  StackTops Tops(nullptr, ThroughCasts);
+  for (Value *EntryStackPointer : EntryStackPointers)
+    Tops.addEntry(EntryStackPointer);
+  StackTops Numbers = StackTops::ofHeights(ThroughCasts);
   for (CallBase *Call : callers(StackHeightHook.get())) {
     if (Call->getFunction() != F)
       continue;
@@ -3123,13 +3152,20 @@ CFGAnalyzer::optimize(const MetaAddress &Entry) {
     // (Not while what the callees remove is a symbol: the heights are then
     // sums for the equations, which take them as they are)
     Value *Height = Call->getArgOperand(1);
-    if (EntryStackPointer == nullptr or not SymbolicSites.empty()
-        or isa<ConstantInt>(Height)
+    if (not SymbolicSites.empty() or isa<ConstantInt>(Height)
         or getLimitedValue(Call->getArgOperand(2)) != StackHeightAtCall)
       continue;
 
-    if (std::optional<int64_t> Top = Tops.heightOf(Height))
-      Call->setArgOperand(1, ConstantInt::getSigned(Height->getType(), *Top));
+    std::optional<int64_t> Top = Tops.heightOf(Height);
+    if (not Top.has_value())
+      Top = Numbers.ofHeight(Height);
+    noteHeightAtCall(Entry, Call, Top);
+    if (Top.has_value()) {
+      // (as a number of the width of the stack pointer)
+      unsigned Bits = Height->getType()->getIntegerBitWidth();
+      int64_t Narrow = SignExtend64(static_cast<uint64_t>(*Top), Bits);
+      Call->setArgOperand(1, ConstantInt::getSigned(Height->getType(), Narrow));
+    }
   }
   for (CallBase *Call :
        callers(OutlinedFunction.IndirectBranchInfoMarker.get()))
