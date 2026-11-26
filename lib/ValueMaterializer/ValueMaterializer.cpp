@@ -259,8 +259,7 @@ void ValueMaterializer::computeSizeLowerBound() {
         auto BoundOf = [Node](DataFlowGraph::Node *Successor) {
           uint64_t Bound = Successor->SizeLowerBound;
           auto It = Node->IncomingRanges.find(Successor->Value);
-          if (It != Node->IncomingRanges.end()
-              and It->second.size().ult(Bound))
+          if (It != Node->IncomingRanges.end() and It->second.size().ult(Bound))
             Bound = It->second.size().getLimitedValue();
           return Bound;
         };

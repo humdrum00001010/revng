@@ -70,7 +70,8 @@ inline std::optional<ReadPlace> placeReadFrom(llvm::Value *Target,
     Address += Constant->getZExtValue();
   } else if (auto *Call = dyn_cast<CallBase>(Pointer)) {
     Function *Getter = Call->getCalledFunction();
-    if (Getter == nullptr or not FunctionTags::SegmentGlobalGetter.isTagOf(Getter))
+    if (Getter == nullptr
+        or not FunctionTags::SegmentGlobalGetter.isTagOf(Getter))
       return std::nullopt;
     StringRef Name = Getter->getName();
     uint64_t Start = 0;

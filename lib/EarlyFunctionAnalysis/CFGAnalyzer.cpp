@@ -3,7 +3,6 @@
 //
 
 #include <fstream>
-
 #include <numeric>
 
 #include "llvm/ADT/DenseMap.h"
@@ -164,9 +163,7 @@ CFGAnalyzer::CFGAnalyzer(llvm::Module &M,
                   "stack_height_hook",
                   &M),
   StackEffect(createStackEffectType(Globals), "stack_effect", &M),
-  CallTargetHook(createCallTargetMarkerType(Globals),
-                 "call_target_hook",
-                 &M),
+  CallTargetHook(createCallTargetMarkerType(Globals), "call_target_hook", &M),
   OutlinerState(M),
   Outliner(M, Root, Globals, Oracle, OutlinerState),
   OpaqueBranchConditionsPool(&M, false),
@@ -765,7 +762,7 @@ public:
 
       auto *Load = dyn_cast<LoadInst>(Source);
       if (Load == nullptr or Load->getPointerOperand() != StackPointer
-          or not (-*Mask).isPowerOf2())
+          or not(-*Mask).isPowerOf2())
         continue;
 
       Store->setOperand(0, Load);
@@ -803,9 +800,10 @@ public:
       ICmpInst::Predicate Predicate;
 
       // Either as a saturating subtraction or as the select it comes from
-      bool IsSaturating = match(&I,
-                                m_Intrinsic<Intrinsic::usub_sat>(m_Value(From),
-                                                                 m_Value(Size)));
+      bool
+        IsSaturating = match(&I,
+                             m_Intrinsic<Intrinsic::usub_sat>(m_Value(From),
+                                                              m_Value(Size)));
       bool IsSelect = match(&I,
                             m_Select(m_ICmp(Predicate,
                                             m_Value(From),
@@ -2622,11 +2620,9 @@ FunctionSummary CFGAnalyzer::searchCalleeEffects(const MetaAddress &Entry) {
       bool IsFirst = Block == Entry;
       int64_t Pushed = IsFirst ? Known.PushedAfterSaves : Known.Pushed;
       int64_t Removed = Known.Removed;
-      Records[Block] = { Block,
-                         EndOf(Block),
-                         Pushed,
-                         Removed,
-                         Known.FinalStackOffset - *Default };
+      Records[Block] = {
+        Block, EndOf(Block), Pushed, Removed, Known.FinalStackOffset - *Default
+      };
     }
 
     for (const UnknownCall &Call : UnknownCalls) {
@@ -2775,10 +2771,9 @@ FunctionSummary CFGAnalyzer::searchCalleeEffects(const MetaAddress &Entry) {
 
   AnalysisScore Base = ScoreOf(Result);
   auto Leave = [this](const AnalysisScore &Score) {
-    Leftover = { Score.Returns,
-                 Score.LongJmps,
-                 Score.Clobbered,
-                 Score.UnknownHeights };
+    Leftover = {
+      Score.Returns, Score.LongJmps, Score.Clobbered, Score.UnknownHeights
+    };
     HasLeftover = Score.leavesSomethingToExplain();
   };
   Leave(Base);
@@ -3063,15 +3058,15 @@ CFGAnalyzer::optimize(const MetaAddress &Entry) {
   for (CallBase *Call : callers(StackHeightHook.get()))
     if (Call->getFunction() == F)
       Same.fold(Call, 1);
-  for (CallBase *Call : callers(OutlinedFunction.IndirectBranchInfoMarker.get()))
+  for (CallBase *Call :
+       callers(OutlinedFunction.IndirectBranchInfoMarker.get()))
     if (Call->getFunction() == F)
       Same.fold(Call, StackPointerOffsetIndex);
 
   return { std::move(OutlinedFunction), std::move(CFG) };
 }
 
-const model::DynamicFunction *
-CFGAnalyzer::importedAt(const ReadPlace &Place) {
+const model::DynamicFunction *CFGAnalyzer::importedAt(const ReadPlace &Place) {
   if (not HasImportSlots) {
     HasImportSlots = true;
     for (const model::DynamicFunction &Imported :
@@ -3181,7 +3176,8 @@ void CFGAnalyzer::resolveCallees(llvm::Function *F) {
     std::string Symbol;
     if (not isa<ConstantPointerNull>(SymbolArgument))
       Symbol = extractFromConstantStringPtr(SymbolArgument).str();
-    bool IsFunction = Address.isValid() and Binary->Functions().contains(Address);
+    bool IsFunction = Address.isValid()
+                      and Binary->Functions().contains(Address);
 
     if (ResolvedCallees.contains(Block.start())) {
       // (Found here before: it says nothing new)

@@ -255,8 +255,8 @@ private:
     /// nearest function that can be resumed
     bool OnlyNearest = false;
   };
-  Ownership ownersOfBlocks(llvm::function_ref<bool(const model::Function &)>
-                             IsOwner);
+  Ownership
+  ownersOfBlocks(llvm::function_ref<bool(const model::Function &)> IsOwner);
   void addBlocksOf(Ownership &Whose, const MetaAddress &Function);
   bool offer(const MetaAddress &Candidate, Ownership &Whose);
   void analyzeABI();
@@ -514,7 +514,7 @@ std::vector<MetaAddress> DetectABI::inferElidedCleanups() {
           Returns = true;
     using model::FunctionAttribute::NoReturn;
     uint64_t Removes = abi::FunctionType::finalStackOffset(*Function
-                                                             .prototype());
+                                                              .prototype());
     if ((Returns and Function.Attributes().contains(NoReturn))
         or (Returns and New->ElectedFSO.has_value()
             and uint64_t(*New->ElectedFSO) != Removes))
@@ -1765,7 +1765,8 @@ static Logger FunctionFromCalleesLog("functions-from-callees-collection");
 /// return address on the stack: a function. (A function of its own: what is
 /// made one can be watched from a debugger.)
 [[gnu::noinline]] static void
-makeFunctionAtSharedJumpTarget(model::Binary &Binary, const MetaAddress &Entry) {
+makeFunctionAtSharedJumpTarget(model::Binary &Binary,
+                               const MetaAddress &Entry) {
   Binary.Functions()[Entry];
 }
 

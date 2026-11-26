@@ -383,7 +383,6 @@ private:
   /// One search of analyzeCallees, with the callees known when it starts
   FunctionSummary searchCalleeEffects(const MetaAddress &Entry);
 
-
   /// The function, outlined and optimized, and its direct control flow
   std::pair<OutlinedFunction, SortedVector<efa::BasicBlock>>
   optimize(const MetaAddress &Entry);

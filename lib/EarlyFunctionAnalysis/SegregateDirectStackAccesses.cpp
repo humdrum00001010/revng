@@ -248,11 +248,10 @@ void SDSAPI::segregateAccesses(Function &F) {
           I.setOperand(isa<LoadInst>(&I) ? 0 : 1, BitCast);
 
           DirectStackAccesses.emplace_back(&I);
-        } else if (std::optional<int64_t>
-                     Above = stackOffsetOf(Pointer,
-                                           EntryLoads,
-                                           DL,
-                                           AddressBits);
+        } else if (std::optional<int64_t> Above = stackOffsetOf(Pointer,
+                                                                EntryLoads,
+                                                                DL,
+                                                                AddressBits);
                    Above.has_value()) {
           // The same address, written another way (after the optimizations
           // have been at it, or where the paths of the function that join
