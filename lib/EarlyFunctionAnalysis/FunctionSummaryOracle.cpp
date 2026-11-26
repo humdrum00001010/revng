@@ -76,6 +76,16 @@ FunctionSummaryOracle::getCallSite(MetaAddress Function,
                                    llvm::StringRef CalledSymbol) {
   auto &&[Summary, IsTailCall] = getExactCallSite(Function, CallerBlockAddress);
   if (Summary != nullptr) {
+    // What is recorded for a call site is what the callee does to the stack
+    // and to the registers there. That an imported function never returns is
+    // known of the function, wherever it is called: a record for the site
+    // does not take it away.
+    using model::FunctionAttribute::NoReturn;
+    if (not CalledSymbol.empty()
+        and Binary.ImportedDynamicFunctions().contains(CalledSymbol.str())
+        and getDynamicFunction(CalledSymbol).Attributes.contains(NoReturn))
+      Summary->Attributes.insert(NoReturn);
+
     return { Summary, IsTailCall };
   } else if (not CalledSymbol.empty()) {
     return { &getDynamicFunction(CalledSymbol), false };

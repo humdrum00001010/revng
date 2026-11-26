@@ -1720,6 +1720,11 @@ private:
   std::vector<Site> Sites;
   std::vector<Save> Saves;
   std::vector<ReadBack> ReadBacks;
+
+  /// Every store to a place of the stack whose height is a sum of what the
+  /// equations are about, see visitRestores: a save that is written over is
+  /// not one anymore
+  std::vector<Save> Writes;
   int64_t Least = 0;
   llvm::DenseMap<llvm::Value *, unsigned> Others;
 
@@ -1846,6 +1851,17 @@ public:
         Resaves.push_back({ Store, std::move(*Slot), std::move(*From), Vague });
       }
 
+      // Whatever is written to a place of the stack that is known
+      for (Instruction &I : instructions(F)) {
+        auto *Store = dyn_cast<StoreInst>(&I);
+        if (Store == nullptr
+            or isa<GlobalVariable>(skipCasts(Store->getPointerOperand())))
+          continue;
+        std::optional<Sum> Slot = heightOf(Store->getPointerOperand());
+        if (Slot.has_value() and not IsVague(*Slot))
+          Writes.push_back({ Store, std::move(*Slot) });
+      }
+
       Known = std::move(OldKnown);
       Others = std::move(OldOthers);
       ValueOf = std::move(OldValueOf);
@@ -1892,7 +1908,8 @@ public:
 
   /// \return for each callee, the most it can move the stack pointer by: not
   ///         past the return address of the function, nor past what the
-  ///         function saved before the call
+  ///         function saved before the call and has not written over since.
+  ///         To be asked after \ref visitRestores.
   std::vector<std::optional<int64_t>> bounds(const llvm::DominatorTree &DT) {
     std::vector<std::optional<int64_t>> Result(Callees);
     auto Lower = [&Result](unsigned Unknown, const Sum &Room) {
@@ -1910,6 +1927,18 @@ public:
       for (const Save &Save : Saves) {
         if (not DT.dominates(Save.Store, Site.Hook))
           continue;
+
+        // Not a register the function has restored by then: the place is
+        // free again, and what is written there next can be for the callee
+        // (an argument pushed before a branch, for the call on each side)
+        auto WritesOver = [&](const StackEquations::Save &Write) {
+          return Write.Store != Save.Store and Write.Slot == Save.Slot
+                 and DT.dominates(Save.Store, Write.Store)
+                 and DT.dominates(Write.Store, Site.Hook);
+        };
+        if (llvm::any_of(Writes, WritesOver))
+          continue;
+
         Sum Room = Save.Slot;
         Room.add(Site.Height, -1);
         Lower(Site.Unknown, Room);
@@ -2625,14 +2654,24 @@ FunctionSummary CFGAnalyzer::searchCalleeEffects(const MetaAddress &Entry) {
       if (Last->second.Removed <= Last->second.Pushed)
         continue;
 
+      // What is removed is what was pushed last and is still there: of what a
+      // block before pushed, the words pushed last, as many as are left to
+      // account for. The block can have pushed more before those (registers
+      // the function saves, arguments of a later call): a callee removes all
+      // of its arguments or none of them, so one whose first arguments the
+      // caller removes leaves them all.
       int64_t Left = Last->second.Removed;
       llvm::SmallVector<MetaAddress, 4> Unknown;
       auto It = Last;
       while (true) {
         const CallRecord &Call = It->second;
-        if (not Call.Takes.has_value())
+        int64_t Available = Call.Pushed - Call.Takes.value_or(0);
+        if (Available < 0)
+          break;
+        int64_t Accounted = std::min(Available, Left);
+        if (Accounted > 0 and not Call.Takes.has_value())
           Unknown.push_back(Call.Block);
-        Left -= Call.Pushed - Call.Takes.value_or(0);
+        Left -= Accounted;
         if (Left <= 0 or It == Records.begin())
           break;
 
@@ -2660,6 +2699,13 @@ FunctionSummary CFGAnalyzer::searchCalleeEffects(const MetaAddress &Entry) {
       const auto &Imported = Binary->ImportedDynamicFunctions();
       auto It = Imported.find(Call.Symbol);
       if (It == Imported.end() or not It->Prototype().isEmpty())
+        continue;
+
+      // Nothing in the function depends on what a callee that never returns
+      // would have removed: there is nothing to find, and what would be
+      // recorded for the call site would stand in the way of what is known
+      using model::FunctionAttribute::NoReturn;
+      if (It->Attributes().contains(NoReturn))
         continue;
     }
 
@@ -2708,6 +2754,10 @@ FunctionSummary CFGAnalyzer::searchCalleeEffects(const MetaAddress &Entry) {
     if (It != Sites.end()) {
       It->Blocks.push_back(Call.Block);
       It->Instructions.push_back(Call.Instruction);
+      // (Where one call of the callee looks as if the caller removed its
+      // arguments and another does not, the first is not believed: words a
+      // block pushes before those of its own call can be arguments of a
+      // later one, and they are removed after that one)
       It->Likeliest = std::max(It->Likeliest, Likeliest);
       It->Most = MaxWords;
       continue;
