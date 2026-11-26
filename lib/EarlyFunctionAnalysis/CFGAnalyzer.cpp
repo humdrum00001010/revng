@@ -3444,14 +3444,17 @@ CallSummarizer::CallSummarizer(llvm::Module *M,
 ///         registers that still has the value it had at the start of \p BB
 ///         does not count: the block is the first of a function, saving it.
 ///
-/// Room made by lowering the stack pointer by a few words, after something
-/// was pushed, is pushed too: an argument passed by value that is larger
-/// than a word is written into such room. (Before anything is pushed it can
-/// be the frame: the code after a helper that sets the frame up starts so.)
+/// If \p MayHaveRoom, room made by lowering the stack pointer by a few
+/// words, after something was pushed, is pushed too: an argument passed by
+/// value that is larger than a word is written into such room. (Before
+/// anything is pushed it can be the frame: the code after a helper that sets
+/// the frame up starts so. And so it can be in the first block of a
+/// function, after the pushes the function starts with: the caller says.)
 static uint64_t pushedBeforeCall(llvm::BasicBlock &BB,
                                  const llvm::Instruction *End,
                                  const llvm::GlobalVariable *SPCSV,
-                                 const CSVSet *Saved) {
+                                 const CSVSet *Saved,
+                                 bool MayHaveRoom) {
   using namespace llvm;
   int64_t Word = SPCSV->getValueType()->getIntegerBitWidth() / 8;
 
@@ -3506,8 +3509,9 @@ static uint64_t pushedBeforeCall(llvm::BasicBlock &BB,
     }
 
     constexpr int64_t MostRoomWords = 64;
-    bool IsRoom = Delta.has_value() and *Delta < -Word and *Delta % Word == 0
-                  and *Delta >= -MostRoomWords * Word and Pushed > 0;
+    bool IsRoom = MayHaveRoom and Delta.has_value() and *Delta < -Word
+                  and *Delta % Word == 0 and *Delta >= -MostRoomWords * Word
+                  and Pushed > 0;
     if (Delta == -Word)
       Pushed += Word;
     else if (IsRoom)
@@ -3614,6 +3618,12 @@ void CallSummarizer::handleCall(MetaAddress CallerBlock,
   std::optional<int64_t> FSO = MaybeFSO;
   std::optional<unsigned> Unknown;
   bool IsRecursive = Callee.isValid() and Callee == Caller;
+
+  // Room made among the pushes of a call is pushed too, see pushedBeforeCall.
+  // Not in the block the function starts with: there, lowering the stack
+  // pointer after pushes is what makes the frame (the handler record and the
+  // saved registers go first).
+  bool HasRoom = CallerBlock != Caller;
   if (not IsTailCall and (Callee.isInvalid() or IsRecursive)) {
     UnknownCall &New = UnknownCalls->emplace_back();
     New.Block = CallerBlock;
@@ -3629,8 +3639,12 @@ void CallSummarizer::handleCall(MetaAddress CallerBlock,
       if (std::optional NewPC = NewPCHelper.getCall(&I))
         New.Instruction = blockIDFromNewPC(*NewPC).start();
     }
-    New.Pushed = pushedBeforeCall(Block, End, SPCSV, nullptr);
-    New.PushedAfterSaves = pushedBeforeCall(Block, End, SPCSV, CalleeSaved);
+    New.Pushed = pushedBeforeCall(Block, End, SPCSV, nullptr, HasRoom);
+    New.PushedAfterSaves = pushedBeforeCall(Block,
+                                            End,
+                                            SPCSV,
+                                            CalleeSaved,
+                                            HasRoom);
     New.AllPushed = New.Pushed;
     New.AllPushedAfterSaves = New.PushedAfterSaves;
 
@@ -3653,8 +3667,12 @@ void CallSummarizer::handleCall(MetaAddress CallerBlock,
     llvm::BasicBlock &Block = *Builder.GetInsertBlock();
     const Instruction *End = &*Builder.GetInsertPoint();
     KnownCall New;
-    New.Pushed = pushedBeforeCall(Block, End, SPCSV, nullptr);
-    New.PushedAfterSaves = pushedBeforeCall(Block, End, SPCSV, CalleeSaved);
+    New.Pushed = pushedBeforeCall(Block, End, SPCSV, nullptr, HasRoom);
+    New.PushedAfterSaves = pushedBeforeCall(Block,
+                                            End,
+                                            SPCSV,
+                                            CalleeSaved,
+                                            HasRoom);
     New.FinalStackOffset = *FSO;
     New.Removed = removedAfterCall(Block, SPCSV);
     KnownCalls->insert_or_assign(CallerBlock, New);
