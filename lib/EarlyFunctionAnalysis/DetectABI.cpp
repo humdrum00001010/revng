@@ -220,7 +220,18 @@ public:
   /// Where a function has something left unexplained, see whether a caller
   /// that left out the code that removes the arguments of a call explains
   /// it, and say so at that call site. To be called as attachResumeBlocks.
-  void inferElidedCleanups();
+  ///
+  /// \return the functions that turn out to leave in another way than the
+  ///         model says: those that return after all, or remove another
+  ///         amount from the stack. What the model says about them, and
+  ///         about the functions that call them, was found with that.
+  std::vector<MetaAddress> inferElidedCleanups();
+
+  /// Make the model forget what detect-abi found about \p Functions and
+  /// about the functions that call them, directly or not: their prototype,
+  /// their attributes and what it said about their call sites, except the
+  /// clean-ups left out. They are analyzed again by the next \ref run.
+  void forgetWithCallers(const std::vector<MetaAddress> &Functions);
 
 private:
   void computeApproximateCallGraph();
@@ -365,7 +376,47 @@ dropFunctionNowPartOfAnother(model::Binary &Binary, const MetaAddress &Entry) {
   Binary.Functions().erase(Entry);
 }
 
-void DetectABI::inferElidedCleanups() {
+void DetectABI::forgetWithCallers(const std::vector<MetaAddress> &Functions) {
+  // Who calls whom, from the blocks of the functions
+  std::map<MetaAddress, std::set<MetaAddress>> Callers;
+  for (const model::Function &Function : Binary->Functions())
+    for (const efa::BasicBlock &Block :
+         FMC.getControlFlowGraph(Function.Entry()).Blocks())
+      for (const auto &Edge : Block.Successors())
+        if (const auto *Call = llvm::dyn_cast<efa::CallEdge>(Edge.get()))
+          if (Call->Destination().isValid())
+            Callers[Call->Destination().notInlinedAddress()]
+              .insert(Function.Entry());
+
+  OnceQueue<MetaAddress> Queue;
+  for (const MetaAddress &Entry : Functions)
+    Queue.insert(Entry);
+  while (not Queue.empty()) {
+    MetaAddress Entry = Queue.pop();
+    auto It = Callers.find(Entry);
+    if (It != Callers.end())
+      for (const MetaAddress &Caller : It->second)
+        Queue.insert(Caller);
+  }
+
+  for (const MetaAddress &Entry : Queue.visited()) {
+    model::Function &Function = Binary->Functions().at(Entry);
+    Function.Prototype() = model::UpcastableType();
+    Function.Attributes().erase(model::FunctionAttribute::NoReturn);
+    Function.Comments().clear();
+
+    std::vector<MetaAddress> ToForget;
+    for (const model::CallSitePrototype &CallSite :
+         Function.CallSitePrototypes())
+      if (CallSite.ElidedStackCleanup() == 0)
+        ToForget.push_back(CallSite.CallerBlockAddress());
+    for (const MetaAddress &Block : ToForget)
+      Function.CallSitePrototypes().erase(Block);
+  }
+}
+
+std::vector<MetaAddress> DetectABI::inferElidedCleanups() {
+  std::vector<MetaAddress> Changed;
   for (model::Function &Function : Binary->Functions()) {
     if (Function.Prototype().isEmpty())
       continue;
@@ -436,6 +487,20 @@ void DetectABI::inferElidedCleanups() {
       }
     }
 
+    // Does the function leave as the model says it does?
+    bool Returns = false;
+    for (const efa::BasicBlock &Block : New->CFG)
+      for (const auto &Edge : Block.Successors())
+        if (Edge->Type() == efa::FunctionEdgeType::Return)
+          Returns = true;
+    using model::FunctionAttribute::NoReturn;
+    uint64_t Removes = abi::FunctionType::finalStackOffset(*Function
+                                                             .prototype());
+    if ((Returns and Function.Attributes().contains(NoReturn))
+        or (Returns and New->ElectedFSO.has_value()
+            and uint64_t(*New->ElectedFSO) != Removes))
+      Changed.push_back(Entry);
+
     TupleTree<efa::FunctionBundle> Bundle;
     efa::ControlFlowGraph &Main = Bundle->MainFunction();
     Main.Entry() = Entry;
@@ -443,6 +508,8 @@ void DetectABI::inferElidedCleanups() {
     Main.simplify(*Binary);
     FMC.set(std::move(Bundle));
   }
+
+  return Changed;
 }
 
 void DetectABI::attachResumeBlocks() {
@@ -527,7 +594,10 @@ void DetectABI::reattachFunctions(const std::set<MetaAddress> &Before) {
          FMC.getControlFlowGraph(Function.Entry()).Blocks()) {
       for (const auto &Edge : Block.Successors()) {
         using namespace efa::FunctionEdgeType;
-        if (Edge->Type() == Return)
+        const auto *Call = llvm::dyn_cast<efa::CallEdge>(Edge.get());
+        if (Edge->Type() == Return
+            or (Call != nullptr and Edge->Type() == FunctionCall
+                and Call->IsTailCall()))
           Returns = true;
         else if (Edge->Type() != DirectBranch and Edge->Type() != FunctionCall)
           return false;
@@ -1570,6 +1640,80 @@ DetectABI::computePreservedRegisters(const CSVSet &ClobberedRegisters) const {
 
 static Logger FunctionFromCalleesLog("functions-from-callees-collection");
 
+/// \p Entry is where more than one function jumps to with nothing but its
+/// return address on the stack: a function. (A function of its own: what is
+/// made one can be watched from a debugger.)
+[[gnu::noinline]] static void
+makeFunctionAtSharedJumpTarget(model::Binary &Binary, const MetaAddress &Entry) {
+  Binary.Functions()[Entry];
+}
+
+/// Code that several functions jump to is part of each of them as long as it
+/// is not a function: nobody calls it, so nothing said it was one. If each
+/// of them gets there with the stack as it was when it was entered, they
+/// leave through it as through a call that is not coming back, and it is the
+/// function they all end with: the member functions adjusting thunks jump to
+/// are found this way. As code of several functions it is decompiled once
+/// for each, and what belongs to it (the code it is resumed at after an
+/// exception) has no function to belong to.
+///
+/// \return the functions that jump to the new ones
+///
+/// \p Analyzed are the functions whose blocks are known.
+static std::vector<MetaAddress>
+collectFunctionsFromSharedJumpTargets(model::Binary &Binary,
+                                      ControlFlowGraphCache &FMC,
+                                      const std::set<MetaAddress> &Analyzed) {
+  std::map<MetaAddress, unsigned> Owners;
+  for (const MetaAddress &Entry : Analyzed)
+    for (const efa::BasicBlock &Block : FMC.getControlFlowGraph(Entry).Blocks())
+      if (not Block.ID().isInlined())
+        ++Owners[Block.ID().start()];
+
+  auto IsShared = [&Owners](const MetaAddress &Address) {
+    auto It = Owners.find(Address);
+    return It != Owners.end() and It->second > 1;
+  };
+
+  // The shared blocks a block of one function only leads to, and from which
+  // functions
+  std::map<MetaAddress, std::set<MetaAddress>> Jumpers;
+  std::set<MetaAddress> NotAtEntryHeight;
+  for (const MetaAddress &Entry : Analyzed) {
+    const auto &Blocks = FMC.getControlFlowGraph(Entry).Blocks();
+    for (const efa::BasicBlock &Block : Blocks) {
+      if (Block.ID().isInlined() or IsShared(Block.ID().start()))
+        continue;
+
+      for (const auto &Edge : Block.Successors()) {
+        if (Edge->Type() != efa::FunctionEdgeType::DirectBranch
+            or Edge->Destination().isInlined())
+          continue;
+
+        MetaAddress Target = Edge->Destination().start();
+        if (not IsShared(Target) or Binary.Functions().contains(Target))
+          continue;
+
+        Jumpers[Target].insert(Entry);
+        auto It = Blocks.find(Edge->Destination());
+        if (It == Blocks.end() or not It->HasStackDepth()
+            or It->StackDepth() != 0)
+          NotAtEntryHeight.insert(Target);
+      }
+    }
+  }
+
+  std::set<MetaAddress> Result;
+  for (const auto &[Target, From] : Jumpers) {
+    if (From.size() < 2 or NotAtEntryHeight.contains(Target))
+      continue;
+    makeFunctionAtSharedJumpTarget(Binary, Target);
+    Result.insert(From.begin(), From.end());
+  }
+
+  return { Result.begin(), Result.end() };
+}
+
 static void collectFunctionsFromCallees(Module &M, model::Binary &Binary) {
   Function &Root = *M.getFunction("root");
 
@@ -1744,12 +1888,29 @@ static void runDetectABI(Module &M,
   }
 
   // With what the model now says about the functions: find the clean-ups
-  // their callers left out, then give them the code they are resumed at
-  {
+  // their callers left out, then give them the code they are resumed at.
+  //
+  // A function that returns after all, once such a clean-up is counted, was
+  // said never to return: its callers were cut at each call to it, without a
+  // trace. Those functions and all that call them are found again, with the
+  // clean-ups that were found; which can bring new ones to light.
+  constexpr unsigned MostRounds = 3;
+  for (unsigned Round = 0; Round < MostRounds; ++Round) {
+    std::vector<MetaAddress> Changed;
+    {
+      FSOracle Oracle = FSOracle::importFullPrototypes(M, Globals, *Binary);
+      CFGAnalyzer Analyzer(M, Root, Globals, Binary, Oracle);
+      DetectABI Cleaner(M, Root, Globals, FMC, Binary, Oracle, Analyzer);
+      Changed = Cleaner.inferElidedCleanups();
+      if (Changed.empty())
+        break;
+      Cleaner.forgetWithCallers(Changed);
+    }
+
     FSOracle Oracle = FSOracle::importFullPrototypes(M, Globals, *Binary);
     CFGAnalyzer Analyzer(M, Root, Globals, Binary, Oracle);
-    DetectABI Cleaner(M, Root, Globals, FMC, Binary, Oracle, Analyzer);
-    Cleaner.inferElidedCleanups();
+    DetectABI Again(M, Root, Globals, FMC, Binary, Oracle, Analyzer);
+    Again.run();
   }
 
   FSOracle Oracle = FSOracle::importFullPrototypes(M, Globals, *Binary);
@@ -1790,7 +1951,37 @@ llvm::Error DetectABI::run(Model &Model,
     Before.insert(Function.Entry());
 
   collectFunctionsFromUnusedAddresses(Module, Root, Binary, FMC);
+  using efa::collectFunctionsFromSharedJumpTargets;
+  auto Jumpers = collectFunctionsFromSharedJumpTargets(Binary, FMC, Before);
   efa::runDetectABI(Module, Root, Globals, FMC, TupleModel);
+
+  // The functions that were just found jump to shared code too: the thunks
+  // the tables of virtual functions refer to are found there, and several of
+  // them end in the same function
+  {
+    std::set<MetaAddress> Analyzed;
+    for (const model::Function &Function : Binary.Functions())
+      Analyzed.insert(Function.Entry());
+    auto More = collectFunctionsFromSharedJumpTargets(Binary, FMC, Analyzed);
+    if (not More.empty()) {
+      efa::runDetectABI(Module, Root, Globals, FMC, TupleModel);
+      Jumpers.insert(Jumpers.end(), More.begin(), More.end());
+    }
+  }
+
+  // What the functions that jump to a new function said about the calls in
+  // its code is now said by that function
+  for (const MetaAddress &Entry : Jumpers) {
+    model::Function &Function = Binary.Functions().at(Entry);
+    const auto &Blocks = FMC.getControlFlowGraph(Entry).Blocks();
+    std::vector<MetaAddress> Stale;
+    for (const model::CallSitePrototype &CallSite :
+         Function.CallSitePrototypes())
+      if (not Blocks.contains(BasicBlockID(CallSite.CallerBlockAddress())))
+        Stale.push_back(CallSite.CallerBlockAddress());
+    for (const MetaAddress &Block : Stale)
+      Function.CallSitePrototypes().erase(Block);
+  }
 
   // A function made from an address nothing jumps to is not one if code that
   // can be trusted only uses that address to say where memory is read: it is
@@ -1808,7 +1999,10 @@ llvm::Error DetectABI::run(Model &Model,
          FMC.getControlFlowGraph(Function.Entry()).Blocks()) {
       for (const auto &Edge : Block.Successors()) {
         using namespace efa::FunctionEdgeType;
-        if (Edge->Type() == Return)
+        const auto *Call = llvm::dyn_cast<efa::CallEdge>(Edge.get());
+        if (Edge->Type() == Return
+            or (Call != nullptr and Edge->Type() == FunctionCall
+                and Call->IsTailCall()))
           Returns = true;
         else if (Edge->Type() != DirectBranch and Edge->Type() != FunctionCall)
           return false;
