@@ -3370,14 +3370,11 @@ CallSummarizer::CallSummarizer(llvm::Module *M,
                                GlobalVariable *SPCSV,
                                GlobalVariable *PCCSV,
                                llvm::SmallSet<MetaAddress, 4> *ReturnBlocks,
-                               const std::map<MetaAddress, int64_t>
-                                 *CallSiteFSO,
-                               const std::map<MetaAddress, unsigned>
-                                 *SymbolicSites,
+                               const OffsetByCall *CallSiteFSO,
+                               const UnknownByCall *SymbolicSites,
                                llvm::SmallVectorImpl<UnknownCall> *UnknownCalls,
                                std::map<MetaAddress, KnownCall> *KnownCalls,
-                               const std::map<MetaAddress, uint64_t>
-                                 *ElidedCleanups,
+                               const CleanupByCall *ElidedCleanups,
                                CSVSet *CalleeClobbered,
                                const CSVSet *CalleeSaved,
                                MetaAddress Caller) :

@@ -135,6 +135,14 @@ private:
   MetaAddress Caller;
 
 public:
+  /// By the block a call ends: what its callee leaves the stack pointer
+  /// above, the unknown standing for that, and what the caller is taken to
+  /// have removed
+  using OffsetByCall = std::map<MetaAddress, int64_t>;
+  using UnknownByCall = std::map<MetaAddress, unsigned>;
+  using CleanupByCall = std::map<MetaAddress, uint64_t>;
+
+public:
   CallSummarizer(llvm::Module *M,
                  llvm::Function *PreCallHook,
                  llvm::Function *PostCallHook,
@@ -145,11 +153,11 @@ public:
                  llvm::GlobalVariable *SPCSV,
                  llvm::GlobalVariable *PCCSV,
                  llvm::SmallSet<MetaAddress, 4> *ReturnBlocks,
-                 const std::map<MetaAddress, int64_t> *CallSiteFSO,
-                 const std::map<MetaAddress, unsigned> *SymbolicSites,
+                 const OffsetByCall *CallSiteFSO,
+                 const UnknownByCall *SymbolicSites,
                  llvm::SmallVectorImpl<UnknownCall> *UnknownCalls,
                  std::map<MetaAddress, KnownCall> *KnownCalls,
-                 const std::map<MetaAddress, uint64_t> *ElidedCleanups,
+                 const CleanupByCall *ElidedCleanups,
                  CSVSet *CalleeClobbered,
                  const CSVSet *CalleeSaved,
                  MetaAddress Caller);

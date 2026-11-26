@@ -49,9 +49,12 @@ public:
   }
 
 private:
-  void loadAllCFGs(ControlFlowGraphCache &MDCache,
-                   llvm::function_ref<bool(const model::Function &)>
-                     IsWanted = [](const model::Function &) { return true; }) {
+  /// A choice among the functions
+  using Choice = llvm::function_ref<bool(const model::Function &)>;
+
+  static bool all(const model::Function &) { return true; }
+
+  void loadAllCFGs(ControlFlowGraphCache &MDCache, Choice IsWanted = all) {
     for (auto &Function : Binary.Functions()) {
       if (not IsWanted(Function))
         continue;
