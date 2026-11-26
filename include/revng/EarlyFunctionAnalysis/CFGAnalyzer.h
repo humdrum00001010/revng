@@ -205,6 +205,10 @@ private:
   /// is not known
   unsigned UnknownHeights = 0;
 
+  /// Whether the function is being analyzed to see if something holds, see
+  /// tryOut
+  bool IsTrial = false;
+
 public:
   CFGAnalyzer(llvm::Module &M,
               RootFunction &Root,
@@ -220,6 +224,18 @@ public:
 
 public:
   FunctionSummary analyze(const MetaAddress &Entry);
+
+  /// Analyze the function to see whether what the model has just been made
+  /// to say about it holds. If it does not, the function can come out with a
+  /// path that leads nowhere, which is an error anywhere else: here the block
+  /// such a path ends with leaves the function for an unknown place, and the
+  /// caller rejects the result.
+  FunctionSummary tryOut(const MetaAddress &Entry) {
+    IsTrial = true;
+    FunctionSummary Result = analyze(Entry);
+    IsTrial = false;
+    return Result;
+  }
 
   OutlinedFunction outline(const MetaAddress &Entry);
 

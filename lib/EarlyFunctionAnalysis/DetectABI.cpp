@@ -195,20 +195,22 @@ public:
     // Propagate prototypes
     Task.advance("propagatePrototypes");
     propagatePrototypes();
-
-    // Give the functions the code they are resumed at
-    attachResumeBlocks();
   }
-
-private:
-  void computeApproximateCallGraph();
-  void preliminaryFunctionAnalysis();
 
   /// Code no function reaches, right after a block of a function, is most
   /// often where that function goes on after an exception is handled.
   /// If the function, analyzed as being resumed there, still makes sense, the
   /// code is its own; otherwise it is left to become a function.
+  ///
+  /// To be called on an object of its own, made after `run` has written the
+  /// model: the functions are analyzed again with what the model says about
+  /// them and their call sites, as every later step does.
   void attachResumeBlocks();
+
+private:
+  void computeApproximateCallGraph();
+  void preliminaryFunctionAnalysis();
+
   bool tryToAttach(model::Function &Function, const MetaAddress &Address);
   void analyzeABI();
   Changes analyzeFunctionABI(const model::Function &Function,
@@ -351,7 +353,7 @@ void DetectABI::attachResumeBlocks() {
   std::map<MetaAddress, MetaAddress> Owners;
   for (const model::Function &Function : Binary->Functions()) {
     for (const efa::BasicBlock &Block :
-         Oracle.getLocalFunction(Function.Entry()).CFG) {
+         FMC.getControlFlowGraph(Function.Entry()).Blocks()) {
       if (Block.ID().isInlined())
         continue;
       auto [It, IsNew] = Owners.emplace(Block.ID().start(), Function.Entry());
@@ -378,12 +380,13 @@ void DetectABI::attachResumeBlocks() {
 bool DetectABI::tryToAttach(model::Function &Function,
                             const MetaAddress &Address) {
   MetaAddress Entry = Function.Entry();
-  auto &Old = Oracle.getLocalFunction(Entry).CFG;
-  if (Function.Prototype().isEmpty() or Old.contains(BasicBlockID(Address)))
+  auto Old = FMC.getControlFlowGraph(Entry).Blocks();
+  if (Function.Prototype().isEmpty() or not Function.Attributes().empty()
+      or Old.contains(BasicBlockID(Address)))
     return false;
 
   Function.ResumeAddresses().insert(Address);
-  FunctionSummary New = Analyzer.analyze(Entry);
+  FunctionSummary New = Analyzer.tryOut(Entry);
 
   // The function has to be what it was, plus code that leads back into it
   // or returns as it does
@@ -418,7 +421,6 @@ bool DetectABI::tryToAttach(model::Function &Function,
     Main.simplify(*Binary);
     FMC.set(std::move(Bundle));
   }
-  Old = std::move(New.CFG);
 
   return true;
 }
@@ -1486,10 +1488,19 @@ static void runDetectABI(Module &M,
                          ControlFlowGraphCache &FMC,
                          TupleTree<model::Binary> &Binary) {
   using FSOracle = FunctionSummaryOracle;
+  {
+    FSOracle Oracle = FSOracle::importFullPrototypes(M, Globals, *Binary);
+    CFGAnalyzer Analyzer(M, Root, Globals, Binary, Oracle);
+    DetectABI ABIDetector(M, Root, Globals, FMC, Binary, Oracle, Analyzer);
+    ABIDetector.run();
+  }
+
+  // Give the functions the code they are resumed at, with what the model
+  // now says about them
   FSOracle Oracle = FSOracle::importFullPrototypes(M, Globals, *Binary);
   CFGAnalyzer Analyzer(M, Root, Globals, Binary, Oracle);
-  DetectABI ABIDetector(M, Root, Globals, FMC, Binary, Oracle, Analyzer);
-  ABIDetector.run();
+  DetectABI Attacher(M, Root, Globals, FMC, Binary, Oracle, Analyzer);
+  Attacher.attachResumeBlocks();
 }
 
 } // namespace efa

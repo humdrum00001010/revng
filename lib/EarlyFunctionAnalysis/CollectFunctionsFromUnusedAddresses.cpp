@@ -17,6 +17,7 @@
 #include "revng/EarlyFunctionAnalysis/ControlFlowGraphCache.h"
 #include "revng/Lift/JumpTargetReason.h"
 #include "revng/Lift/Lift.h"
+#include "revng/Model/FunctionTags.h"
 #include "revng/Support/BlockType.h"
 #include "revng/Support/NewPC.h"
 
@@ -89,9 +90,14 @@ private:
     return true;
   }
 
-  /// The addresses of code that the program only uses, plus something, as
-  /// the place memory is accessed at: `[table + index]`. A table of a
-  /// `switch` the lifter could not resolve is one, and it is not code.
+  /// The addresses that the code of the functions found so far only uses,
+  /// plus something, as the place memory is accessed at: `[table + index]`.
+  /// A table of a `switch` the lifter could not resolve is one, when it lies
+  /// in a code segment: its address is in an instruction, where the search
+  /// for pointers to code finds it, and it is not code.
+  ///
+  /// Only the code of known functions counts: what the bytes of such a table
+  /// decode to has operands too, and they are anything.
   std::set<uint64_t> addressesOfData() {
     using namespace llvm;
     Function &Root = *M.getFunction("root");
@@ -100,27 +106,70 @@ private:
     for (BasicBlock &BB : Root) {
       if (getType(&BB) != BlockType::JumpTargetBlock)
         continue;
-      uint32_t Reasons = JumpTargetReason::getReasons(&BB);
-      if (hasReason(Reasons, JumpTargetReason::SimpleLiteral))
-        Candidates.insert(getBasicBlockAddress(getJumpTargetBlock(&BB))
-                            .address());
+      MetaAddress Entry = getBasicBlockAddress(getJumpTargetBlock(&BB));
+      if (UsedRanges.find(Entry) == UsedRanges.end())
+        Candidates.insert(Entry.address());
+    }
+
+    // An address in a segment is written as what a function standing for
+    // the start of the segment returns, plus an offset
+    std::map<const Function *, uint64_t> SegmentStarts;
+    for (Function &Getter : FunctionTags::SegmentGlobalGetter.functions(&M)) {
+      StringRef Name = Getter.getName();
+      uint64_t Start = 0;
+      if (Name.consume_front("get_segment_0x")
+          and not Name.take_while(isHexDigit).getAsInteger(16, Start))
+        SegmentStarts[&Getter] = Start;
     }
 
     std::set<uint64_t> AsAddress;
     std::set<uint64_t> Otherwise;
-    for (Instruction &I : instructions(Root)) {
+    auto Record = [&](uint64_t Address, bool IsOnlyAnAddress) {
+      if (Candidates.contains(Address))
+        (IsOnlyAnAddress ? AsAddress : Otherwise).insert(Address);
+    };
+
+    auto Visit = [&](Instruction &I) {
+      bool IsSum = I.getOpcode() == Instruction::Add;
+
+      // The address as an offset in a segment
+      if (IsSum) {
+        Value *Base = I.getOperand(0);
+        while (isa<TruncInst>(Base) or isa<ZExtInst>(Base))
+          Base = cast<Instruction>(Base)->getOperand(0);
+        auto *Call = dyn_cast<CallBase>(Base);
+        auto *Offset = dyn_cast<ConstantInt>(I.getOperand(1));
+        if (Call != nullptr and Offset != nullptr) {
+          auto It = SegmentStarts.find(Call->getCalledFunction());
+          if (It != SegmentStarts.end()) {
+            Record(It->second + Offset->getZExtValue(), isOnlyAnAddress(&I));
+            return;
+          }
+        }
+      }
+
+      // The address as a number
       for (const Use &Operand : I.operands()) {
         auto *Constant = dyn_cast<ConstantInt>(Operand.get());
-        if (Constant == nullptr or Constant->getBitWidth() > 64
-            or not Candidates.contains(Constant->getZExtValue()))
-          continue;
-
-        bool IsSum = I.getOpcode() == Instruction::Add;
-        if (IsSum and isOnlyAnAddress(&I))
-          AsAddress.insert(Constant->getZExtValue());
-        else
-          Otherwise.insert(Constant->getZExtValue());
+        if (Constant != nullptr and Constant->getBitWidth() <= 64)
+          Record(Constant->getZExtValue(), IsSum and isOnlyAnAddress(&I));
       }
+    };
+
+    for (BasicBlock &BB : Root) {
+      BlockType::Values Type = getType(&BB);
+      if (Type != BlockType::JumpTargetBlock
+          and Type != BlockType::TranslatedBlock)
+        continue;
+      const BasicBlock *JumpTarget = getJumpTargetBlock(&BB);
+      if (JumpTarget == nullptr)
+        continue;
+      MetaAddress Owner = getBasicBlockAddress(JumpTarget);
+      if (Owner.isInvalid() or UsedRanges.find(Owner) == UsedRanges.end())
+        continue;
+
+      for (Instruction &I : BB)
+        Visit(I);
     }
 
     std::set<uint64_t> Result;
@@ -182,8 +231,7 @@ private:
                     "Ignoring " << Entry.toString()
                                 << " since it's target of a memory operation");
 
-        } else if (IsSimpleLiteral and not IsUnusedGlobalData
-                   and not IsMemoryStore and Data.contains(Entry.address())) {
+        } else if (Data.contains(Entry.address())) {
           revng_log(Log,
                     "Ignoring " << Entry.toString()
                                 << " since it is only used to address memory");

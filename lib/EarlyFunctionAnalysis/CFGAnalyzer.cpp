@@ -1302,6 +1302,11 @@ FunctionSummary CFGAnalyzer::milkInfo(OutlinedFunction *OutlinedFunction,
     Attributes.insert(model::FunctionAttribute::NoReturn);
   }
 
+  if (IsTrial)
+    for (efa::BasicBlock &Block : CFG)
+      if (Block.Successors().empty())
+        Block.Successors().insert(makeIndirectEdge(LongJmp));
+
   for (efa::BasicBlock &Block : CFG)
     revng_assert(Block.Successors().size() > 0);
 
