@@ -1584,7 +1584,7 @@ struct AnalysisScore {
 /// block allocated at run time is all that stands in the way. (A function of
 /// its own: what the height is made of, and whether it was understood, can
 /// be watched from a debugger.)
-[[gnu::noinline]] static void
+[[gnu::noinline, gnu::used]] static void
 noteHeightAtCall(const MetaAddress &Entry,
                  const llvm::CallBase *Hook,
                  const std::optional<int64_t> &Top) {
@@ -1604,10 +1604,11 @@ noteHeightAtCall(const MetaAddress &Entry,
 /// over: what it started from, the best it found and whether that is kept.
 /// (A function of its own: how a search ended can be watched from a
 /// debugger.)
-[[gnu::noinline]] static void noteSearchOutcome(const MetaAddress &Entry,
-                                                const AnalysisScore &Base,
-                                                const AnalysisScore &Best,
-                                                bool IsKept) {
+[[gnu::noinline, gnu::used]] static void
+noteSearchOutcome(const MetaAddress &Entry,
+                  const AnalysisScore &Base,
+                  const AnalysisScore &Best,
+                  bool IsKept) {
   auto Dump = [](const AnalysisScore &Score) {
     Log << Score.Returns << " returns, " << Score.LongJmps << " longjmps, "
         << Score.Clobbered << " registers clobbered though saved, "

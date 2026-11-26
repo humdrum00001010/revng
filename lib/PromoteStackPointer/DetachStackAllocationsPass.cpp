@@ -2,6 +2,8 @@
 // This file is distributed under the MIT License. See LICENSE.md for details.
 //
 
+#include <string>
+
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -32,17 +34,20 @@ static unsigned countUnknownSizes(Function &F, Function *SizeMarker) {
   return Result;
 }
 
-/// What was done to \p F, and how many of its call sites still have a stack
-/// of an unknown size. (A function of its own: what the pass did to a
-/// function can be watched from a debugger.)
-[[gnu::noinline]] static void noteDetached(const Function &F,
-                                           const DetachedStackAllocations &Done,
-                                           unsigned Before,
-                                           unsigned After) {
+/// What was done to the function called \p Name (\p Length characters), and
+/// how many of its call sites still have a stack of an unknown size. (A
+/// function of its own, with the name as plain characters: what the pass did
+/// to a function can be watched from a debugger that cannot call anything.)
+[[gnu::noinline, gnu::used]] static void
+noteDetached(const char *Name,
+             size_t Length,
+             const DetachedStackAllocations &Done,
+             unsigned Before,
+             unsigned After) {
   if (not Log.isEnabled())
     return;
 
-  Log << F.getName().str() << ": ";
+  Log << std::string(Name, Length) << ": ";
   if (Done.Refused != nullptr)
     Log << "left as it was (" << Done.Refused << "); ";
   Log << Done.Blocks << " blocks, " << Done.Folded
@@ -96,7 +101,9 @@ bool DetachStackAllocationsPass::runOnModule(Module &M) {
                                                            Entry,
                                                            SizeMarker,
                                                            Allocator);
-    noteDetached(F, Done, Before, countUnknownSizes(F, SizeMarker));
+    StringRef Name = F.getName();
+    unsigned After = countUnknownSizes(F, SizeMarker);
+    noteDetached(Name.data(), Name.size(), Done, Before, After);
     Result = Result or Done.changed();
   }
 
