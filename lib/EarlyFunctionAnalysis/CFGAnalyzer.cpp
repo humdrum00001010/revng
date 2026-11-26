@@ -157,6 +157,12 @@ CFGAnalyzer::CFGAnalyzer(llvm::Module &M,
   OutputAAWriter(streamFromOption(AAWriterPath)),
   OutputIBI(streamFromOption(IndirectBranchInfoSummaryPath)) {
 
+  // Unlike the other hooks, this one is read after the optimizations: its
+  // calls have to survive them, without standing in the way of what they do
+  // with the memory of the program
+  StackHeightHook.get()->setMemoryEffects(MemoryEffects::inaccessibleMemOnly());
+  StackHeightHook.get()->addFnAttr(Attribute::NoMerge);
+
   // Collect all ABI CSVs except for the stack pointer
   for (GlobalVariable *CSV : Globals.abiRegisters())
     if (CSV != nullptr and not Globals.isSPReg(CSV))
@@ -244,8 +250,10 @@ llvm::FunctionType *CFGAnalyzer::createRetMarkerType(llvm::Module &M) {
 llvm::FunctionType *
 CFGAnalyzer::createStackHeightMarkerType(const CSVGlobals &Globals) {
   Type *StackPointer = Globals.spReg()->getValueType();
-  Type *Void = Type::getVoidTy(StackPointer->getContext());
-  return llvm::FunctionType::get(Void, { StackPointer }, false);
+  LLVMContext &Context = StackPointer->getContext();
+  Type *Void = Type::getVoidTy(Context);
+  Type *I8Ptr = Type::getInt8PtrTy(Context);
+  return llvm::FunctionType::get(Void, { I8Ptr, StackPointer }, false);
 }
 
 std::optional<UpcastablePointer<efa::FunctionEdgeBase>>
@@ -472,16 +480,29 @@ void CFGAnalyzer::createIBIMarker(OutlinedFunction *Outlined) {
 
   State Initial = loadState(Builder);
 
-  // Turn the stack pointers the calls were met with into heights of the stack
+  // Leave a trace of where the stack pointer is at the start of each block,
+  // right after the marker the block begins with
+  for (BasicBlock &BB : *Outlined->Function) {
+    BasicBlockID ID = getBasicBlockID(&BB);
+    if (not isJumpTarget(&BB) or not ID.isValid())
+      continue;
+
+    revng::IRBuilder HookBuilder(BB.getFirstNonPHI()->getNextNode());
+    Value *BlockID = ID.toValue(&M);
+    HookBuilder.CreateCall(StackHeightHook.get(),
+                           { BlockID, HookBuilder.createLoad(Globals.spReg()) });
+  }
+
+  // Turn the stack pointers the hooks were met with into heights of the stack
   for (CallBase *Call : callers(StackHeightHook.get())) {
     if (Call->getFunction() != Outlined->Function.get())
       continue;
 
-    auto *Height = BinaryOperator::CreateSub(Call->getArgOperand(0),
+    auto *Height = BinaryOperator::CreateSub(Call->getArgOperand(1),
                                              Initial.StackPointer,
                                              "",
                                              Call);
-    Call->setArgOperand(0, Height);
+    Call->setArgOperand(1, Height);
   }
 
   //
@@ -993,18 +1014,46 @@ FunctionSummary CFGAnalyzer::milkInfo(OutlinedFunction *OutlinedFunction,
   //
 
   // If no FSO was elected, retry focusing  on MaybeIndirectTailCalls
-  if (not MaybeWinFSO.has_value()) {
+  bool HasOwnFSO = MaybeWinFSO.has_value();
+  if (not HasOwnFSO) {
     revng_assert(MaybeReturns.size() == 0);
     MaybeWinFSO = electFSO(MaybeIndirectTailCalls);
   }
 
   for (const auto &[CI, FSO, Summary] : MaybeIndirectTailCalls) {
-    if (MaybeWinFSO.has_value() && FSO == *MaybeWinFSO) {
+    auto *Argument = CI->getArgOperand(CalledSymbolIndex);
+    StringRef Symbol = extractFromConstantStringPtr(Argument);
+
+    // What is called this way returns in place of this function. If nothing
+    // is known about it, and this function has returns of its own, it removes
+    // from the stack what is left for them to remove: that is not to be
+    // assumed, it follows.
+    bool IsKnown = false;
+    if (not Symbol.empty()) {
+      const auto &Imported = Binary->ImportedDynamicFunctions();
+      auto It = Imported.find(Symbol.str());
+      IsKnown = It != Imported.end() and not It->Prototype().isEmpty();
+    }
+    efa::BasicBlock &Block = blockFromIndirectBranchInfo(CI, CFG);
+    MetaAddress Site = Block.ID().notInlinedAddress();
+    const model::Function *Function = Binary->Functions()
+                                        .tryGet(OutlinedFunction->Address);
+    if (Function != nullptr and Function->CallSitePrototypes().contains(Site))
+      IsKnown = true;
+
+    int64_t Removed = 0;
+    if (HasOwnFSO)
+      Removed = *MaybeWinFSO - (FSO - *Summary->ElectedFSO);
+    bool Follows = HasOwnFSO and not IsKnown and Removed >= CallPushSize;
+
+    if (MaybeWinFSO.has_value() and (FSO == *MaybeWinFSO or Follows)) {
+      if (FSO != *MaybeWinFSO)
+        CallSiteFSO[Site] = Removed;
+
       auto NewEdge = makeCall(MetaAddress::invalid());
       auto *Call = cast<efa::CallEdge>(NewEdge.get());
       Call->IsTailCall() = true;
-      auto *Argument = CI->getArgOperand(CalledSymbolIndex);
-      Call->DynamicFunction() = extractFromConstantStringPtr(Argument);
+      Call->DynamicFunction() = Symbol;
       IBIResult.emplace_back(CI, std::move(NewEdge));
       ClobberedRegisters.recordClobberedRegisters(CI);
       ClobberedRegisters.add(Summary->ClobberedRegisters);
@@ -1444,11 +1493,39 @@ FunctionSummary CFGAnalyzer::analyzeOnce(const MetaAddress &Entry) {
   runOptimizationPipeline(F);
 
   // The paths that reach a call agree on the height of the stack there, unless
-  // something is wrong about a call before it
+  // something is wrong about a call before it. Where they agree at the start
+  // of a block, record it: the steps that come after isolation need not find
+  // it out again, with less to go by.
   UnknownHeights = 0;
-  for (CallBase *Call : callers(StackHeightHook.get()))
-    if (Call->getFunction() == F and not isa<ConstantInt>(Call->getArgOperand(0)))
-      ++UnknownHeights;
+  std::map<BasicBlockID, std::optional<int64_t>> Heights;
+  for (CallBase *Call : callers(StackHeightHook.get())) {
+    if (Call->getFunction() != F)
+      continue;
+
+    auto *Height = dyn_cast<ConstantInt>(Call->getArgOperand(1));
+    if (isa<ConstantPointerNull>(Call->getArgOperand(0))) {
+      if (Height == nullptr)
+        ++UnknownHeights;
+      continue;
+    }
+
+    // A block the optimizations have duplicated has to have one height
+    BasicBlockID ID = BasicBlockID::fromValue(Call->getArgOperand(0));
+    std::optional<int64_t> New;
+    if (Height != nullptr)
+      New = Height->getSExtValue();
+    auto [It, IsNew] = Heights.emplace(ID, New);
+    if (not IsNew and It->second != New)
+      It->second = std::nullopt;
+  }
+
+  for (efa::BasicBlock &Block : CFG) {
+    auto It = Heights.find(Block.ID());
+    if (It == Heights.end() or not It->second.has_value())
+      continue;
+    Block.HasStackDepth() = true;
+    Block.StackDepth() = -*It->second;
+  }
 
   // Squeeze out the results obtained from the optimization passes
   auto FunctionInfo = milkInfo(&OutlinedFunction, std::move(CFG));
@@ -1623,8 +1700,10 @@ void CallSummarizer::handleCall(MetaAddress CallerBlock,
   Module *M = Builder.GetInsertBlock()->getParent()->getParent();
 
   // Leave a trace of where the stack pointer is when the call is made
-  if (not IsTailCall)
-    Builder.CreateCall(StackHeightHook, { Builder.createLoad(SPCSV) });
+  if (not IsTailCall) {
+    auto *NoBlock = ConstantPointerNull::get(Type::getInt8PtrTy(Context));
+    Builder.CreateCall(StackHeightHook, { NoBlock, Builder.createLoad(SPCSV) });
+  }
 
   Builder.CreateCall(PreCallHook, Args);
 

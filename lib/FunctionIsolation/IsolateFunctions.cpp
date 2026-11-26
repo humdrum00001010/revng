@@ -43,11 +43,13 @@
 #include "revng/Model/FunctionTags.h"
 #include "revng/Model/NameBuilder.h"
 #include "revng/Model/Register.h"
+#include "revng/Support/BlockType.h"
 #include "revng/Support/Debug.h"
 #include "revng/Support/EmitAbort.h"
 #include "revng/Support/IRBuilder.h"
 #include "revng/Support/IRHelpers.h"
 #include "revng/Support/MetaAddress.h"
+#include "revng/Support/NewPC.h"
 #include "revng/Support/SimplePassManager.h"
 
 // This name is not present after `enforce-abi`.
@@ -679,6 +681,39 @@ Isolate::Isolate(const class Model &Model,
   }
 }
 
+/// Set the stack pointer, at the start of the blocks of \p F, to what the
+/// analysis of the function has proven it to be there. The steps that follow
+/// need not find it out again: they would have less to go by, since by then
+/// the direct accesses to the stack are not told apart from the others.
+static void restoreStackDepths(llvm::Function &F,
+                               const efa::ControlFlowGraph &FM,
+                               GlobalVariable *StackPointer) {
+  if (F.empty() or StackPointer == nullptr)
+    return;
+
+  revng::IRBuilder Builder(F.getContext());
+  Builder.setInsertPointToFirstNonAlloca(F);
+  auto *Initial = Builder.createLoad(StackPointer);
+
+  for (BasicBlock &BB : F) {
+    if (&BB == &F.getEntryBlock() or not isJumpTarget(&BB))
+      continue;
+
+    BasicBlockID ID = getBasicBlockID(&BB);
+    if (not ID.isValid())
+      continue;
+
+    auto It = FM.Blocks().find(ID);
+    if (It == FM.Blocks().end() or not It->HasStackDepth())
+      continue;
+
+    // After the marker the block begins with
+    Builder.SetInsertPoint(BB.getFirstNonPHI()->getNextNode());
+    auto *Depth = ConstantInt::get(Initial->getType(), It->StackDepth());
+    Builder.CreateStore(Builder.CreateSub(Initial, Depth), StackPointer);
+  }
+}
+
 Function *Isolate::isolateFunction(const efa::ControlFlowGraph &FM) {
   const MetaAddress Entry = FM.Entry();
   revng_assert(Entry.isValid());
@@ -708,6 +743,9 @@ Function *Isolate::isolateFunction(const efa::ControlFlowGraph &FM) {
   handleUnexpectedPCCloned(Outlined);
 
   handleAnyPCJumps(Outlined, FM);
+
+  if (Outlined.Function)
+    restoreStackDepths(*Outlined.Function, FM, Globals->spReg());
 
   if (Outlined.Function)
     for (BasicBlock &BB : *Outlined.Function)

@@ -135,9 +135,10 @@ private:
   TemporaryOpaqueFunction PostCallHook;
   TemporaryOpaqueFunction RetHook;
 
-  /// StackHeightHook takes the stack pointer before each function call. Once
-  /// the value it had at the entry is subtracted from it, the height of the
-  /// stack at the call is known where the result has become a constant.
+  /// StackHeightHook takes the stack pointer before each function call and at
+  /// the start of each block, with the identifier of the block in the latter
+  /// case. Once the value it had at the entry is subtracted from it, the height
+  /// of the stack there is known where the result has become a constant.
   TemporaryOpaqueFunction StackHeightHook;
 
   Outliner::ModuleState OutlinerState;
