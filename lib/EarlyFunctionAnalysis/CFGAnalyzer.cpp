@@ -1756,45 +1756,68 @@ public:
     // An equation that contradicts those before it is dropped: something else
     // is wrong on one of the two paths. An unknown that is not a callee's goes
     // first, so that what is left is about the callees only.
-    std::vector<Sum> All = Restores;
-    All.insert(All.end(), Equations.begin(), Equations.end());
-    for (Sum &Equation : All) {
-      for (const Row &Other : Rows)
-        Eliminate(Equation, Other);
-      if (not Equation.IsValid or Equation.Terms.empty())
-        continue;
-      Rows.push_back({ Equation, Equation.Terms.rbegin()->first });
-    }
+    auto Reduce = [&Eliminate](std::vector<Sum> All) {
+      std::vector<Row> Rows;
+      for (Sum &Equation : All) {
+        for (const Row &Other : Rows)
+          Eliminate(Equation, Other);
+        if (not Equation.IsValid or Equation.Terms.empty())
+          continue;
+        Rows.push_back({ Equation, Equation.Terms.rbegin()->first });
+      }
 
-    for (size_t I = Rows.size(); I-- > 0;)
-      for (size_t J = 0; J < I; ++J)
-        Eliminate(Rows[J].Equation, Rows[I]);
+      for (size_t I = Rows.size(); I-- > 0;)
+        for (size_t J = 0; J < I; ++J)
+          Eliminate(Rows[J].Equation, Rows[I]);
+
+      return Rows;
+    };
 
     std::vector<std::optional<int64_t>> Result(Callees);
+
+    // Callees that count the same way where paths join and amount together
+    // to the least they can: each of them removes nothing. (An argument
+    // pushed before the calls that compute the next ones, for a callee that
+    // leaves it to the caller.) From the joins alone: where a register is
+    // read back from says less (it can have been saved more than once).
+    for (const Row &Row : Reduce(Equations)) {
+      const Sum &Equation = Row.Equation;
+      if (Row.Pivot >= Callees or not Equation.IsValid
+          or Equation.Terms.size() < 2)
+        continue;
+
+      bool AllPositive = true;
+      bool AllNegative = true;
+      int64_t AtLeast = Equation.Constant;
+      for (const auto &[Unknown, Other] : Equation.Terms) {
+        AllPositive = AllPositive and Other > 0;
+        AllNegative = AllNegative and Other < 0;
+        AtLeast += Other * Least;
+      }
+      if ((AllPositive or AllNegative) and AtLeast == 0)
+        for (const auto &[Unknown, Other] : Equation.Terms)
+          Result[Unknown] = Least;
+    }
+
+    for (unsigned I = 0; I < Callees; ++I)
+      if (Result[I].has_value())
+        Likeliest[I] = *Result[I];
+
+    std::vector<Sum> All = Restores;
+    All.insert(All.end(), Equations.begin(), Equations.end());
+    Rows = Reduce(std::move(All));
+
     for (const Row &Row : Rows) {
       const Sum &Equation = Row.Equation;
       if (Row.Pivot >= Callees or not Equation.IsValid)
         continue;
 
-      // Callees that count the same way and amount together to the least
-      // they can: each of them removes nothing. (An argument pushed before
-      // the calls that compute the next ones, for a callee that leaves it to
-      // the caller.)
-      if (Equation.Terms.size() > 1) {
-        bool AllPositive = true;
-        bool AllNegative = true;
-        int64_t AtLeast = Equation.Constant;
-        for (const auto &[Unknown, Other] : Equation.Terms) {
-          AllPositive = AllPositive and Other > 0;
-          AllNegative = AllNegative and Other < 0;
-          AtLeast += Other * Least;
-        }
-        if ((AllPositive or AllNegative) and AtLeast == 0) {
-          for (const auto &[Unknown, Other] : Equation.Terms)
-            Result[Unknown] = Least;
-          continue;
-        }
-      }
+      // (What the joins have settled stays)
+      bool IsSettled = true;
+      for (const auto &[Unknown, Other] : Equation.Terms)
+        IsSettled = IsSettled and Result[Unknown].has_value();
+      if (IsSettled)
+        continue;
 
       // The rows of the callees have no other unknowns: those went first
       int64_t Coefficient = Equation.Terms.find(Row.Pivot)->second;
