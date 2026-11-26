@@ -148,6 +148,9 @@ CFGAnalyzer::CFGAnalyzer(llvm::Module &M,
   PreCallHook(createCallMarkerType(M), "precall_hook", &M),
   PostCallHook(PreCallHook.get()->getFunctionType(), "postcall_hook", &M),
   RetHook(createRetMarkerType(M), "retcall_hook", &M),
+  StackHeightHook(createStackHeightMarkerType(Globals),
+                  "stack_height_hook",
+                  &M),
   OutlinerState(M),
   Outliner(M, Root, Globals, Oracle, OutlinerState),
   OpaqueBranchConditionsPool(&M, false),
@@ -181,12 +184,14 @@ OutlinedFunction CFGAnalyzer::outline(const MetaAddress &Entry) {
                             PreCallHook.get(),
                             PostCallHook.get(),
                             RetHook.get(),
+                            StackHeightHook.get(),
                             Globals.spReg(),
                             HasCFG ? &ReturnBlocks : nullptr,
                             &CallSiteFSO,
                             &UnknownCalls,
                             &CalleeClobbered,
-                            &CalleeSaved);
+                            &CalleeSaved,
+                            Entry);
 
   UnknownCalls.clear();
   CalleeClobbered.clear();
@@ -234,6 +239,13 @@ llvm::FunctionType *CFGAnalyzer::createRetMarkerType(llvm::Module &M) {
   Type *Void = Type::getVoidTy(Context);
   Type *I8Ptr = Type::getInt8PtrTy(Context);
   return llvm::FunctionType::get(Void, { I8Ptr }, false);
+}
+
+llvm::FunctionType *
+CFGAnalyzer::createStackHeightMarkerType(const CSVGlobals &Globals) {
+  Type *StackPointer = Globals.spReg()->getValueType();
+  Type *Void = Type::getVoidTy(StackPointer->getContext());
+  return llvm::FunctionType::get(Void, { StackPointer }, false);
 }
 
 std::optional<UpcastablePointer<efa::FunctionEdgeBase>>
@@ -460,6 +472,18 @@ void CFGAnalyzer::createIBIMarker(OutlinedFunction *Outlined) {
 
   State Initial = loadState(Builder);
 
+  // Turn the stack pointers the calls were met with into heights of the stack
+  for (CallBase *Call : callers(StackHeightHook.get())) {
+    if (Call->getFunction() != Outlined->Function.get())
+      continue;
+
+    auto *Height = BinaryOperator::CreateSub(Call->getArgOperand(0),
+                                             Initial.StackPointer,
+                                             "",
+                                             Call);
+    Call->setArgOperand(0, Height);
+  }
+
   //
   // Create IBI for this function
   //
@@ -658,10 +682,18 @@ void CFGAnalyzer::runOptimizationPipeline(llvm::Function *F) {
     FPM.addPass(MergedLoadStoreMotionPass());
     FPM.addPass(GVNPass());
 
+    // The registers through which code reaches the block of its thread: on
+    // x86, the bases of two segments
+    SmallVector<GlobalVariable *, 2> ThreadPointers;
+    for (const char *Name : { "_fs_base", "_gs_base" })
+      if (GlobalVariable *CSV = M.getGlobalVariable(Name, true))
+        ThreadPointers.push_back(CSV);
+
     // Second stage: add alias analysis info and canonicalize `i2p` + `add` into
     // `getelementptr` instructions. Since the IR may change remarkably, another
     // round of passes is necessary to take more optimization opportunities.
-    FPM.addPass(SegregateDirectStackAccessesPass(Globals.spReg()));
+    using SDSAP = SegregateDirectStackAccessesPass;
+    FPM.addPass(SDSAP(Globals.spReg(), ThreadPointers));
     FPM.addPass(EarlyCSEPass(true));
     FPM.addPass(InstCombinePass());
     FPM.addPass(GVNPass());
@@ -670,7 +702,7 @@ void CFGAnalyzer::runOptimizationPipeline(llvm::Function *F) {
     // only now, where the paths that reach it leave the stack pointer the
     // same: such an access was taken for one that is not to the stack, and
     // what was stored there is not found. Tell the accesses apart again.
-    FPM.addPass(SegregateDirectStackAccessesPass(Globals.spReg()));
+    FPM.addPass(SDSAP(Globals.spReg(), ThreadPointers));
     FPM.addPass(GVNPass());
 
     // Third stage: if enabled, serialize the results and dump the functions on
@@ -860,6 +892,12 @@ FunctionSummary CFGAnalyzer::milkInfo(OutlinedFunction *OutlinedFunction,
           IBIResult.emplace_back(CI, makeIndirectEdge(LongJmp));
         }
       }
+    } else if (JumpsToReturnAddress) {
+      // We're jumping to the return address, but where we leave the stack
+      // pointer is not known here: it depends on what the caller passed, as
+      // with the helpers compilers emit to set up a frame or to probe the
+      // stack. It might be known in the caller. Record it as BrokenReturn.
+      IBIResult.emplace_back(CI, makeIndirectEdge(BrokenReturn));
     } else {
       // We're leaving the stack pointer in an unknown state
       IBIResult.emplace_back(CI, makeIndirectEdge(LongJmp));
@@ -1086,36 +1124,52 @@ struct AnalysisScore {
   /// prototype nor one of its callees does
   unsigned Clobbered = 0;
 
+  /// The calls at which the height of the stack is not known
+  unsigned UnknownHeights = 0;
+
   bool leavesNothingToExplain() const {
-    return LongJmps == 0 and Clobbered == 0;
+    return LongJmps == 0 and Clobbered == 0 and UnknownHeights == 0;
   }
 
   bool leavesSomethingToExplain() const {
-    return LongJmps != 0 or (Returns != 0 and Clobbered != 0);
+    return LongJmps != 0 or (Returns != 0 and Clobbered != 0)
+           or UnknownHeights != 0;
   }
 
   /// Either more returns in place of longjmps, or the same branches and
-  /// fewer registers clobbered. A return that does not come with the
-  /// registers the function saved is not one: it is where code that is not
-  /// reached, such as what follows a call that never returns, happens to end.
+  /// fewer registers clobbered, or all the same and the height of the stack
+  /// known at more calls. A return that does not come with the registers the
+  /// function saved is not one: it is where code that is not reached, such as
+  /// what follows a call that never returns, happens to end.
   bool isBetterThan(const AnalysisScore &Other) const {
     if (Returns > Other.Returns and LongJmps < Other.LongJmps)
       return Clobbered <= Other.Clobbered;
-    return Returns == Other.Returns and LongJmps == Other.LongJmps
-           and Clobbered < Other.Clobbered;
+    if (Returns != Other.Returns or LongJmps != Other.LongJmps)
+      return false;
+    if (Clobbered != Other.Clobbered)
+      return Clobbered < Other.Clobbered
+             and UnknownHeights <= Other.UnknownHeights;
+    return UnknownHeights < Other.UnknownHeights;
   }
 
   auto rank() const {
-    return std::tuple(Returns, -int64_t(LongJmps), -int64_t(Clobbered));
+    return std::tuple(Returns,
+                      -int64_t(LongJmps),
+                      -int64_t(Clobbered),
+                      -int64_t(UnknownHeights));
   }
 };
 
-/// A call site nothing is known about
+/// A callee nothing is known about: that of a call site or, at all the sites
+/// where the function calls itself, the function
 struct UnknownCallSite {
-  MetaAddress Block;
+  llvm::SmallVector<MetaAddress, 1> Blocks;
 
   /// Whether the call is in the block its function starts with
   bool IsFirst = false;
+
+  /// Whether the callee is the function itself
+  bool IsRecursive = false;
 
   /// What its callee most likely removes from the stack, in words, and the
   /// most it can remove
@@ -1136,8 +1190,13 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
   // or it does, through a frame pointer, but restores the registers it saved
   // from the wrong place. What the callees remove can be found by trying: only
   // with the right amounts are the return address and the saved registers
-  // where the function left them. This also holds where the stack pointer is
-  // unknown at a return because the paths that reach it disagree on it.
+  // where the function left them, and do the paths that reach a later call
+  // agree on the height of the stack. This also holds where the stack pointer
+  // is unknown at a return because the paths that reach it disagree on it.
+  //
+  // A function that calls itself is such a callee too, the first time it is
+  // analyzed: nothing is known about it yet. What it is assumed to remove
+  // there has to be what it is then found to remove.
   //
   // This is for the functions detect-abi describes the call sites of: what
   // is found goes in their prototypes.
@@ -1162,6 +1221,8 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
     for (llvm::GlobalVariable *CSV : Summary.ClobberedRegisters)
       if (not ByDefault.contains(CSV) and not CalleeClobbered.contains(CSV))
         ++Score.Clobbered;
+
+    Score.UnknownHeights = UnknownHeights;
 
     return Score;
   };
@@ -1188,18 +1249,34 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
     }
 
     auto IsSame = [&Call](const UnknownCallSite &Other) {
-      return Other.Block == Call.Block;
+      return llvm::is_contained(Other.Blocks, Call.Block);
     };
     if (llvm::any_of(Sites, IsSame))
       continue;
 
     HasAssumptions = HasAssumptions or CallSiteFSO.contains(Call.Block);
+    bool IsFirst = Call.Block == Entry;
+    uint64_t Pushed = IsFirst ? Call.PushedAfterSaves : Call.Pushed;
+    uint64_t Likeliest = std::min(MaxWords, Pushed / Word);
+
+    // The function removes the same wherever it calls itself, and its
+    // arguments can have been pushed in another block
+    auto IsItself = [](const UnknownCallSite &Other) {
+      return Other.IsRecursive;
+    };
+    auto It = llvm::find_if(Sites, IsItself);
+    if (Call.IsRecursive and It != Sites.end()) {
+      It->Blocks.push_back(Call.Block);
+      It->Likeliest = std::max(It->Likeliest, Likeliest);
+      continue;
+    }
+
     UnknownCallSite &New = Sites.emplace_back();
-    New.Block = Call.Block;
-    New.IsFirst = Call.Block == Entry;
-    uint64_t Pushed = New.IsFirst ? Call.PushedAfterSaves : Call.Pushed;
-    New.Likeliest = std::min(MaxWords, Pushed / Word);
-    New.Most = New.Likeliest;
+    New.Blocks.push_back(Call.Block);
+    New.IsFirst = IsFirst;
+    New.IsRecursive = Call.IsRecursive;
+    New.Likeliest = Likeliest;
+    New.Most = Call.IsRecursive ? MaxWords : Likeliest;
   }
 
   AnalysisScore Base = ScoreOf(Result);
@@ -1210,7 +1287,8 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
   // anymore: start again
   auto Forget = [this, &Sites]() {
     for (const UnknownCallSite &Site : Sites)
-      CallSiteFSO.erase(Site.Block);
+      for (const MetaAddress &Block : Site.Blocks)
+        CallSiteFSO.erase(Block);
   };
   if (HasAssumptions) {
     Forget();
@@ -1227,14 +1305,28 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
   using Assumption = llvm::SmallVector<uint64_t, 4>;
   auto Assume = [this, &Sites, &Default, Word](const Assumption &Words) {
     for (size_t I = 0; I < Sites.size(); ++I)
-      CallSiteFSO[Sites[I].Block] = *Default + Words[I] * Word;
+      for (const MetaAddress &Block : Sites[I].Blocks)
+        CallSiteFSO[Block] = *Default + Words[I] * Word;
+  };
+
+  // What a function is assumed to remove where it calls itself has to be what
+  // it is found to remove
+  auto IsConsistent = [&Sites, &Default, Word](const FunctionSummary &Summary,
+                                               const Assumption &Words) {
+    for (size_t I = 0; I < Sites.size(); ++I) {
+      std::optional<int64_t> Assumed = *Default + Words[I] * Word;
+      if (Sites[I].IsRecursive and Summary.ElectedFSO != Assumed)
+        return false;
+    }
+    return true;
   };
 
   // Start from the likeliest assumption and, as long as something is left to
   // explain, move to the best of those that differ from it at one call site.
   // If the likeliest assumption changes nothing, the callees are not what is
   // wrong, unless it is about the call the function starts with, whose block
-  // also pushes what the function saves, or about its only call.
+  // also pushes what the function saves, about its only call, or about the
+  // calls to itself.
   Assumption Current;
   for (const UnknownCallSite &Site : Sites)
     Current.push_back(Site.Likeliest);
@@ -1242,13 +1334,17 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
   Assume(Current);
   FunctionSummary Best = analyzeOnce(Entry);
   AnalysisScore BestScore = ScoreOf(Best);
+  if (not IsConsistent(Best, Current)) {
+    Best = Result.clone();
+    BestScore = Base;
+  }
   bool IsOver = BestScore.leavesNothingToExplain() or Unsolved.contains(Entry);
   for (size_t Round = 0; not IsOver and Round < Sites.size(); ++Round) {
     bool OnlyFirst = Round == 0 and BestScore.rank() == Base.rank()
                      and Sites.size() != 1;
     Assumption Next;
     for (size_t I = 0; not IsOver and I < Sites.size(); ++I) {
-      if (OnlyFirst and not Sites[I].IsFirst)
+      if (OnlyFirst and not Sites[I].IsFirst and not Sites[I].IsRecursive)
         continue;
 
       for (uint64_t Words = Sites[I].Most + 1; not IsOver and Words > 0;) {
@@ -1261,7 +1357,8 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
         Assume(Other);
         FunctionSummary Attempt = analyzeOnce(Entry);
         AnalysisScore AttemptScore = ScoreOf(Attempt);
-        if (AttemptScore.rank() <= BestScore.rank())
+        if (not IsConsistent(Attempt, Other)
+            or AttemptScore.rank() <= BestScore.rank())
           continue;
 
         Best = std::move(Attempt);
@@ -1346,6 +1443,13 @@ FunctionSummary CFGAnalyzer::analyzeOnce(const MetaAddress &Entry) {
   // Execute the optimization pipeline over the outlined function
   runOptimizationPipeline(F);
 
+  // The paths that reach a call agree on the height of the stack there, unless
+  // something is wrong about a call before it
+  UnknownHeights = 0;
+  for (CallBase *Call : callers(StackHeightHook.get()))
+    if (Call->getFunction() == F and not isa<ConstantInt>(Call->getArgOperand(0)))
+      ++UnknownHeights;
+
   // Squeeze out the results obtained from the optimization passes
   auto FunctionInfo = milkInfo(&OutlinedFunction, std::move(CFG));
 
@@ -1356,24 +1460,28 @@ CallSummarizer::CallSummarizer(llvm::Module *M,
                                Function *PreCallHook,
                                Function *PostCallHook,
                                llvm::Function *RetHook,
+                               llvm::Function *StackHeightHook,
                                GlobalVariable *SPCSV,
                                llvm::SmallSet<MetaAddress, 4> *ReturnBlocks,
                                const std::map<MetaAddress, int64_t>
                                  *CallSiteFSO,
                                llvm::SmallVectorImpl<UnknownCall> *UnknownCalls,
                                CSVSet *CalleeClobbered,
-                               const CSVSet *CalleeSaved) :
+                               const CSVSet *CalleeSaved,
+                               MetaAddress Caller) :
   M(M),
   PreCallHook(PreCallHook),
   PostCallHook(PostCallHook),
   RetHook(RetHook),
+  StackHeightHook(StackHeightHook),
   SPCSV(SPCSV),
   ReturnBlocks(ReturnBlocks),
   Clobberer(M),
   CallSiteFSO(CallSiteFSO),
   UnknownCalls(UnknownCalls),
   CalleeClobbered(CalleeClobbered),
-  CalleeSaved(CalleeSaved) {
+  CalleeSaved(CalleeSaved),
+  Caller(Caller) {
 }
 
 /// \return the bytes the instructions of \p BB before \p End push and do not
@@ -1514,6 +1622,10 @@ void CallSummarizer::handleCall(MetaAddress CallerBlock,
 
   Module *M = Builder.GetInsertBlock()->getParent()->getParent();
 
+  // Leave a trace of where the stack pointer is when the call is made
+  if (not IsTailCall)
+    Builder.CreateCall(StackHeightHook, { Builder.createLoad(SPCSV) });
+
   Builder.CreateCall(PreCallHook, Args);
 
   // Emulate registers being clobbered, in the order of the names: the set is
@@ -1522,12 +1634,15 @@ void CallSummarizer::handleCall(MetaAddress CallerBlock,
     Clobberer.clobber(Builder, Register);
   CalleeClobbered->insert(ClobberedRegisters.begin(), ClobberedRegisters.end());
 
-  // For a call to something else than a function of the binary, what has been
-  // found about this call site, if anything, replaces what is assumed
+  // For a call to something else than a function of the binary, and for one
+  // of the function to itself, what has been found about this call site, if
+  // anything, replaces what is assumed
   std::optional<int64_t> FSO = MaybeFSO;
-  if (not IsTailCall and Callee.isInvalid()) {
+  bool IsRecursive = Callee.isValid() and Callee == Caller;
+  if (not IsTailCall and (Callee.isInvalid() or IsRecursive)) {
     UnknownCall &New = UnknownCalls->emplace_back();
     New.Block = CallerBlock;
+    New.IsRecursive = IsRecursive;
     if (not isa<ConstantPointerNull>(SymbolNamePointer))
       New.Symbol = extractFromConstantStringPtr(SymbolNamePointer).str();
     llvm::BasicBlock &Block = *Builder.GetInsertBlock();

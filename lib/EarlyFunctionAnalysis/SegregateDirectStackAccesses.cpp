@@ -2,7 +2,9 @@
 /// information.
 ///
 /// This provides a way to say that stack accesses do not interfere with any
-/// other memory access.
+/// other memory access. The accesses to the block of the thread, which is
+/// neither on the stack nor reached in any other way than through its
+/// register, are kept apart from both.
 
 //
 // This file is distributed under the MIT License. See LICENSE.md for details.
@@ -25,21 +27,29 @@ using SDSAPI = SegregateDirectStackAccessesPassImpl;
 class SegregateDirectStackAccessesPassImpl {
   LLVMContext *Context = nullptr;
   GlobalVariable *StackPointer = nullptr;
+  ArrayRef<GlobalVariable *> ThreadPointers;
   std::vector<Instruction *> DirectStackAccesses;
+  std::vector<Instruction *> ThreadBlockAccesses;
   std::vector<Instruction *> NotDirectStackAccesses;
 
 public:
-  explicit SegregateDirectStackAccessesPassImpl(GlobalVariable *StackPointer) :
-    StackPointer(StackPointer) {}
+  SegregateDirectStackAccessesPassImpl(GlobalVariable *StackPointer,
+                                       ArrayRef<GlobalVariable *>
+                                         ThreadPointers) :
+    StackPointer(StackPointer), ThreadPointers(ThreadPointers) {}
   void run(Function &, FunctionAnalysisManager &);
 
 private:
   void segregateAccesses(Function &F);
   void decorateStackAccesses();
+
+  /// \return whether \p Pointer is what a thread pointer holds, plus a
+  ///         constant
+  bool isInThreadBlock(Value *Pointer) const;
 };
 
 PreservedAnalyses SDSAP::run(Function &F, FunctionAnalysisManager &FAM) {
-  SegregateDirectStackAccessesPassImpl SDASP(StackPointer);
+  SegregateDirectStackAccessesPassImpl SDASP(StackPointer, ThreadPointers);
   SDASP.run(F, FAM);
   return PreservedAnalyses::none();
 }
@@ -53,6 +63,21 @@ void SDSAPI::run(Function &F, FunctionAnalysisManager &FAM) {
 
   // Adorn IR with the alias information collected before.
   decorateStackAccesses();
+}
+
+bool SDSAPI::isInThreadBlock(Value *Pointer) const {
+  using namespace PatternMatch;
+
+  Value *Base = nullptr;
+  if (match(Pointer, m_c_Add(m_Value(Base), m_ConstantInt())))
+    Pointer = skipCasts(Base);
+
+  auto *Load = dyn_cast<LoadInst>(Pointer);
+  if (Load == nullptr)
+    return false;
+
+  auto *CSV = dyn_cast<GlobalVariable>(skipCasts(Load->getPointerOperand()));
+  return CSV != nullptr and is_contained(ThreadPointers, CSV);
 }
 
 void SDSAPI::segregateAccesses(Function &F) {
@@ -150,6 +175,8 @@ void SDSAPI::segregateAccesses(Function &F) {
           I.setOperand(isa<LoadInst>(&I) ? 0 : 1, BitCast);
 
           DirectStackAccesses.emplace_back(&I);
+        } else if (isInThreadBlock(Pointer)) {
+          ThreadBlockAccesses.emplace_back(&I);
         } else {
           NotDirectStackAccesses.emplace_back(&I);
         }
@@ -163,23 +190,31 @@ void SDSAPI::decorateStackAccesses() {
 
   MDNode *AliasDomain = MDB.createAliasScopeDomain("CSVAliasDomain");
 
-  // Create two different domains, one will be populated with memory operations
-  // that directly access the stack; the other one, with all the remaining kind
-  // of accesses (to the CSVs, to the heap, etc.).
+  // Create three different scopes: one will be populated with memory
+  // operations that directly access the stack; one with those that access the
+  // block of the thread; the other one, with all the remaining kind of accesses
+  // (to the CSVs, to the heap, etc.).
   auto *DSAScope = MDB.createAliasScope("DirectStackAccessScope", AliasDomain);
+  auto *TBAScope = MDB.createAliasScope("ThreadBlockAccessScope", AliasDomain);
   auto *NDSAScope = MDB.createAliasScope("Not(DirectStackAccessScope)",
                                          AliasDomain);
 
-  auto *DSASet = MDNode::get(*Context, ArrayRef<Metadata *>({ DSAScope }));
-  auto *NDSASet = MDNode::get(*Context, ArrayRef<Metadata *>({ NDSAScope }));
+  auto Set = [this](std::initializer_list<Metadata *> Scopes) {
+    return MDNode::get(*Context, ArrayRef<Metadata *>(Scopes));
+  };
 
   for (auto *I : DirectStackAccesses) {
-    I->setMetadata(LLVMContext::MD_alias_scope, DSASet);
-    I->setMetadata(LLVMContext::MD_noalias, NDSASet);
+    I->setMetadata(LLVMContext::MD_alias_scope, Set({ DSAScope }));
+    I->setMetadata(LLVMContext::MD_noalias, Set({ NDSAScope, TBAScope }));
+  }
+
+  for (auto *I : ThreadBlockAccesses) {
+    I->setMetadata(LLVMContext::MD_alias_scope, Set({ TBAScope }));
+    I->setMetadata(LLVMContext::MD_noalias, Set({ DSAScope, NDSAScope }));
   }
 
   for (auto *I : NotDirectStackAccesses) {
-    I->setMetadata(LLVMContext::MD_alias_scope, NDSASet);
-    I->setMetadata(LLVMContext::MD_noalias, DSASet);
+    I->setMetadata(LLVMContext::MD_alias_scope, Set({ NDSAScope }));
+    I->setMetadata(LLVMContext::MD_noalias, Set({ DSAScope, TBAScope }));
   }
 }

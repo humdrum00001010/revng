@@ -31,11 +31,15 @@ class Function;
 
 namespace efa {
 
-/// A call to something else than a function of the binary: what its callee
-/// removes from the stack is assumed
+/// A call whose callee is not known to the analysis of the caller: something
+/// else than a function of the binary, or the caller itself. What it removes
+/// from the stack is assumed
 struct UnknownCall {
   /// The address of the block of the call
   MetaAddress Block;
+
+  /// Whether the function calls itself here
+  bool IsRecursive = false;
 
   /// The name of the dynamic function called, empty for an indirect call
   std::string Symbol;
@@ -55,6 +59,7 @@ private:
   llvm::Function *PreCallHook = nullptr;
   llvm::Function *PostCallHook = nullptr;
   llvm::Function *RetHook = nullptr;
+  llvm::Function *StackHeightHook = nullptr;
   llvm::GlobalVariable *SPCSV = nullptr;
   llvm::SmallSet<MetaAddress, 4> *ReturnBlocks = nullptr;
   OpaqueRegisterUser Clobberer;
@@ -73,17 +78,22 @@ private:
   /// The registers a function saves before using them
   const CSVSet *CalleeSaved = nullptr;
 
+  /// The function being outlined
+  MetaAddress Caller;
+
 public:
   CallSummarizer(llvm::Module *M,
                  llvm::Function *PreCallHook,
                  llvm::Function *PostCallHook,
                  llvm::Function *RetHook,
+                 llvm::Function *StackHeightHook,
                  llvm::GlobalVariable *SPCSV,
                  llvm::SmallSet<MetaAddress, 4> *ReturnBlocks,
                  const std::map<MetaAddress, int64_t> *CallSiteFSO,
                  llvm::SmallVectorImpl<UnknownCall> *UnknownCalls,
                  CSVSet *CalleeClobbered,
-                 const CSVSet *CalleeSaved);
+                 const CSVSet *CalleeSaved,
+                 MetaAddress Caller);
 
 public:
   void handleCall(MetaAddress CallerBlock,
@@ -125,6 +135,11 @@ private:
   TemporaryOpaqueFunction PostCallHook;
   TemporaryOpaqueFunction RetHook;
 
+  /// StackHeightHook takes the stack pointer before each function call. Once
+  /// the value it had at the entry is subtracted from it, the height of the
+  /// stack at the call is known where the result has become a constant.
+  TemporaryOpaqueFunction StackHeightHook;
+
   Outliner::ModuleState OutlinerState;
   Outliner Outliner;
 
@@ -148,6 +163,10 @@ private:
 
   /// The functions for which no assumption about their call sites helped
   std::set<MetaAddress> Unsolved;
+
+  /// The calls of the function analyzed last at which the height of the stack
+  /// is not known
+  unsigned UnknownHeights = 0;
 
 public:
   CFGAnalyzer(llvm::Module &M,
@@ -183,6 +202,7 @@ private:
 private:
   static llvm::FunctionType *createCallMarkerType(llvm::Module &M);
   static llvm::FunctionType *createRetMarkerType(llvm::Module &M);
+  static llvm::FunctionType *createStackHeightMarkerType(const CSVGlobals &);
 
 private:
   std::optional<UpcastablePointer<efa::FunctionEdgeBase>>
