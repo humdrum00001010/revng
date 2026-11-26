@@ -238,8 +238,12 @@ private:
   void preliminaryFunctionAnalysis();
 
   bool tryToAttach(model::Function &Function, const MetaAddress &Address);
-  bool offer(const MetaAddress &Candidate,
-             const std::map<MetaAddress, MetaAddress> &Owners);
+
+  /// The functions each block belongs to, by where the block starts
+  using OwnersMap = std::map<MetaAddress, llvm::SmallVector<MetaAddress, 1>>;
+  OwnersMap ownersOfBlocks(llvm::function_ref<bool(const model::Function &)>
+                             IsOwner);
+  bool offer(const MetaAddress &Candidate, const OwnersMap &Owners);
   void analyzeABI();
   Changes analyzeFunctionABI(const model::Function &Function,
                              OutlinedFunction &OutlinedFunction,
@@ -520,26 +524,35 @@ void DetectABI::attachResumeBlocks() {
   if (Candidates.empty())
     return;
 
-  // The function each block belongs to, by where the block starts. A block
-  // more than one function reaches says nothing.
-  std::map<MetaAddress, MetaAddress> Owners;
-  for (const model::Function &Function : Binary->Functions()) {
-    for (const efa::BasicBlock &Block :
-         FMC.getControlFlowGraph(Function.Entry()).Blocks()) {
-      if (Block.ID().isInlined())
-        continue;
-      auto [It, IsNew] = Owners.emplace(Block.ID().start(), Function.Entry());
-      if (not IsNew and It->second != Function.Entry())
-        It->second = MetaAddress::invalid();
-    }
-  }
-
+  OwnersMap Owners = ownersOfBlocks([](const model::Function &) {
+    return true;
+  });
   for (const MetaAddress &Candidate : Candidates)
     offer(Candidate, Owners);
 }
 
-bool DetectABI::offer(const MetaAddress &Candidate,
-                      const std::map<MetaAddress, MetaAddress> &Owners) {
+DetectABI::OwnersMap
+DetectABI::ownersOfBlocks(llvm::function_ref<bool(const model::Function &)>
+                            IsOwner) {
+  OwnersMap Owners;
+  for (const model::Function &Function : Binary->Functions()) {
+    if (not IsOwner(Function))
+      continue;
+
+    for (const efa::BasicBlock &Block :
+         FMC.getControlFlowGraph(Function.Entry()).Blocks()) {
+      if (Block.ID().isInlined())
+        continue;
+      auto &List = Owners[Block.ID().start()];
+      if (not llvm::is_contained(List, Function.Entry()))
+        List.push_back(Function.Entry());
+    }
+  }
+
+  return Owners;
+}
+
+bool DetectABI::offer(const MetaAddress &Candidate, const OwnersMap &Owners) {
   // Code that follows the blocks of a function is offered to that function:
   // whether it is its own is for tryToAttach to say. Between the function and
   // the code there can be the handlers the function is resumed from, which
@@ -549,32 +562,67 @@ bool DetectABI::offer(const MetaAddress &Candidate,
   // A function with several handlers has them all between its code and where
   // it goes on: the functions that cannot be resumed are looked past, up to a
   // point, and do not count among those that are tried.
+  //
+  // A block several functions reach (each of the functions that jump to a
+  // function has its code as their own) is resumed in all of them or in
+  // none: the code is offered to each, and stays attached only if every one
+  // of them takes it.
   constexpr unsigned MostOwners = 4;
   constexpr unsigned MostSeen = 32;
+  constexpr unsigned MostSharing = 8;
   llvm::SmallVector<MetaAddress, MostSeen> Seen;
   unsigned Tried = 0;
   auto It = Owners.upper_bound(Candidate);
   while (It != Owners.begin() and Tried < MostOwners
          and Seen.size() < MostSeen) {
     --It;
-    const MetaAddress &Owner = It->second;
-    if (It->first == Candidate or Owner.isInvalid() or Owner == Candidate
-        or llvm::is_contained(Seen, Owner))
+    const auto &Sharing = It->second;
+    if (It->first == Candidate or Sharing.empty()
+        or Sharing.size() > MostSharing
+        or llvm::is_contained(Sharing, Candidate)
+        or llvm::is_contained(Seen, Sharing.front()))
       continue;
 
-    Seen.push_back(Owner);
+    Seen.push_back(Sharing.front());
 
     // Only a function that saves its stack pointer for whoever resumes it
     // can be resumed: looking for that is much cheaper than trying
-    auto [SavesIt, IsNew] = SavesStackPointer.try_emplace(Owner, false);
-    if (IsNew)
-      SavesIt->second = Analyzer.savesStackPointer(Owner);
-    if (not SavesIt->second)
+    bool AllSave = true;
+    for (const MetaAddress &Owner : Sharing) {
+      auto [SavesIt, IsNew] = SavesStackPointer.try_emplace(Owner, false);
+      if (IsNew)
+        SavesIt->second = Analyzer.savesStackPointer(Owner);
+      AllSave = AllSave and SavesIt->second;
+    }
+    if (not AllSave)
       continue;
 
     ++Tried;
-    if (tryToAttach(Binary->Functions().at(Owner), Candidate))
+
+    // What each of them was, to go back to if one of them refuses
+    using Blocks = SortedVector<efa::BasicBlock>;
+    llvm::SmallVector<std::pair<MetaAddress, Blocks>, 1> Attached;
+    bool AllTake = true;
+    for (const MetaAddress &Owner : Sharing) {
+      Blocks Old = FMC.getControlFlowGraph(Owner).Blocks();
+      if (not tryToAttach(Binary->Functions().at(Owner), Candidate)) {
+        AllTake = false;
+        break;
+      }
+      Attached.emplace_back(Owner, std::move(Old));
+    }
+
+    if (AllTake)
       return true;
+
+    for (auto &[Owner, Old] : Attached) {
+      Binary->Functions().at(Owner).ResumeAddresses().erase(Candidate);
+      TupleTree<efa::FunctionBundle> Bundle;
+      efa::ControlFlowGraph &Main = Bundle->MainFunction();
+      Main.Entry() = Owner;
+      Main.Blocks() = std::move(Old);
+      FMC.set(std::move(Bundle));
+    }
   }
 
   return false;
@@ -607,23 +655,16 @@ void DetectABI::reattachFunctions(const std::set<MetaAddress> &Before) {
   };
 
   std::vector<MetaAddress> Candidates;
-  std::map<MetaAddress, MetaAddress> Owners;
-  for (const model::Function &Function : Binary->Functions()) {
-    if (not Before.contains(Function.Entry())
-        and not LeavesProperly(Function)) {
+  for (const model::Function &Function : Binary->Functions())
+    if (not Before.contains(Function.Entry()) and not LeavesProperly(Function))
       Candidates.push_back(Function.Entry());
-      continue;
-    }
 
-    for (const efa::BasicBlock &Block :
-         FMC.getControlFlowGraph(Function.Entry()).Blocks()) {
-      if (Block.ID().isInlined())
-        continue;
-      auto [It, IsNew] = Owners.emplace(Block.ID().start(), Function.Entry());
-      if (not IsNew and It->second != Function.Entry())
-        It->second = MetaAddress::invalid();
-    }
-  }
+  // (The functions are in the order of their addresses, so are these)
+  OwnersMap Owners = ownersOfBlocks([&](const model::Function &Function) {
+    return not std::binary_search(Candidates.begin(),
+                                  Candidates.end(),
+                                  Function.Entry());
+  });
 
   // One that starts where a block of a function found before it starts is
   // code of that function already: it only looked unused when the functions
@@ -657,10 +698,32 @@ bool DetectABI::tryToAttach(model::Function &Function,
     return Result;
   };
 
+  // (Where the function goes on can be in the middle of one of its blocks,
+  // which is then two: what counts is how the code of the old block leaves)
+  auto ExitsWithin = [&New](const efa::BasicBlock &Old) {
+    llvm::SmallVector<efa::FunctionEdgeType::Values, 2> Result;
+    for (const efa::BasicBlock &Block : New.CFG) {
+      if (Block.ID().isInlined() or Block.ID().start() < Old.ID().start()
+          or not(Block.ID().start() < Old.End()))
+        continue;
+      for (const auto &Edge : Block.Successors())
+        if (Edge->Type() != efa::FunctionEdgeType::DirectBranch)
+          Result.push_back(Edge->Type());
+    }
+    llvm::sort(Result);
+    return Result;
+  };
+
   bool IsFine = New.CFG.contains(BasicBlockID(Address));
   for (const efa::BasicBlock &Block : Old) {
     auto It = New.CFG.find(Block.ID());
-    IsFine = IsFine and It != New.CFG.end() and ExitsOf(*It) == ExitsOf(Block);
+    if (It == New.CFG.end()) {
+      IsFine = false;
+    } else if (Block.ID().isInlined()) {
+      IsFine = IsFine and ExitsOf(*It) == ExitsOf(Block);
+    } else {
+      IsFine = IsFine and ExitsWithin(Block) == ExitsOf(Block);
+    }
   }
 
   uint64_t OldFSO = abi::FunctionType::finalStackOffset(*Function.prototype());
