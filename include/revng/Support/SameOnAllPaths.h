@@ -4,6 +4,7 @@
 // This file is distributed under the MIT License. See LICENSE.md for details.
 //
 
+#include <map>
 #include <optional>
 #include <utility>
 
@@ -12,7 +13,115 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/PatternMatch.h"
 #include "llvm/IR/Value.h"
+
+/// \return \p V without the phis that have one incoming value and without
+///         the sums with a constant: the value under them, and the constant
+inline std::pair<llvm::Value *, int64_t> skipConstantSums(llvm::Value *V) {
+  using namespace llvm;
+  using namespace llvm::PatternMatch;
+
+  int64_t Offset = 0;
+  while (true) {
+    Value *Inner = nullptr;
+    ConstantInt *Constant = nullptr;
+    if (auto *Phi = dyn_cast<PHINode>(V);
+        Phi != nullptr and Phi->getNumIncomingValues() == 1) {
+      V = Phi->getIncomingValue(0);
+    } else if (match(V, m_Add(m_Value(Inner), m_ConstantInt(Constant)))
+               and Constant->getBitWidth() <= 64) {
+      Offset += Constant->getSExtValue();
+      V = Inner;
+    } else if (match(V, m_Sub(m_Value(Inner), m_ConstantInt(Constant)))
+               and Constant->getBitWidth() <= 64) {
+      Offset -= Constant->getSExtValue();
+      V = Inner;
+    } else {
+      return { V, Offset };
+    }
+  }
+}
+
+/// What two values differ by: `Minuend - Subtrahend + Constant`
+struct ValueDifference {
+  llvm::Value *Minuend = nullptr;
+  llvm::Value *Subtrahend = nullptr;
+  int64_t Constant = 0;
+};
+
+/// \return what \p A minus \p B is, where LLVM does not say: two phis of one
+///         block whose incoming values are, edge by edge, either the two
+///         phis again, moved by the same constant, or one pair of values.
+///         The pointer and the counter of a loop that walks down the stack a
+///         page at a time are such a pair: where the loop is left they
+///         differ by what they differed by where it was entered. Two values
+///         that are not such phis differ by themselves.
+///
+/// \param Through if not null, the blocks of the phis that were paired
+inline std::optional<ValueDifference>
+differenceOf(llvm::Value *A,
+             llvm::Value *B,
+             llvm::SmallVectorImpl<llvm::BasicBlock *> *Through = nullptr) {
+  using namespace llvm;
+  constexpr unsigned MostPairs = 64;
+
+  struct Pair {
+    Value *A = nullptr;
+    Value *B = nullptr;
+    int64_t Constant = 0;
+  };
+
+  std::optional<ValueDifference> Leaf;
+  std::map<std::pair<PHINode *, PHINode *>, int64_t> Seen;
+  SmallVector<Pair, 8> Queue;
+  Queue.push_back({ A, B, 0 });
+  while (not Queue.empty()) {
+    Pair Next = Queue.pop_back_val();
+    auto [BaseA, OffsetA] = skipConstantSums(Next.A);
+    auto [BaseB, OffsetB] = skipConstantSums(Next.B);
+    int64_t Constant = Next.Constant + OffsetA - OffsetB;
+
+    auto *PhiA = dyn_cast<PHINode>(BaseA);
+    auto *PhiB = dyn_cast<PHINode>(BaseB);
+    bool Together = PhiA != nullptr and PhiB != nullptr and PhiA != PhiB
+                    and PhiA->getParent() == PhiB->getParent();
+    if (not Together) {
+      // One pair of values and one constant, whichever way they are reached
+      if (Leaf.has_value()
+          and (Leaf->Minuend != BaseA or Leaf->Subtrahend != BaseB
+               or Leaf->Constant != Constant))
+        return std::nullopt;
+      Leaf = ValueDifference{ BaseA, BaseB, Constant };
+      continue;
+    }
+
+    // Met again: the two have to have moved by the same
+    auto [It, IsNew] = Seen.try_emplace({ PhiA, PhiB }, Constant);
+    if (not IsNew) {
+      if (It->second != Constant)
+        return std::nullopt;
+      continue;
+    }
+
+    if (Seen.size() > MostPairs)
+      return std::nullopt;
+
+    if (Through != nullptr)
+      Through->push_back(PhiA->getParent());
+
+    for (BasicBlock *Predecessor : PhiA->blocks()) {
+      int Index = PhiB->getBasicBlockIndex(Predecessor);
+      if (Index < 0)
+        return std::nullopt;
+      Queue.push_back({ PhiA->getIncomingValueForBlock(Predecessor),
+                        PhiB->getIncomingValue(Index),
+                        Constant });
+    }
+  }
+
+  return Leaf;
+}
 
 /// Values as a value plus a constant, or as a constant alone (no value).
 /// Where the paths of a function join with the same sum, computed on each of
@@ -30,8 +139,17 @@ private:
   /// found has to replace the value
   bool ThroughCasts = true;
 
+  /// If not null, the stack pointer a function is entered with, and what is
+  /// asked for is the top of its frame: a block the function carves out
+  /// below a place of its frame at run time (the place minus something that
+  /// is not a constant) is not part of the frame, and the top stays at that
+  /// place. Not for addresses: one that lies in such a block comes out as a
+  /// place of the frame.
+  llvm::Value *FrameBase = nullptr;
+
 public:
-  SameOnAllPaths(bool ThroughCasts = true) : ThroughCasts(ThroughCasts) {}
+  SameOnAllPaths(bool ThroughCasts = true, llvm::Value *FrameBase = nullptr) :
+    ThroughCasts(ThroughCasts), FrameBase(FrameBase) {}
 
   Result of(llvm::Value *V) {
     using namespace llvm;
@@ -106,6 +224,26 @@ private:
           return { Right.first, Left.second + Right.second };
         if (not IsAdd and Left.first == Right.first)
           return { nullptr, Left.second - Right.second };
+
+        // Two values that step together differ by what they started with
+        if (not IsAdd) {
+          std::optional<ValueDifference>
+            Both = differenceOf(Operator->getOperand(0),
+                                Operator->getOperand(1));
+          if (Both.has_value()) {
+            Result Minuend = of(Both->Minuend);
+            Result Subtrahend = of(Both->Subtrahend);
+            int64_t Constant = Minuend.second + Both->Constant;
+            if (Subtrahend.first == nullptr)
+              return { Minuend.first, Constant - Subtrahend.second };
+            if (Minuend.first == Subtrahend.first)
+              return { nullptr, Constant - Subtrahend.second };
+
+            // A block carved out below a place of the frame
+            if (FrameBase != nullptr and Minuend.first == FrameBase)
+              return { FrameBase, Constant };
+          }
+        }
       }
       return { V, 0 };
     }

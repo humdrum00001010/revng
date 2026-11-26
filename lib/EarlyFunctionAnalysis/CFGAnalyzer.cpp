@@ -3079,12 +3079,42 @@ CFGAnalyzer::optimize(const MetaAddress &Entry) {
   // Who the calls through a pointer go to, where another call says
   resolveCallees(F);
 
+  // The stack pointer the function is entered with: what is read from the
+  // register at the start, before anything is written to it
+  Value *EntryStackPointer = nullptr;
+  for (Instruction &I : F->getEntryBlock()) {
+    if (auto *Store = dyn_cast<StoreInst>(&I)) {
+      if (skipCasts(Store->getPointerOperand()) == Globals.spReg())
+        break;
+    } else if (auto *Load = dyn_cast<LoadInst>(&I)) {
+      if (skipCasts(Load->getPointerOperand()) != Globals.spReg())
+        continue;
+      if (EntryStackPointer == nullptr)
+        EntryStackPointer = Load;
+      else
+        Load->replaceAllUsesWith(EntryStackPointer);
+    }
+  }
+
   // The heights of the stack the paths of the function agree on, where LLVM
-  // does not see that they do
+  // does not see that they do.
+  //
+  // At a call, the height that matters is that of the frame: where the
+  // arguments of the call are, and what the callee can remove. A block the
+  // function allocated at run time before the call (the stack pointer was
+  // lowered by something that is not a constant) lies between the two and is
+  // no part of either: with it, no height after the allocation is a number,
+  // the paths that join after it never agree, and nothing is found about the
+  // callees there. At the start of a block the height recorded is where the
+  // stack pointer is (the isolation sets it from that), block included.
   SameOnAllPaths Same;
-  for (CallBase *Call : callers(StackHeightHook.get()))
-    if (Call->getFunction() == F)
-      Same.fold(Call, 1);
+  SameOnAllPaths Tops(true, EntryStackPointer);
+  for (CallBase *Call : callers(StackHeightHook.get())) {
+    if (Call->getFunction() != F)
+      continue;
+    bool AtCall = getLimitedValue(Call->getArgOperand(2)) == StackHeightAtCall;
+    (AtCall ? Tops : Same).fold(Call, 1);
+  }
   for (CallBase *Call :
        callers(OutlinedFunction.IndirectBranchInfoMarker.get()))
     if (Call->getFunction() == F)
