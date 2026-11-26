@@ -139,17 +139,8 @@ private:
   /// found has to replace the value
   bool ThroughCasts = true;
 
-  /// If not null, the stack pointer a function is entered with, and what is
-  /// asked for is the top of its frame: a block the function carves out
-  /// below a place of its frame at run time (the place minus something that
-  /// is not a constant) is not part of the frame, and the top stays at that
-  /// place. Not for addresses: one that lies in such a block comes out as a
-  /// place of the frame.
-  llvm::Value *FrameBase = nullptr;
-
 public:
-  SameOnAllPaths(bool ThroughCasts = true, llvm::Value *FrameBase = nullptr) :
-    ThroughCasts(ThroughCasts), FrameBase(FrameBase) {}
+  SameOnAllPaths(bool ThroughCasts = true) : ThroughCasts(ThroughCasts) {}
 
   Result of(llvm::Value *V) {
     using namespace llvm;
@@ -238,10 +229,6 @@ private:
               return { Minuend.first, Constant - Subtrahend.second };
             if (Minuend.first == Subtrahend.first)
               return { nullptr, Constant - Subtrahend.second };
-
-            // A block carved out below a place of the frame
-            if (FrameBase != nullptr and Minuend.first == FrameBase)
-              return { FrameBase, Constant };
           }
         }
       }

@@ -10,9 +10,9 @@
 #include "llvm/IR/Module.h"
 #include "llvm/Support/Casting.h"
 
+#include "revng/PromoteStackPointer/DetachStackAllocations.h"
 #include "revng/PromoteStackPointer/DetachStackAllocationsPass.h"
 #include "revng/PromoteStackPointer/Markers.h"
-#include "revng/PromoteStackPointer/StackTops.h"
 #include "revng/Support/Debug.h"
 #include "revng/Support/IRHelpers.h"
 

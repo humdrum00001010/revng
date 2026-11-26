@@ -51,6 +51,7 @@
 #include "revng/Support/MetaAddress.h"
 #include "revng/Support/NewPC.h"
 #include "revng/Support/SameOnAllPaths.h"
+#include "revng/Support/StackTops.h"
 #include "revng/Support/TemporaryLLVMOption.h"
 
 // This name is not present after `lift`.
@@ -3105,15 +3106,27 @@ CFGAnalyzer::optimize(const MetaAddress &Entry) {
   // lowered by something that is not a constant) lies between the two and is
   // no part of either: with it, no height after the allocation is a number,
   // the paths that join after it never agree, and nothing is found about the
-  // callees there. At the start of a block the height recorded is where the
+  // callees there. So at a call the height is the top of the frame, see
+  // StackTops. At the start of a block the height recorded is where the
   // stack pointer is (the isolation sets it from that), block included.
   SameOnAllPaths Same;
-  SameOnAllPaths Tops(true, EntryStackPointer);
+  StackTops Tops(EntryStackPointer);
   for (CallBase *Call : callers(StackHeightHook.get())) {
     if (Call->getFunction() != F)
       continue;
-    bool AtCall = getLimitedValue(Call->getArgOperand(2)) == StackHeightAtCall;
-    (AtCall ? Tops : Same).fold(Call, 1);
+
+    Same.fold(Call, 1);
+
+    // (Not while what the callees remove is a symbol: the heights are then
+    // sums for the equations, which take them as they are)
+    Value *Height = Call->getArgOperand(1);
+    if (EntryStackPointer == nullptr or not SymbolicSites.empty()
+        or isa<ConstantInt>(Height)
+        or getLimitedValue(Call->getArgOperand(2)) != StackHeightAtCall)
+      continue;
+
+    if (std::optional<int64_t> Top = Tops.heightOf(Height))
+      Call->setArgOperand(1, ConstantInt::getSigned(Height->getType(), *Top));
   }
   for (CallBase *Call :
        callers(OutlinedFunction.IndirectBranchInfoMarker.get()))
