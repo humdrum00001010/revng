@@ -882,6 +882,17 @@ definitions:
           type: SortedVector
           elementType: CallSitePrototype
 
+      - name: ResumeAddresses
+        doc: |-
+          Addresses of code of this function that no jump of the function
+          leads to: the code the function goes on with after an exception has
+          been handled. It is entered with the frame of the function as the
+          function left it where it saved its stack pointer in it, with the
+          register that holds the frame, and with no other register.
+        sequence:
+          type: SortedVector
+          elementType: MetaAddress
+
       - name: ExportedNames
         doc: |-
           The list of names used to make this function available as a dynamic

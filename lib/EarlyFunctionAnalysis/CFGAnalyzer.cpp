@@ -1398,9 +1398,13 @@ struct UnknownCallSite {
   /// Whether the function leaves no choice about what the callee removes
   bool IsRequired = false;
 
-  /// Whether Most is what the callee cannot remove more than: what the
-  /// function saved before the call stays where it is
-  bool HasBound = false;
+  /// What the callee cannot remove more than: what the function saved
+  /// before the call stays where it is
+  std::optional<uint64_t> Bound;
+
+  /// Whether the function only says what this callee and others remove
+  /// together
+  bool IsAmbiguous = false;
 
   /// What its callee most likely removes from the stack, in words, and the
   /// most it can remove
@@ -1453,6 +1457,11 @@ private:
       add(Old, Factor);
     }
 
+    bool operator==(const Sum &Other) const {
+      return Terms == Other.Terms and Constant == Other.Constant
+             and IsValid == Other.IsValid;
+    }
+
     /// Divide by what all the coefficients have in common
     void normalize() {
       int64_t Common = std::abs(Constant);
@@ -1494,6 +1503,9 @@ private:
   /// Each is a sum that is zero
   std::vector<Sum> Equations;
 
+  /// Those that say a register is read back from where it was saved
+  std::vector<Sum> Restores;
+
 public:
   StackEquations(unsigned Callees,
                  llvm::Function *StackEffect,
@@ -1524,6 +1536,42 @@ public:
 
     if (std::optional<Sum> Slot = heightOf(Store->getPointerOperand()))
       Saves.push_back({ Store, std::move(*Slot) });
+  }
+
+  /// \p Difference is what a register had when the function was entered
+  /// minus what it has where the function is left. If it is read from the
+  /// stack there, and the function saved it in one place, that is the place
+  /// it is read from: no evidence is stronger, so these equations go first.
+  void visitRestore(llvm::Value *Difference) {
+    using namespace llvm;
+    using namespace llvm::PatternMatch;
+
+    Value *Initial = nullptr;
+    Value *Pointer = nullptr;
+    if (not match(Difference,
+                  m_Sub(m_Value(Initial), m_Load(m_Value(Pointer)))))
+      return;
+
+    std::optional<Sum> Restored = heightOf(Pointer);
+    if (not Restored.has_value())
+      return;
+
+    const Save *Only = nullptr;
+    for (const Save &Save : Saves) {
+      if (cast<StoreInst>(Save.Store)->getValueOperand() != Initial)
+        continue;
+      if (Only != nullptr and not(Only->Slot == Save.Slot))
+        return;
+      Only = &Save;
+    }
+
+    if (Only == nullptr)
+      return;
+
+    Sum Equation = *Restored;
+    Equation.add(Only->Slot, -1);
+    if (Equation.IsValid and not Equation.Terms.empty())
+      Restores.push_back(std::move(Equation));
   }
 
   /// \return for each callee, the most it can move the stack pointer by: not
@@ -1607,7 +1655,9 @@ public:
     // An equation that contradicts those before it is dropped: something else
     // is wrong on one of the two paths. An unknown that is not a callee's goes
     // first, so that what is left is about the callees only.
-    for (Sum &Equation : Equations) {
+    std::vector<Sum> All = Restores;
+    All.insert(All.end(), Equations.begin(), Equations.end());
+    for (Sum &Equation : All) {
       for (const Row &Other : Rows)
         Eliminate(Equation, Other);
       if (not Equation.IsValid or Equation.Terms.empty())
@@ -1810,9 +1860,14 @@ CFGAnalyzer::solveCallEffects(const MetaAddress &Entry,
     if (auto *Store = dyn_cast<StoreInst>(&I))
       Equations.visitStore(Store);
 
-  for (CallBase *Call : callers(OutlinedFunction.IndirectBranchInfoMarker.get()))
-    if (Call->getFunction() == F)
-      Equations.visit(Call->getArgOperand(StackPointerOffsetIndex));
+  Function *Marker = OutlinedFunction.IndirectBranchInfoMarker.get();
+  for (CallBase *Call : callers(Marker)) {
+    if (Call->getFunction() != F)
+      continue;
+    Equations.visit(Call->getArgOperand(StackPointerOffsetIndex));
+    for (unsigned I = FirstPreservedRegisterIndex; I < Call->arg_size(); ++I)
+      Equations.visitRestore(Call->getArgOperand(I));
+  }
 
   DominatorTree DT(*F);
   Most = Equations.bounds(DT);
@@ -2017,14 +2072,16 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
     SymbolicSites.clear();
 
     for (size_t I = 0; I < Sites.size(); ++I) {
-      // What the callee cannot remove is not to be tried either
-      std::optional<uint64_t> Bound;
+      // What the callee cannot remove is not to be tried either. The only
+      // such call of a function can also have its arguments pushed in another
+      // block.
+      if (Sites.size() == 1)
+        Sites[I].Most = MaxWords;
       if (MostEffects[I].has_value())
-        Bound = WordsOf(*MostEffects[I]);
-      if (Bound.has_value()) {
-        Sites[I].HasBound = true;
-        Sites[I].Most = std::min(Sites[I].Most, *Bound);
-        Sites[I].Likeliest = std::min(Sites[I].Likeliest, *Bound);
+        Sites[I].Bound = WordsOf(*MostEffects[I]);
+      if (Sites[I].Bound.has_value()) {
+        Sites[I].Most = std::min(Sites[I].Most, *Sites[I].Bound);
+        Sites[I].Likeliest = std::min(Sites[I].Likeliest, *Sites[I].Bound);
       }
 
       std::optional<uint64_t> Words;
@@ -2036,18 +2093,14 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
         continue;
 
       Sites[I].Likeliest = *Words;
-      if (not Sites[I].HasBound)
+      Sites[I].IsAmbiguous = IsAmbiguous[I];
+      if (not Sites[I].Bound.has_value())
         Sites[I].Most = std::max(Sites[I].Most, *Words);
       Sites[I].IsRequired = Required[I].has_value();
       if (IsAmbiguous[I])
         for (const MetaAddress &Block : Sites[I].Blocks)
           AmbiguousSites.insert(Block);
     }
-
-    // The only such call of a function can also have its arguments pushed in
-    // another block
-    if (Sites.size() == 1 and not Sites[0].HasBound)
-      Sites[0].Most = MaxWords;
   }
 
   // An assumption: the words each callee removes
@@ -2122,6 +2175,51 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
       break;
     Current = Next;
   }
+
+  // Where the function only says what some callees remove together, one can
+  // have been given what is another's: the heights of the stack are then all
+  // known, and a register the function saved comes back from the wrong place.
+  // Move a word from one to another, as long as that helps.
+  constexpr unsigned MostMoves = 48;
+  unsigned Moves = 0;
+  auto Move = [&]() {
+    for (size_t From = 0; From < Sites.size(); ++From) {
+      if (not Sites[From].IsAmbiguous or Current[From] == 0)
+        continue;
+
+      for (size_t To = 0; To < Sites.size(); ++To) {
+        if (To == From or not Sites[To].IsAmbiguous
+            or (Sites[To].Bound.has_value()
+                and Current[To] + 1 > *Sites[To].Bound))
+          continue;
+
+        if (Moves >= MostMoves)
+          return false;
+        ++Moves;
+
+        Assumption Other = Current;
+        --Other[From];
+        ++Other[To];
+        Assume(Other);
+        FunctionSummary Attempt = analyzeOnce(Entry);
+        AnalysisScore AttemptScore = ScoreOf(Attempt);
+        if (not IsConsistent(Attempt, Other)
+            or AttemptScore.rank() <= BestScore.rank())
+          continue;
+
+        Best = std::move(Attempt);
+        BestScore = AttemptScore;
+        Current = Other;
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  if (not Unsolved.contains(Entry))
+    while (not BestScore.leavesNothingToExplain() and Move())
+      ;
 
   if (not BestScore.isBetterThan(Base)) {
     Unsolved.insert(Entry);

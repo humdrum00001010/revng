@@ -26,8 +26,14 @@ public:
     M(M), Root(Root), Binary(Binary) {}
 
   void run(ControlFlowGraphCache &MDCache) {
+    for (const MetaAddress &Entry : candidates(MDCache))
+      Binary.Functions()[Entry];
+  }
+
+  std::vector<MetaAddress> candidates(ControlFlowGraphCache &MDCache) {
     loadAllCFGs(MDCache);
     collectFunctionsFromUnusedAddresses();
+    return std::move(Found);
   }
 
 private:
@@ -107,7 +113,7 @@ private:
                         << Entry.toString());
           }
 
-          Binary.Functions()[Entry];
+          Found.push_back(Entry);
           revng_log(Log,
                     "Found function from unused addresses: "
                       << BB.getName().str());
@@ -125,7 +131,16 @@ private:
   RootFunction &Root;
   model::Binary &Binary;
   interval_set UsedRanges;
+  std::vector<MetaAddress> Found;
 };
+
+std::vector<MetaAddress> unusedCodeAddresses(llvm::Module &M,
+                                             RootFunction &Root,
+                                             model::Binary &Binary,
+                                             ControlFlowGraphCache &FMC) {
+  CFFUAImpl Impl(M, Root, Binary);
+  return Impl.candidates(FMC);
+}
 
 void collectFunctionsFromUnusedAddresses(llvm::Module &M,
                                          RootFunction &Root,

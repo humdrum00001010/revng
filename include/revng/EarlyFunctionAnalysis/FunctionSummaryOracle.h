@@ -157,6 +157,8 @@ private:
 
 public:
   FunctionSummaryOracle() = delete;
+  const model::Binary &binary() const { return Binary; }
+
   FunctionSummaryOracle(const model::Binary &Binary,
                         PrototypeImporter Importer) :
     Binary(Binary), Importer(std::move(Importer)) {}

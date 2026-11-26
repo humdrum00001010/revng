@@ -6,6 +6,7 @@
 #include "llvm/ADT/SCCIterator.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/InstIterator.h"
+#include "llvm/IR/PatternMatch.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
@@ -286,6 +287,20 @@ Outliner::outlineFunctionInternal(CallHandler *TheCallHandler,
   if (HasEntryBlock)
     Queue.insert(EntryBlock);
 
+  // The code the function goes on with after an exception is handled is
+  // part of it too, although nothing in the function jumps there
+  SmallVector<BasicBlock *, 2> ResumeBlocks;
+  const auto &Functions = Oracle.binary().Functions();
+  if (const model::Function *Function = Functions.tryGet(FunctionAddress)) {
+    for (const MetaAddress &Address : Function->ResumeAddresses()) {
+      BasicBlock *Block = RootF.getBlockAt(Address);
+      if (Block != nullptr and not is_contained(ResumeBlocks, Block)) {
+        ResumeBlocks.push_back(Block);
+        Queue.insert(Block);
+      }
+    }
+  }
+
   Queue.insert(AnyPCBB);
   Queue.insert(UnexpectedPCBB);
 
@@ -343,6 +358,29 @@ Outliner::outlineFunctionInternal(CallHandler *TheCallHandler,
   // Update references in cloned basic blocks
   //
   remapInstructionsInBlocks(BlocksToExtract, VMap);
+
+  // The block the function is resumed from: whoever handles the exception
+  // chooses where the function goes on. What leads to this block is added
+  // when the function is complete, see connectResumePoint.
+  if (not ResumeBlocks.empty()) {
+    LLVMContext &Context = M.getContext();
+    BasicBlock *Resume = BasicBlock::Create(Context, "resume", Root);
+    revng::IRBuilder Builder(Resume);
+    Function *Helper = exceptionHelper("revng_exception_resume", true);
+    SmallVector<Value *, 1> Arguments;
+    if (Helper->arg_size() == 1)
+      Arguments.push_back(Builder.createLoad(M.getGlobalVariable("_ebp",
+                                                                 true)));
+    auto *Selector = Builder.CreateCall(Helper, Arguments);
+    auto *Switch = Builder.CreateSwitch(Selector,
+                                        cast<BasicBlock>(VMap[ResumeBlocks[0]]),
+                                        ResumeBlocks.size() - 1);
+    for (unsigned I = 1; I < ResumeBlocks.size(); ++I)
+      Switch->addCase(Builder.getInt32(I),
+                      cast<BasicBlock>(VMap[ResumeBlocks[I]]));
+    BlocksToExtract.emplace_back(Resume);
+    OutlinedFunction.ResumeCloned = Resume;
+  }
 
   //
   // Switch successor of function calls from callee to fallthrough
@@ -452,7 +490,8 @@ Outliner::outlineFunctionInternal(CallHandler *TheCallHandler,
     df_iterator_default_set<BasicBlock *, 32> Reachable;
     for (BasicBlock *Root : { &F->getEntryBlock(),
                               OutlinedFunction.AnyPCCloned,
-                              OutlinedFunction.UnexpectedPCCloned }) {
+                              OutlinedFunction.UnexpectedPCCloned,
+                              OutlinedFunction.ResumeCloned }) {
       if (Root == nullptr or Root->getParent() != F)
         continue;
       for (BasicBlock *BB : depth_first_ext(Root, Reachable))
@@ -665,9 +704,158 @@ OutlinedFunction Outliner::outline(const MetaAddress &Entry,
     }
   }
 
+  connectResumePoint(&Result);
+
   createAnyPCHooks(Handler, &Result);
 
   return Result;
+}
+
+llvm::Function *Outliner::exceptionHelper(llvm::StringRef Name, bool IsResume) {
+  using namespace llvm;
+
+  if (Function *Existing = M.getFunction(Name))
+    return Existing;
+
+  // Being resumed takes the frame of the function: what ran since the
+  // function saved its stack pointer changed what is in it, and that is not
+  // to be taken for what it was. Of the registers, the one that holds the
+  // frame is all the function can count on.
+  LLVMContext &Context = M.getContext();
+  Type *Int32 = Type::getInt32Ty(Context);
+  GlobalVariable *FramePointer = M.getGlobalVariable("_ebp", true);
+  SmallVector<Type *, 1> Parameters;
+  if (IsResume and FramePointer != nullptr)
+    Parameters.push_back(FramePointer->getValueType());
+  auto *Type = FunctionType::get(Int32, Parameters, false);
+  auto *Helper = Function::Create(Type, GlobalValue::ExternalLinkage, Name, &M);
+  FunctionTags::Helper.addTo(Helper);
+
+  QuickMetadata QMD(Context);
+  SmallVector<Metadata *, 16> Read;
+  SmallVector<Metadata *, 16> Written;
+  if (IsResume) {
+    for (GlobalVariable *CSV : Globals.abiRegisters())
+      if (CSV != nullptr and not Globals.isSPReg(CSV) and CSV != FramePointer)
+        Written.push_back(QMD.get(CSV->getName()));
+  }
+
+  auto Usage = [&QMD](ArrayRef<Metadata *> CSVs) {
+    return QMD.tuple({ QMD.get(uint32_t(0)), QMD.tuple(CSVs) });
+  };
+  Helper->setMetadata("revng.csvaccess.offsets.load", Usage(Read));
+  Helper->setMetadata("revng.csvaccess.offsets.store", Usage(Written));
+
+  return Helper;
+}
+
+void Outliner::connectResumePoint(OutlinedFunction *Outlined) {
+  using namespace llvm;
+  using namespace llvm::PatternMatch;
+  using llvm::BasicBlock;
+
+  BasicBlock *Resume = Outlined->ResumeCloned;
+  if (Resume == nullptr)
+    return;
+
+  Function *F = Outlined->Function.get();
+  GlobalVariable *StackPointer = Globals.spReg();
+  GlobalVariable *FramePointer = M.getGlobalVariable("_ebp", true);
+
+  // Where the function saves its stack pointer in its frame, in one of the
+  // two places the code that handles exceptions on 32-bit Windows restores
+  // it from: below the record of a C++ handler, and below that of a
+  // structured one. From there on the function can be resumed.
+  SmallVector<StoreInst *, 2> Anchors;
+  std::optional<int64_t> Offset;
+  bool IsUnique = FramePointer != nullptr;
+  for (Instruction &I : instructions(F)) {
+    auto *Store = dyn_cast<StoreInst>(&I);
+    if (Store == nullptr or not IsUnique)
+      continue;
+
+    auto *Stored = dyn_cast<LoadInst>(Store->getValueOperand());
+    if (Stored == nullptr or Stored->getPointerOperand() != StackPointer)
+      continue;
+
+    Value *Address = nullptr;
+    if (not match(Store->getPointerOperand(), m_IntToPtr(m_Value(Address))))
+      continue;
+    if (auto *Extended = dyn_cast<ZExtInst>(Address))
+      Address = Extended->getOperand(0);
+
+    Value *Base = nullptr;
+    ConstantInt *Displacement = nullptr;
+    if (not match(Address, m_Add(m_Value(Base), m_ConstantInt(Displacement))))
+      continue;
+    auto *Frame = dyn_cast<LoadInst>(Base);
+    if (Frame == nullptr or Frame->getPointerOperand() != FramePointer)
+      continue;
+
+    int64_t Slot = Displacement->getSExtValue();
+    if (Slot != -0x10 and Slot != -0x18)
+      continue;
+
+    if (Offset.has_value() and *Offset != Slot)
+      IsUnique = false;
+    Offset = Slot;
+    Anchors.push_back(Store);
+  }
+
+  if (not IsUnique or Anchors.empty()) {
+    // Nothing leads to the code the function would be resumed at: it goes
+    // away, with whatever only it reaches
+    df_iterator_default_set<BasicBlock *, 32> Reachable;
+    for (BasicBlock *Root : { &F->getEntryBlock(),
+                              Outlined->AnyPCCloned,
+                              Outlined->UnexpectedPCCloned }) {
+      if (Root == nullptr or Root->getParent() != F)
+        continue;
+      for (BasicBlock *BB : depth_first_ext(Root, Reachable))
+        (void) BB;
+    }
+
+    SmallVector<BasicBlock *, 8> Dead;
+    for (BasicBlock &BB : *F)
+      if (not Reachable.contains(&BB))
+        Dead.push_back(&BB);
+    DeleteDeadBlocks(Dead);
+    Outlined->ResumeCloned = nullptr;
+    return;
+  }
+
+  // The function is resumed with the stack pointer it saved, and still
+  // finds it where it saved it
+  Instruction *Selector = nullptr;
+  for (Instruction &I : *Resume)
+    if (isa<CallInst>(&I))
+      Selector = &I;
+  revng_assert(Selector != nullptr);
+  revng::IRBuilder Builder(&Resume->front());
+  Type *StackPointerType = StackPointer->getValueType();
+  Value *Frame = Builder.createLoad(FramePointer);
+  Value *Address = Builder.CreateAdd(Frame,
+                                     ConstantInt::getSigned(Frame->getType(),
+                                                            *Offset));
+  Value *Slot = Builder.CreateIntToPtr(Builder.CreateZExt(Address,
+                                                          Builder.getInt64Ty()),
+                                       StackPointerType->getPointerTo());
+  Value *Saved = Builder.CreateLoad(StackPointerType, Slot);
+  Builder.SetInsertPoint(Selector->getNextNode());
+  Builder.CreateStore(Saved, Slot);
+  Builder.CreateStore(Saved, StackPointer);
+
+  for (StoreInst *Anchor : Anchors) {
+    BasicBlock *BB = Anchor->getParent();
+    BasicBlock *Rest = BB->splitBasicBlock(Anchor->getNextNode());
+    Instruction *OldTerminator = BB->getTerminator();
+    revng::IRBuilder Builder(OldTerminator);
+    Value *Caught = Builder.CreateCall(exceptionHelper("revng_exception_"
+                                                       "caught",
+                                                       false));
+    Builder.CreateCondBr(Builder.CreateIsNotNull(Caught), Resume, Rest);
+    eraseFromParent(OldTerminator);
+  }
 }
 
 llvm::Function *

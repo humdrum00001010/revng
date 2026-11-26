@@ -195,11 +195,21 @@ public:
     // Propagate prototypes
     Task.advance("propagatePrototypes");
     propagatePrototypes();
+
+    // Give the functions the code they are resumed at
+    attachResumeBlocks();
   }
 
 private:
   void computeApproximateCallGraph();
   void preliminaryFunctionAnalysis();
+
+  /// Code no function reaches, lying between the blocks of a function, is
+  /// most often where that function goes on after an exception is handled.
+  /// If the function, analyzed as being resumed there, still makes sense, the
+  /// code is its own; otherwise it is left to become a function.
+  void attachResumeBlocks();
+  bool tryToAttach(model::Function &Function, const MetaAddress &Address);
   void analyzeABI();
   Changes analyzeFunctionABI(const model::Function &Function,
                              OutlinedFunction &OutlinedFunction,
@@ -326,6 +336,90 @@ void DetectABI::computeApproximateCallGraph() {
     revng_assert(!EC);
     llvm::WriteGraph(OutputCG, &ApproximateCallGraph);
   }
+}
+
+void DetectABI::attachResumeBlocks() {
+  std::vector<MetaAddress> Candidates = unusedCodeAddresses(M,
+                                                            Root,
+                                                            *Binary,
+                                                            FMC);
+  if (Candidates.empty())
+    return;
+
+  // The function each block belongs to, by where the block starts. A block
+  // more than one function reaches says nothing.
+  std::map<MetaAddress, MetaAddress> Owners;
+  for (const model::Function &Function : Binary->Functions()) {
+    for (const efa::BasicBlock &Block :
+         Oracle.getLocalFunction(Function.Entry()).CFG) {
+      if (Block.ID().isInlined())
+        continue;
+      auto [It, IsNew] = Owners.emplace(Block.ID().start(), Function.Entry());
+      if (not IsNew and It->second != Function.Entry())
+        It->second = MetaAddress::invalid();
+    }
+  }
+
+  // Code that lies between two blocks of the same function
+  for (const MetaAddress &Candidate : Candidates) {
+    auto Above = Owners.upper_bound(Candidate);
+    if (Above == Owners.end() or Above == Owners.begin())
+      continue;
+    auto Below = std::prev(Above);
+    if (Below->first == Candidate or Below->second.isInvalid()
+        or Below->second != Above->second)
+      continue;
+
+    tryToAttach(Binary->Functions().at(Below->second), Candidate);
+  }
+}
+
+bool DetectABI::tryToAttach(model::Function &Function,
+                            const MetaAddress &Address) {
+  MetaAddress Entry = Function.Entry();
+  auto &Old = Oracle.getLocalFunction(Entry).CFG;
+  if (Function.Prototype().isEmpty() or Old.contains(BasicBlockID(Address)))
+    return false;
+
+  Function.ResumeAddresses().insert(Address);
+  FunctionSummary New = Analyzer.analyze(Entry);
+
+  // The function has to be what it was, plus code that leads back into it
+  // or returns as it does
+  bool IsFine = New.CFG.contains(BasicBlockID(Address));
+  for (const efa::BasicBlock &Block : Old)
+    IsFine = IsFine and New.CFG.contains(Block.ID());
+
+  for (const efa::BasicBlock &Block : New.CFG) {
+    if (Old.contains(Block.ID()))
+      continue;
+
+    for (const auto &Edge : Block.Successors()) {
+      using namespace efa::FunctionEdgeType;
+      const auto *Call = llvm::dyn_cast<efa::CallEdge>(Edge.get());
+      bool IsPlainCall = Call != nullptr and not Call->IsTailCall();
+      if (Edge->Type() != DirectBranch and Edge->Type() != Return
+          and not IsPlainCall)
+        IsFine = false;
+    }
+  }
+
+  if (not IsFine) {
+    Function.ResumeAddresses().erase(Address);
+    return false;
+  }
+
+  {
+    TupleTree<efa::FunctionBundle> Bundle;
+    efa::ControlFlowGraph &Main = Bundle->MainFunction();
+    Main.Entry() = Entry;
+    Main.Blocks() = New.CFG;
+    Main.simplify(*Binary);
+    FMC.set(std::move(Bundle));
+  }
+  Old = std::move(New.CFG);
+
+  return true;
 }
 
 void DetectABI::preliminaryFunctionAnalysis() {

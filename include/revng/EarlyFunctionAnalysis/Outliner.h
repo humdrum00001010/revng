@@ -38,6 +38,10 @@ public:
   llvm::BasicBlock *AnyPCCloned = nullptr;
   llvm::BasicBlock *UnexpectedPCCloned = nullptr;
 
+  /// Where the function is resumed from after an exception is handled, if
+  /// the model says it is resumed somewhere
+  llvm::BasicBlock *ResumeCloned = nullptr;
+
   std::vector<MetaAddress> InlinedFunctionsByIndex = { MetaAddress::invalid() };
 
 public:
@@ -55,6 +59,7 @@ public:
       IndirectBranchInfoMarker = std::move(Other.IndirectBranchInfoMarker);
       AnyPCCloned = Other.AnyPCCloned;
       UnexpectedPCCloned = Other.UnexpectedPCCloned;
+      ResumeCloned = Other.ResumeCloned;
       InlinedFunctionsByIndex = Other.InlinedFunctionsByIndex;
 
       Other.Address = MetaAddress::invalid();
@@ -62,6 +67,7 @@ public:
       Other.IndirectBranchInfoMarker.reset();
       Other.AnyPCCloned = nullptr;
       Other.UnexpectedPCCloned = nullptr;
+      Other.ResumeCloned = nullptr;
     }
     return *this;
   }
@@ -170,6 +176,15 @@ private:
                          OutlinedFunctionsMap &FunctionsToInline);
 
   void createAnyPCHooks(CallHandler *TheCallHandler, OutlinedFunction *F);
+
+  /// Make the code \p F is resumed from reachable: from where \p F saves its
+  /// stack pointer in its frame, which is what whoever resumes it restores.
+  /// If \p F does not, the code it would be resumed at is dropped.
+  void connectResumePoint(OutlinedFunction *F);
+
+  /// The functions that stand for an exception being caught by the function
+  /// and for its being resumed
+  llvm::Function *exceptionHelper(llvm::StringRef Name, bool IsResume);
 };
 
 } // namespace efa
