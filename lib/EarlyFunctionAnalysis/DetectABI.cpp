@@ -1482,6 +1482,14 @@ Changes DetectABI::runAnalyses(MetaAddress EntryAddress,
   return Changes;
 }
 
+/// \p Entry is the address of data, not the entry of a function: forget the
+/// function that was made of it. (A function of its own: what is dropped can
+/// be watched from a debugger.)
+[[gnu::noinline]] static void
+dropFunctionAtDataAddress(model::Binary &Binary, const MetaAddress &Entry) {
+  Binary.Functions().erase(Entry);
+}
+
 static void runDetectABI(Module &M,
                          RootFunction &Root,
                          const CSVGlobals &Globals,
@@ -1529,8 +1537,50 @@ llvm::Error DetectABI::run(Model &Model,
 
   efa::collectFunctionsFromCallees(Module, Binary);
   efa::runDetectABI(Module, Root, Globals, FMC, TupleModel);
+
+  std::set<MetaAddress> Before;
+  for (const model::Function &Function : Binary.Functions())
+    Before.insert(Function.Entry());
+
   collectFunctionsFromUnusedAddresses(Module, Root, Binary, FMC);
   efa::runDetectABI(Module, Root, Globals, FMC, TupleModel);
+
+  // A function made from an address nothing jumps to is not one if code that
+  // can be trusted only uses that address to say where memory is read: it is
+  // a table. Code can be trusted if it is of a function found before those,
+  // or of one that turned out to return and nothing else: what the bytes of
+  // a table decode to does not.
+  auto IsTrusted = [&](const model::Function &Function) {
+    if (Before.contains(Function.Entry()))
+      return true;
+    if (not Function.Attributes().empty())
+      return false;
+
+    bool Returns = false;
+    for (const efa::BasicBlock &Block :
+         FMC.getControlFlowGraph(Function.Entry()).Blocks()) {
+      for (const auto &Edge : Block.Successors()) {
+        using namespace efa::FunctionEdgeType;
+        if (Edge->Type() == Return)
+          Returns = true;
+        else if (Edge->Type() != DirectBranch and Edge->Type() != FunctionCall)
+          return false;
+      }
+    }
+    return Returns;
+  };
+  std::set<uint64_t> Data = addressesUsedAsData(Module,
+                                                Root,
+                                                Binary,
+                                                FMC,
+                                                IsTrusted);
+  std::vector<MetaAddress> NotFunctions;
+  for (const model::Function &Function : Binary.Functions())
+    if (not Before.contains(Function.Entry())
+        and Data.contains(Function.Entry().address()))
+      NotFunctions.push_back(Function.Entry());
+  for (const MetaAddress &Entry : NotFunctions)
+    efa::dropFunctionAtDataAddress(Binary, Entry);
 
   return llvm::Error::success();
 }

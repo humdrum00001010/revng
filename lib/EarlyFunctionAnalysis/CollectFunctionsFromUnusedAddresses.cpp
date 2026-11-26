@@ -41,9 +41,20 @@ public:
     return std::move(Found);
   }
 
+  std::set<uint64_t>
+  dataAddresses(ControlFlowGraphCache &MDCache,
+                llvm::function_ref<bool(const model::Function &)> IsTrusted) {
+    loadAllCFGs(MDCache, IsTrusted);
+    return addressesOfData();
+  }
+
 private:
-  void loadAllCFGs(ControlFlowGraphCache &MDCache) {
+  void loadAllCFGs(ControlFlowGraphCache &MDCache,
+                   llvm::function_ref<bool(const model::Function &)>
+                     IsWanted = [](const model::Function &) { return true; }) {
     for (auto &Function : Binary.Functions()) {
+      if (not IsWanted(Function))
+        continue;
       llvm::BasicBlock *Entry = Root.getBlockAt(Function.Entry());
       llvm::Instruction *Term = Entry->getTerminator();
 
@@ -263,6 +274,17 @@ private:
   interval_set UsedRanges;
   std::vector<MetaAddress> Found;
 };
+
+std::set<uint64_t>
+addressesUsedAsData(llvm::Module &M,
+                    RootFunction &Root,
+                    model::Binary &Binary,
+                    ControlFlowGraphCache &FMC,
+                    llvm::function_ref<bool(const model::Function &)>
+                      IsTrusted) {
+  CFFUAImpl Impl(M, Root, Binary);
+  return Impl.dataAddresses(FMC, IsTrusted);
+}
 
 std::vector<MetaAddress> unusedCodeAddresses(llvm::Module &M,
                                              RootFunction &Root,

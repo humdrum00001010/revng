@@ -15,6 +15,18 @@ std::vector<MetaAddress> unusedCodeAddresses(llvm::Module &M,
                                              model::Binary &Binary,
                                              ControlFlowGraphCache &FMC);
 
+/// \return the addresses that the code of the functions \p IsTrusted accepts
+///         uses only, plus something, as the place memory is accessed at:
+///         they are the addresses of data, such as the table of a `switch`,
+///         not of functions
+std::set<uint64_t>
+addressesUsedAsData(llvm::Module &M,
+                    RootFunction &Root,
+                    model::Binary &Binary,
+                    ControlFlowGraphCache &FMC,
+                    llvm::function_ref<bool(const model::Function &)>
+                      IsTrusted);
+
 void collectFunctionsFromUnusedAddresses(llvm::Module &M,
                                          RootFunction &Root,
                                          model::Binary &Binary,
