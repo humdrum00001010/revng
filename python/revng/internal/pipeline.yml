@@ -347,6 +347,7 @@ branches:
         configuration:
           passes:
             - remove-stack-alignment
+            - detach-stack-allocations
             - instrument-stack-accesses
             - instcombine
             - remove-extractvalues
