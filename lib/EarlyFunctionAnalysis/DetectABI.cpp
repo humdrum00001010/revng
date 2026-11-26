@@ -239,11 +239,26 @@ private:
 
   bool tryToAttach(model::Function &Function, const MetaAddress &Address);
 
-  /// The functions each block belongs to, by where the block starts
-  using OwnersMap = std::map<MetaAddress, llvm::SmallVector<MetaAddress, 1>>;
-  OwnersMap ownersOfBlocks(llvm::function_ref<bool(const model::Function &)>
+  /// Whose the code is
+  struct Ownership {
+    /// The functions each block belongs to, by where the block starts
+    std::map<MetaAddress, llvm::SmallVector<MetaAddress, 1>> Owners;
+
+    /// Where the last block of each function starts
+    std::map<MetaAddress, MetaAddress> LastBlock;
+
+    /// The code no function has: where a function that has not been found
+    /// yet can be
+    std::set<MetaAddress> Unowned;
+
+    /// Whether what follows a function may be offered to more than the
+    /// nearest function that can be resumed
+    bool OnlyNearest = false;
+  };
+  Ownership ownersOfBlocks(llvm::function_ref<bool(const model::Function &)>
                              IsOwner);
-  bool offer(const MetaAddress &Candidate, const OwnersMap &Owners);
+  void addBlocksOf(Ownership &Whose, const MetaAddress &Function);
+  bool offer(const MetaAddress &Candidate, Ownership &Whose);
   void analyzeABI();
   Changes analyzeFunctionABI(const model::Function &Function,
                              OutlinedFunction &OutlinedFunction,
@@ -524,44 +539,51 @@ void DetectABI::attachResumeBlocks() {
   if (Candidates.empty())
     return;
 
-  OwnersMap Owners = ownersOfBlocks([](const model::Function &) {
+  Ownership Whose = ownersOfBlocks([](const model::Function &) {
     return true;
   });
+  Whose.Unowned.insert(Candidates.begin(), Candidates.end());
   for (const MetaAddress &Candidate : Candidates)
-    offer(Candidate, Owners);
+    offer(Candidate, Whose);
 }
 
-DetectABI::OwnersMap
+void DetectABI::addBlocksOf(Ownership &Whose, const MetaAddress &Function) {
+  for (const efa::BasicBlock &Block :
+       FMC.getControlFlowGraph(Function).Blocks()) {
+    if (Block.ID().isInlined())
+      continue;
+    auto &List = Whose.Owners[Block.ID().start()];
+    if (not llvm::is_contained(List, Function))
+      List.push_back(Function);
+    auto [It, IsNew] = Whose.LastBlock.try_emplace(Function,
+                                                   Block.ID().start());
+    if (not IsNew and It->second < Block.ID().start())
+      It->second = Block.ID().start();
+  }
+}
+
+DetectABI::Ownership
 DetectABI::ownersOfBlocks(llvm::function_ref<bool(const model::Function &)>
                             IsOwner) {
-  OwnersMap Owners;
-  for (const model::Function &Function : Binary->Functions()) {
-    if (not IsOwner(Function))
-      continue;
-
-    for (const efa::BasicBlock &Block :
-         FMC.getControlFlowGraph(Function.Entry()).Blocks()) {
-      if (Block.ID().isInlined())
-        continue;
-      auto &List = Owners[Block.ID().start()];
-      if (not llvm::is_contained(List, Function.Entry()))
-        List.push_back(Function.Entry());
-    }
-  }
-
-  return Owners;
+  Ownership Whose;
+  for (const model::Function &Function : Binary->Functions())
+    if (IsOwner(Function))
+      addBlocksOf(Whose, Function.Entry());
+  return Whose;
 }
 
-bool DetectABI::offer(const MetaAddress &Candidate, const OwnersMap &Owners) {
-  // Code that follows the blocks of a function is offered to that function:
-  // whether it is its own is for tryToAttach to say. Between the function and
-  // the code there can be the handlers the function is resumed from, which
-  // are functions of their own: so the few functions before it are tried in
-  // turn, the nearest first.
+bool DetectABI::offer(const MetaAddress &Candidate, Ownership &Whose) {
+  // Code nothing jumps to is offered to the function it lies in (between two
+  // of its blocks) or follows: whether it is its own is for tryToAttach to
+  // say. Between a function and the code it goes on with there can be the
+  // handlers the function is resumed from, which are functions of their own
+  // and cannot be resumed: they are looked past, up to a point.
   //
-  // A function with several handlers has them all between its code and where
-  // it goes on: the functions that cannot be resumed are looked past, up to a
-  // point, and do not count among those that are tried.
+  // tryToAttach cannot tell a function from another one with the same frame:
+  // what it accepts is right only for the function the code belongs to. So
+  // code that follows a function is not offered across code no function has
+  // (the function it belongs to may not have been found yet), and where
+  // Whose says so, not past a function that can be resumed and refused it.
   //
   // A block several functions reach (each of the functions that jump to a
   // function has its code as their own) is resumed in all of them or in
@@ -570,13 +592,24 @@ bool DetectABI::offer(const MetaAddress &Candidate, const OwnersMap &Owners) {
   constexpr unsigned MostOwners = 4;
   constexpr unsigned MostSeen = 32;
   constexpr unsigned MostSharing = 8;
+
+  // (What has become a block of a function since is that function's)
+  if (Whose.Owners.contains(Candidate))
+    return false;
+
+  MetaAddress Gap = MetaAddress::invalid();
+  if (auto It = Whose.Unowned.lower_bound(Candidate);
+      It != Whose.Unowned.begin())
+    Gap = *std::prev(It);
+
   llvm::SmallVector<MetaAddress, MostSeen> Seen;
   unsigned Tried = 0;
-  auto It = Owners.upper_bound(Candidate);
-  while (It != Owners.begin() and Tried < MostOwners
+  bool PastNearest = false;
+  auto It = Whose.Owners.upper_bound(Candidate);
+  while (It != Whose.Owners.begin() and Tried < MostOwners
          and Seen.size() < MostSeen) {
     --It;
-    const auto &Sharing = It->second;
+    const llvm::SmallVector<MetaAddress, 1> Sharing = It->second;
     if (It->first == Candidate or Sharing.empty()
         or Sharing.size() > MostSharing
         or llvm::is_contained(Sharing, Candidate)
@@ -584,6 +617,19 @@ bool DetectABI::offer(const MetaAddress &Candidate, const OwnersMap &Owners) {
       continue;
 
     Seen.push_back(Sharing.front());
+
+    // Does the code lie between two blocks of the function?
+    bool IsInside = false;
+    for (const MetaAddress &Owner : Sharing) {
+      auto Last = Whose.LastBlock.find(Owner);
+      IsInside = IsInside
+                 or (Last != Whose.LastBlock.end()
+                     and Candidate < Last->second);
+    }
+
+    bool IsBehindGap = Gap.isValid() and It->first < Gap;
+    if (not IsInside and (IsBehindGap or PastNearest))
+      continue;
 
     // Only a function that saves its stack pointer for whoever resumes it
     // can be resumed: looking for that is much cheaper than trying
@@ -598,6 +644,8 @@ bool DetectABI::offer(const MetaAddress &Candidate, const OwnersMap &Owners) {
       continue;
 
     ++Tried;
+    if (not IsInside and Whose.OnlyNearest)
+      PastNearest = true;
 
     // What each of them was, to go back to if one of them refuses
     using Blocks = SortedVector<efa::BasicBlock>;
@@ -612,8 +660,13 @@ bool DetectABI::offer(const MetaAddress &Candidate, const OwnersMap &Owners) {
       Attached.emplace_back(Owner, std::move(Old));
     }
 
-    if (AllTake)
+    if (AllTake) {
+      // The code is theirs now
+      Whose.Unowned.erase(Candidate);
+      for (const MetaAddress &Owner : Sharing)
+        addBlocksOf(Whose, Owner);
       return true;
+    }
 
     for (auto &[Owner, Old] : Attached) {
       Binary->Functions().at(Owner).ResumeAddresses().erase(Candidate);
@@ -660,17 +713,22 @@ void DetectABI::reattachFunctions(const std::set<MetaAddress> &Before) {
       Candidates.push_back(Function.Entry());
 
   // (The functions are in the order of their addresses, so are these)
-  OwnersMap Owners = ownersOfBlocks([&](const model::Function &Function) {
+  Ownership Whose = ownersOfBlocks([&](const model::Function &Function) {
     return not std::binary_search(Candidates.begin(),
                                   Candidates.end(),
                                   Function.Entry());
   });
 
+  // All the functions there are have been found: what is between a function
+  // and the code it goes on with is its handlers, whatever they look like.
+  // But the nearest function that can be resumed is the one, or none is.
+  Whose.OnlyNearest = true;
+
   // One that starts where a block of a function found before it starts is
   // code of that function already: it only looked unused when the functions
   // were less well known
   for (const MetaAddress &Candidate : Candidates)
-    if (Owners.contains(Candidate) or offer(Candidate, Owners))
+    if (Whose.Owners.contains(Candidate) or offer(Candidate, Whose))
       dropFunctionNowPartOfAnother(*Binary, Candidate);
 }
 
