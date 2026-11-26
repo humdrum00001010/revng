@@ -247,10 +247,13 @@ private:
   /// \p Likeliest is what each unknown is taken to be if the function does
   /// not say; those that are only known together with others are changed to
   /// agree with what the function says, and \p IsAmbiguous is set for them
+  /// \p Most is, for each unknown that has one, the most it can be: a callee
+  /// does not remove what the function saved before calling it.
   std::vector<std::optional<int64_t>>
   solveCallEffects(const MetaAddress &Entry,
                    std::vector<int64_t> &Likeliest,
-                   std::vector<bool> &IsAmbiguous);
+                   std::vector<bool> &IsAmbiguous,
+                   std::vector<std::optional<int64_t>> &Most);
 
 private:
   static llvm::FunctionType *createCallMarkerType(llvm::Module &M);

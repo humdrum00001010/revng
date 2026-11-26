@@ -13,9 +13,11 @@
 #include "llvm/Analysis/LazyValueInfo.h"
 #include "llvm/Analysis/ScopedNoAliasAA.h"
 #include "llvm/CodeGen/UnreachableBlockElim.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/Operator.h"
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/CommandLine.h"
@@ -86,6 +88,10 @@ static opt<std::string> IndirectBranchInfoSummaryPath("indirect-branch-info-"
                                                       value_desc("filename"));
 
 static Logger Log("cfg-analyzer");
+
+/// What a call to the stack height hook is about: its last argument
+constexpr uint32_t StackHeightAtBlockStart = 0;
+constexpr uint32_t StackHeightAtCall = 1;
 
 static MetaAddress getFinalAddressOfBasicBlock(llvm::BasicBlock *BB) {
   auto &&[End, Size] = getPC(BB->getTerminator());
@@ -273,7 +279,8 @@ CFGAnalyzer::createStackHeightMarkerType(const CSVGlobals &Globals) {
   LLVMContext &Context = StackPointer->getContext();
   Type *Void = Type::getVoidTy(Context);
   Type *I8Ptr = Type::getInt8PtrTy(Context);
-  return llvm::FunctionType::get(Void, { I8Ptr, StackPointer }, false);
+  Type *Kind = Type::getInt32Ty(Context);
+  return llvm::FunctionType::get(Void, { I8Ptr, StackPointer, Kind }, false);
 }
 
 std::optional<UpcastablePointer<efa::FunctionEdgeBase>>
@@ -510,7 +517,9 @@ void CFGAnalyzer::createIBIMarker(OutlinedFunction *Outlined) {
     revng::IRBuilder HookBuilder(BB.getFirstNonPHI()->getNextNode());
     Value *BlockID = ID.toValue(&M);
     HookBuilder.CreateCall(StackHeightHook.get(),
-                           { BlockID, HookBuilder.createLoad(Globals.spReg()) });
+                           { BlockID,
+                             HookBuilder.createLoad(Globals.spReg()),
+                             HookBuilder.getInt32(StackHeightAtBlockStart) });
   }
 
   // Turn the stack pointers the hooks were met with into heights of the stack
@@ -1389,6 +1398,10 @@ struct UnknownCallSite {
   /// Whether the function leaves no choice about what the callee removes
   bool IsRequired = false;
 
+  /// Whether Most is what the callee cannot remove more than: what the
+  /// function saved before the call stays where it is
+  bool HasBound = false;
+
   /// What its callee most likely removes from the stack, in words, and the
   /// most it can remove
   uint64_t Likeliest = 0;
@@ -1453,9 +1466,27 @@ private:
     }
   };
 
+  /// A call to a callee nothing is known about, and the height of the stack
+  /// it is made at
+  struct Site {
+    unsigned Unknown = 0;
+    llvm::Instruction *Hook = nullptr;
+    Sum Height;
+  };
+
+  /// A register the function saves, and the height of the slot it goes in
+  struct Save {
+    llvm::Instruction *Store = nullptr;
+    Sum Slot;
+  };
+
 private:
   unsigned Callees = 0;
   llvm::Function *StackEffect = nullptr;
+  llvm::GlobalVariable *StackPointer = nullptr;
+  const CSVSet *CalleeSaved = nullptr;
+  std::vector<Site> Sites;
+  std::vector<Save> Saves;
   llvm::DenseMap<llvm::Value *, unsigned> Others;
   llvm::DenseMap<llvm::Value *, Sum> Known;
   std::vector<llvm::PHINode *> Pending;
@@ -1464,8 +1495,65 @@ private:
   std::vector<Sum> Equations;
 
 public:
-  StackEquations(unsigned Callees, llvm::Function *StackEffect) :
-    Callees(Callees), StackEffect(StackEffect) {}
+  StackEquations(unsigned Callees,
+                 llvm::Function *StackEffect,
+                 llvm::GlobalVariable *StackPointer,
+                 const CSVSet *CalleeSaved) :
+    Callees(Callees),
+    StackEffect(StackEffect),
+    StackPointer(StackPointer),
+    CalleeSaved(CalleeSaved) {}
+
+  /// The callee \p Unknown is called where \p Hook is, with the stack at the
+  /// height \p Hook has
+  void visitSite(unsigned Unknown, llvm::CallBase *Hook) {
+    Sites.push_back({ Unknown, Hook, sumOf(Hook->getArgOperand(1)) });
+  }
+
+  /// If \p Store puts on the stack what a register the function has to
+  /// preserve had when the function was entered, it saves it: what is there
+  /// stays there until the function restores it
+  void visitStore(llvm::StoreInst *Store) {
+    using namespace llvm;
+    auto *Value = dyn_cast<LoadInst>(Store->getValueOperand());
+    if (Value == nullptr)
+      return;
+    auto *CSV = dyn_cast<GlobalVariable>(skipCasts(Value->getPointerOperand()));
+    if (CSV == nullptr or not CalleeSaved->contains(CSV))
+      return;
+
+    if (std::optional<Sum> Slot = heightOf(Store->getPointerOperand()))
+      Saves.push_back({ Store, std::move(*Slot) });
+  }
+
+  /// \return for each callee, the most it can move the stack pointer by: not
+  ///         past the return address of the function, nor past what the
+  ///         function saved before the call
+  std::vector<std::optional<int64_t>> bounds(const llvm::DominatorTree &DT) {
+    std::vector<std::optional<int64_t>> Result(Callees);
+    auto Lower = [&Result](unsigned Unknown, const Sum &Room) {
+      if (not Room.IsValid or not Room.Terms.empty() or Room.Constant <= 0)
+        return;
+      if (not Result[Unknown].has_value() or Room.Constant < *Result[Unknown])
+        Result[Unknown] = Room.Constant;
+    };
+
+    for (const Site &Site : Sites) {
+      Sum ToReturnAddress;
+      ToReturnAddress.add(Site.Height, -1);
+      Lower(Site.Unknown, ToReturnAddress);
+
+      for (const Save &Save : Saves) {
+        if (not DT.dominates(Save.Store, Site.Hook))
+          continue;
+        Sum Room = Save.Slot;
+        Room.add(Site.Height, -1);
+        Lower(Site.Unknown, Room);
+      }
+    }
+
+    return Result;
+  }
 
   /// Take what \p Height, a height of the stack, says
   void visit(llvm::Value *Height) {
@@ -1493,7 +1581,13 @@ public:
   ///         \p Likeliest, what each is taken to be otherwise, is made to
   ///         agree with them, and \p IsAmbiguous is set for those callees.
   std::vector<std::optional<int64_t>>
-  solve(std::vector<int64_t> &Likeliest, std::vector<bool> &IsAmbiguous) {
+  solve(std::vector<int64_t> &Likeliest,
+        std::vector<bool> &IsAmbiguous,
+        const std::vector<std::optional<int64_t>> &Most) {
+    for (unsigned I = 0; I < Callees; ++I)
+      if (Most[I].has_value() and Likeliest[I] > *Most[I])
+        Likeliest[I] = *Most[I];
+
     struct Row {
       Sum Equation;
       unsigned Pivot = 0;
@@ -1540,10 +1634,14 @@ public:
       if (Rest % Coefficient != 0)
         continue;
 
+      int64_t Value = -Rest / Coefficient;
       if (Equation.Terms.size() == 1) {
-        Result[Row.Pivot] = -Rest / Coefficient;
+        Result[Row.Pivot] = Value;
       } else {
-        Likeliest[Row.Pivot] = -Rest / Coefficient;
+        // If that is more than the callee can remove, leave it: the answer
+        // is another one
+        if (not Most[Row.Pivot].has_value() or Value <= *Most[Row.Pivot])
+          Likeliest[Row.Pivot] = Value;
         for (const auto &[Unknown, Other] : Equation.Terms)
           IsAmbiguous[Unknown] = true;
       }
@@ -1553,6 +1651,49 @@ public:
   }
 
 private:
+  /// \return the height of the stack at the address \p Pointer, if it is the
+  ///         stack pointer the function is entered with plus a sum
+  std::optional<Sum> heightOf(llvm::Value *Pointer) {
+    using namespace llvm;
+    const DataLayout &DL = StackPointer->getParent()->getDataLayout();
+
+    Sum Result;
+    while (true) {
+      if (auto *GEP = dyn_cast<GEPOperator>(Pointer)) {
+        APInt Offset(DL.getIndexTypeSizeInBits(GEP->getType()), 0);
+        if (not GEP->accumulateConstantOffset(DL, Offset))
+          return std::nullopt;
+        Result.Constant += Offset.getSExtValue();
+        Pointer = GEP->getPointerOperand();
+      } else if (auto *Cast = dyn_cast<BitCastOperator>(Pointer)) {
+        Pointer = Cast->getOperand(0);
+      } else {
+        break;
+      }
+    }
+
+    // The stack pointer itself, read as a pointer
+    if (auto *Load = dyn_cast<LoadInst>(Pointer))
+      if (skipCasts(Load->getPointerOperand()) == StackPointer)
+        return Result;
+
+    auto *ToPointer = dyn_cast<Operator>(Pointer);
+    if (ToPointer == nullptr or ToPointer->getOpcode() != Instruction::IntToPtr)
+      return std::nullopt;
+
+    Value *Address = ToPointer->getOperand(0);
+    if (auto *Extended = dyn_cast<ZExtInst>(Address))
+      Address = Extended->getOperand(0);
+
+    Sum Absolute = sumOf(Address);
+    auto It = Absolute.Terms.find(unknownOf(StackPointer));
+    if (It == Absolute.Terms.end() or It->second != 1)
+      return std::nullopt;
+    Absolute.Terms.erase(It);
+    Result.add(Absolute, 1);
+    return Result;
+  }
+
   unsigned unknownOf(llvm::Value *V) {
     auto [It, IsNew] = Others.try_emplace(V, Callees + Others.size());
     if (IsNew)
@@ -1584,6 +1725,13 @@ private:
     if (auto *Call = dyn_cast<CallBase>(V);
         Call != nullptr and Call->getCalledFunction() == StackEffect) {
       Result.Terms[getLimitedValue(Call->getArgOperand(0))] = 1;
+      IsSum = true;
+    } else if (auto *Load = dyn_cast<LoadInst>(V);
+               Load != nullptr
+               and skipCasts(Load->getPointerOperand()) == StackPointer) {
+      // The stack pointer the function is entered with: one unknown,
+      // however many times it is read
+      Result.Terms[unknownOf(StackPointer)] = 1;
       IsSum = true;
     } else if (auto *Operator = dyn_cast<BinaryOperator>(V)) {
       Value *Left = Operator->getOperand(0);
@@ -1632,7 +1780,8 @@ private:
 std::vector<std::optional<int64_t>>
 CFGAnalyzer::solveCallEffects(const MetaAddress &Entry,
                               std::vector<int64_t> &Likeliest,
-                              std::vector<bool> &IsAmbiguous) {
+                              std::vector<bool> &IsAmbiguous,
+                              std::vector<std::optional<int64_t>> &Most) {
   using namespace llvm;
 
   auto &&[OutlinedFunction, CFG] = optimize(Entry);
@@ -1640,16 +1789,34 @@ CFGAnalyzer::solveCallEffects(const MetaAddress &Entry,
 
   // The heights the optimizations were left with: those at the calls and at
   // the starts of the blocks, and those the function is left with
-  StackEquations Equations(Likeliest.size(), StackEffect.get());
-  for (CallBase *Call : callers(StackHeightHook.get()))
-    if (Call->getFunction() == F)
-      Equations.visit(Call->getArgOperand(1));
+  StackEquations Equations(Likeliest.size(),
+                           StackEffect.get(),
+                           Globals.spReg(),
+                           &CalleeSaved);
+  for (CallBase *Call : callers(StackHeightHook.get())) {
+    if (Call->getFunction() != F)
+      continue;
+    Equations.visit(Call->getArgOperand(1));
+
+    if (getLimitedValue(Call->getArgOperand(2)) != StackHeightAtCall)
+      continue;
+    BasicBlockID Block = BasicBlockID::fromValue(Call->getArgOperand(0));
+    auto It = SymbolicSites.find(Block.notInlinedAddress());
+    if (not Block.isInlined() and It != SymbolicSites.end())
+      Equations.visitSite(It->second, Call);
+  }
+
+  for (Instruction &I : instructions(F))
+    if (auto *Store = dyn_cast<StoreInst>(&I))
+      Equations.visitStore(Store);
 
   for (CallBase *Call : callers(OutlinedFunction.IndirectBranchInfoMarker.get()))
     if (Call->getFunction() == F)
       Equations.visit(Call->getArgOperand(StackPointerOffsetIndex));
 
-  return Equations.solve(Likeliest, IsAmbiguous);
+  DominatorTree DT(*F);
+  Most = Equations.bounds(DT);
+  return Equations.solve(Likeliest, IsAmbiguous, Most);
 }
 
 FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
@@ -1710,6 +1877,40 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
   uint64_t Word = model::Architecture::getPointerSize(Binary->Architecture());
   llvm::SmallVector<UnknownCallSite, 4> Sites;
   bool HasAssumptions = false;
+
+  // What a block pushes before a call is not for that call if a later one,
+  // to something known, removes more than its own block pushes: an argument
+  // of a call is pushed before the calls that compute the arguments after it.
+  // Going back from each such call, through the blocks that end with a call
+  // to something unknown, what is missing is theirs to leave.
+  std::map<MetaAddress, uint64_t> Reserved;
+  {
+    std::map<MetaAddress, const UnknownCall *> ByEnd;
+    for (const UnknownCall &Call : UnknownCalls) {
+      auto It = Result.CFG.find(BasicBlockID(Call.Block));
+      if (It != Result.CFG.end())
+        ByEnd[It->End()] = &Call;
+    }
+
+    for (const auto &[Block, PushedAndFSO] : KnownCalls) {
+      const auto &[PushedByIt, FSO] = PushedAndFSO;
+      int64_t Missing = FSO - *Default - int64_t(PushedByIt);
+      MetaAddress At = Block;
+      while (Missing > 0) {
+        auto It = ByEnd.find(At);
+        if (It == ByEnd.end())
+          break;
+        const UnknownCall &Before = *It->second;
+        uint64_t Left = std::min<uint64_t>(Before.Pushed, Missing);
+        Reserved[Before.Block] = std::max(Reserved[Before.Block], Left);
+        Missing -= Left;
+        At = Before.Block;
+        if (Before.Pushed == 0 and Missing > 0 and At == Block)
+          break;
+      }
+    }
+  }
+
   for (const UnknownCall &Call : UnknownCalls) {
     // The call sites of the functions inlined in this one are theirs
     if (not Result.CFG.contains(BasicBlockID(Call.Block))
@@ -1733,17 +1934,9 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
     bool IsFirst = Call.Block == Entry;
     uint64_t Pushed = IsFirst ? Call.PushedAfterSaves : Call.Pushed;
 
-    // What the block pushed is not for this call if the next one, to
-    // something known, removes more than its own block pushes: an argument
-    // of a call is pushed before the call that computes the next one
-    auto BlockIt = Result.CFG.find(BasicBlockID(Call.Block));
-    auto NextIt = KnownCalls.find(BlockIt->End());
-    if (NextIt != KnownCalls.end()) {
-      const auto &[PushedByNext, NextFSO] = NextIt->second;
-      int64_t Missing = NextFSO - *Default - int64_t(PushedByNext);
-      if (Missing > 0)
-        Pushed -= std::min<uint64_t>(Pushed, Missing);
-    }
+    // What is left on the stack for a later call is not for this one
+    if (auto It = Reserved.find(Call.Block); It != Reserved.end())
+      Pushed -= std::min<uint64_t>(Pushed, It->second);
 
     uint64_t Likeliest = std::min(MaxWords, Pushed / Word);
 
@@ -1796,9 +1989,6 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
       return Result;
   }
 
-  if (Sites.size() == 1)
-    Sites[0].Most = MaxWords;
-
   // Before trying: with an unknown for what each callee removes, the paths
   // of the function that join give equations. What they leave no choice
   // about is not to be tried, and can be more than the block of the call
@@ -1822,10 +2012,21 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
       }
     }
     std::vector<bool> IsAmbiguous(Sites.size(), false);
-    auto Required = solveCallEffects(Entry, Effects, IsAmbiguous);
+    std::vector<std::optional<int64_t>> MostEffects;
+    auto Required = solveCallEffects(Entry, Effects, IsAmbiguous, MostEffects);
     SymbolicSites.clear();
 
     for (size_t I = 0; I < Sites.size(); ++I) {
+      // What the callee cannot remove is not to be tried either
+      std::optional<uint64_t> Bound;
+      if (MostEffects[I].has_value())
+        Bound = WordsOf(*MostEffects[I]);
+      if (Bound.has_value()) {
+        Sites[I].HasBound = true;
+        Sites[I].Most = std::min(Sites[I].Most, *Bound);
+        Sites[I].Likeliest = std::min(Sites[I].Likeliest, *Bound);
+      }
+
       std::optional<uint64_t> Words;
       if (Required[I].has_value())
         Words = WordsOf(*Required[I]);
@@ -1835,12 +2036,18 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
         continue;
 
       Sites[I].Likeliest = *Words;
-      Sites[I].Most = std::max(Sites[I].Most, *Words);
+      if (not Sites[I].HasBound)
+        Sites[I].Most = std::max(Sites[I].Most, *Words);
       Sites[I].IsRequired = Required[I].has_value();
       if (IsAmbiguous[I])
         for (const MetaAddress &Block : Sites[I].Blocks)
           AmbiguousSites.insert(Block);
     }
+
+    // The only such call of a function can also have its arguments pushed in
+    // another block
+    if (Sites.size() == 1 and not Sites[0].HasBound)
+      Sites[0].Most = MaxWords;
   }
 
   // An assumption: the words each callee removes
@@ -2007,7 +2214,7 @@ FunctionSummary CFGAnalyzer::analyzeOnce(const MetaAddress &Entry) {
       continue;
 
     auto *Height = dyn_cast<ConstantInt>(Call->getArgOperand(1));
-    if (isa<ConstantPointerNull>(Call->getArgOperand(0))) {
+    if (getLimitedValue(Call->getArgOperand(2)) == StackHeightAtCall) {
       if (Height == nullptr)
         ++UnknownHeights;
       continue;
@@ -2214,8 +2421,10 @@ void CallSummarizer::handleCall(MetaAddress CallerBlock,
 
   // Leave a trace of where the stack pointer is when the call is made
   if (not IsTailCall) {
-    auto *NoBlock = ConstantPointerNull::get(Type::getInt8PtrTy(Context));
-    Builder.CreateCall(StackHeightHook, { NoBlock, Builder.createLoad(SPCSV) });
+    Builder.CreateCall(StackHeightHook,
+                       { BasicBlockID(CallerBlock).toValue(M),
+                         Builder.createLoad(SPCSV),
+                         Builder.getInt32(StackHeightAtCall) });
   }
 
   Builder.CreateCall(PreCallHook, Args);
