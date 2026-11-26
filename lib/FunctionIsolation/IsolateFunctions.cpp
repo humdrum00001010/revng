@@ -234,8 +234,12 @@ public:
                           const efa::CSVSet &ClobberedRegisters,
                           llvm::Value *SymbolNamePointer) final {
     revng_assert(SymbolNamePointer != nullptr);
-    if (not isa<ConstantPointerNull>(SymbolNamePointer))
-      handleCall(Builder, MetaAddress::invalid(), SymbolNamePointer);
+
+    // A jump that has been found to be a tail call is a call, whether it is
+    // to a dynamic function or through a pointer: the latter was not emitted
+    // at all, and the function then returned without having made it.
+    // handleCall does nothing where the block has no call edge.
+    handleCall(Builder, MetaAddress::invalid(), SymbolNamePointer);
   }
 
 private:

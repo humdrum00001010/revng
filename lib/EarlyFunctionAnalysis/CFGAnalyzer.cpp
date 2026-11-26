@@ -596,6 +596,26 @@ void CFGAnalyzer::createIBIMarker(OutlinedFunction *Outlined) {
     revng_assert(NewPCID.isValid());
     ArgValues[CallerBlockIDIndex] = NewPCID.toValue(getModule(Term));
 
+    // Is this a return instruction? It is if the last thing written to the
+    // program counter was read from where the stack pointer points
+    for (Instruction *I : previousInstructions(Term->getParent())) {
+      auto *Store = dyn_cast<StoreInst>(I);
+      if (Store == nullptr or not PCH->affectsPC(Store))
+        continue;
+
+      if (auto *Target = dyn_cast<LoadInst>(Store->getValueOperand())) {
+        Value *Address = Target->getPointerOperand();
+        if (auto *ToPointer = dyn_cast<IntToPtrInst>(Address))
+          Address = ToPointer->getOperand(0);
+        if (auto *Extended = dyn_cast<ZExtInst>(Address))
+          Address = Extended->getOperand(0);
+        auto *Top = dyn_cast<LoadInst>(Address);
+        if (Top != nullptr and Top->getPointerOperand() == Globals.spReg())
+          PopsItsTarget.insert(NewPCID);
+      }
+      break;
+    }
+
     // Record the name of the symbol, if any
     using CPN = ConstantPointerNull;
     Value *SymbolName = CPN::get(Type::getInt8PtrTy(Context));
@@ -1064,6 +1084,13 @@ FunctionSummary CFGAnalyzer::milkInfo(OutlinedFunction *OutlinedFunction,
           // to know this function's FSO!
           TailCalls.emplace_back(CI, FSO + *Summary->ElectedFSO, Summary);
         }
+      } else if (PopsItsTarget.contains(Block.ID())) {
+        // A return instruction that does not find the return address where
+        // it looks for it. It was taken for a tail call to whatever is there
+        // (what a callee was assumed to leave on the stack, for instance, an
+        // argument): something before it is wrong, and saying so makes it be
+        // looked for.
+        IBIResult.emplace_back(CI, makeIndirectEdge(LongJmp));
       } else {
         Argument = CI->getArgOperand(ReturnValuePreservedIndex);
         auto *ReturnValuePreserved = dyn_cast<ConstantInt>(Argument);
@@ -2288,6 +2315,7 @@ CFGAnalyzer::optimize(const MetaAddress &Entry) {
   // function jumps to its return address (thus, it is not a longjmp /
   // tail call), `rax` register has been clobbered by the callee, whereas
   // `rbx` and `rbp` are callee-saved registers.
+  PopsItsTarget.clear();
   createIBIMarker(&OutlinedFunction);
 
   Function *F = OutlinedFunction.Function.get();

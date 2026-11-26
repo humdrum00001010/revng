@@ -209,6 +209,10 @@ private:
   /// tryOut
   bool IsTrial = false;
 
+  /// The blocks of the function being analyzed that end by taking where to go
+  /// from the top of the stack and removing it: a return instruction
+  std::set<BasicBlockID> PopsItsTarget;
+
 public:
   CFGAnalyzer(llvm::Module &M,
               RootFunction &Root,
