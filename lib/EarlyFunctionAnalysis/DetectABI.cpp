@@ -247,6 +247,9 @@ private:
     /// Where the last block of each function starts
     std::map<MetaAddress, MetaAddress> LastBlock;
 
+    /// Where each block ends, by where it starts
+    std::map<MetaAddress, MetaAddress> End;
+
     /// The code no function has: where a function that has not been found
     /// yet can be
     std::set<MetaAddress> Unowned;
@@ -555,6 +558,10 @@ void DetectABI::addBlocksOf(Ownership &Whose, const MetaAddress &Function) {
     auto &List = Whose.Owners[Block.ID().start()];
     if (not llvm::is_contained(List, Function))
       List.push_back(Function);
+    auto [EndIt, IsNewBlock] = Whose.End.try_emplace(Block.ID().start(),
+                                                     Block.End());
+    if (not IsNewBlock and EndIt->second < Block.End())
+      EndIt->second = Block.End();
     auto [It, IsNew] = Whose.LastBlock.try_emplace(Function,
                                                    Block.ID().start());
     if (not IsNew and It->second < Block.ID().start())
@@ -663,10 +670,20 @@ bool DetectABI::offer(const MetaAddress &Candidate, Ownership &Whose) {
       if (It == Blocks.end())
         continue;
 
-      auto Owned = Whose.Owners.find(It->ID().start());
-      if (Owned != Whose.Owners.end() and It->ID().start() != Candidate) {
-        Into = Owned->second;
-        break;
+      // The block of theirs that starts there, or that the address is in:
+      // nothing in the function jumps to where it goes on, so that place is
+      // most often in the middle of one of its blocks
+      MetaAddress Start = It->ID().start();
+      auto Owned = Whose.Owners.upper_bound(Start);
+      if (Start != Candidate and Owned != Whose.Owners.begin()) {
+        --Owned;
+        auto EndIt = Whose.End.find(Owned->first);
+        bool IsInside = Owned->first == Start
+                        or (EndIt != Whose.End.end() and Start < EndIt->second);
+        if (IsInside and not Owned->second.empty()) {
+          Into = Owned->second;
+          break;
+        }
       }
 
       for (const auto &Edge : It->Successors())
