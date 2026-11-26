@@ -9,6 +9,8 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "llvm/ADT/SmallVector.h"
 
@@ -60,6 +62,7 @@ private:
   llvm::Function *PostCallHook = nullptr;
   llvm::Function *RetHook = nullptr;
   llvm::Function *StackHeightHook = nullptr;
+  llvm::Function *StackEffect = nullptr;
   llvm::GlobalVariable *SPCSV = nullptr;
   llvm::SmallSet<MetaAddress, 4> *ReturnBlocks = nullptr;
   OpaqueRegisterUser Clobberer;
@@ -67,6 +70,10 @@ private:
   /// The final stack offset of the callee of a call site, where one has been
   /// found, by the address of the block of the call
   const std::map<MetaAddress, int64_t> *CallSiteFSO = nullptr;
+
+  /// The call sites whose callee, in this analysis, moves the stack pointer by
+  /// an unknown amount, and which unknown
+  const std::map<MetaAddress, unsigned> *SymbolicSites = nullptr;
 
   /// The calls to something else than a function of the binary met while
   /// outlining
@@ -87,9 +94,11 @@ public:
                  llvm::Function *PostCallHook,
                  llvm::Function *RetHook,
                  llvm::Function *StackHeightHook,
+                 llvm::Function *StackEffect,
                  llvm::GlobalVariable *SPCSV,
                  llvm::SmallSet<MetaAddress, 4> *ReturnBlocks,
                  const std::map<MetaAddress, int64_t> *CallSiteFSO,
+                 const std::map<MetaAddress, unsigned> *SymbolicSites,
                  llvm::SmallVectorImpl<UnknownCall> *UnknownCalls,
                  CSVSet *CalleeClobbered,
                  const CSVSet *CalleeSaved,
@@ -141,6 +150,10 @@ private:
   /// of the stack there is known where the result has become a constant.
   TemporaryOpaqueFunction StackHeightHook;
 
+  /// What a callee nothing is known about moves the stack pointer by: an
+  /// unknown, the same wherever the argument is the same
+  TemporaryOpaqueFunction StackEffect;
+
   Outliner::ModuleState OutlinerState;
   Outliner Outliner;
 
@@ -151,6 +164,10 @@ private:
   /// The final stack offset found for the callee of a call site, by the
   /// address of the block of the call
   std::map<MetaAddress, int64_t> CallSiteFSO;
+
+  /// The call sites whose callee moves the stack pointer by an unknown amount
+  /// in the analysis that finds what the function requires it to be
+  std::map<MetaAddress, unsigned> SymbolicSites;
 
   /// The calls of the function outlined last to something else than a function
   /// of the binary
@@ -200,10 +217,20 @@ public:
 private:
   FunctionSummary analyzeOnce(const MetaAddress &Entry);
 
+  /// The function, outlined and optimized, and its direct control flow
+  std::pair<OutlinedFunction, SortedVector<efa::BasicBlock>>
+  optimize(const MetaAddress &Entry);
+
+  /// \return for each of the \p Unknowns of SymbolicSites, what the paths of
+  ///         the function that join require it to be, if they require it
+  std::vector<std::optional<int64_t>>
+  solveCallEffects(const MetaAddress &Entry, unsigned Unknowns);
+
 private:
   static llvm::FunctionType *createCallMarkerType(llvm::Module &M);
   static llvm::FunctionType *createRetMarkerType(llvm::Module &M);
   static llvm::FunctionType *createStackHeightMarkerType(const CSVGlobals &);
+  static llvm::FunctionType *createStackEffectType(const CSVGlobals &);
 
 private:
   std::optional<UpcastablePointer<efa::FunctionEdgeBase>>

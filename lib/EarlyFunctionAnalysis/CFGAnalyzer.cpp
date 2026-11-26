@@ -4,6 +4,9 @@
 
 #include <fstream>
 
+#include <numeric>
+
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/BasicAliasAnalysis.h"
@@ -12,6 +15,7 @@
 #include "llvm/CodeGen/UnreachableBlockElim.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/PatternMatch.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
@@ -151,6 +155,7 @@ CFGAnalyzer::CFGAnalyzer(llvm::Module &M,
   StackHeightHook(createStackHeightMarkerType(Globals),
                   "stack_height_hook",
                   &M),
+  StackEffect(createStackEffectType(Globals), "stack_effect", &M),
   OutlinerState(M),
   Outliner(M, Root, Globals, Oracle, OutlinerState),
   OpaqueBranchConditionsPool(&M, false),
@@ -162,6 +167,9 @@ CFGAnalyzer::CFGAnalyzer(llvm::Module &M,
   // with the memory of the program
   StackHeightHook.get()->setMemoryEffects(MemoryEffects::inaccessibleMemOnly());
   StackHeightHook.get()->addFnAttr(Attribute::NoMerge);
+
+  // An unknown is a value, not something that happens
+  StackEffect.get()->setDoesNotAccessMemory();
 
   // Collect all ABI CSVs except for the stack pointer
   for (GlobalVariable *CSV : Globals.abiRegisters())
@@ -191,9 +199,11 @@ OutlinedFunction CFGAnalyzer::outline(const MetaAddress &Entry) {
                             PostCallHook.get(),
                             RetHook.get(),
                             StackHeightHook.get(),
+                            StackEffect.get(),
                             Globals.spReg(),
                             HasCFG ? &ReturnBlocks : nullptr,
                             &CallSiteFSO,
+                            &SymbolicSites,
                             &UnknownCalls,
                             &CalleeClobbered,
                             &CalleeSaved,
@@ -238,6 +248,13 @@ llvm::FunctionType *CFGAnalyzer::createCallMarkerType(llvm::Module &M) {
   return llvm::FunctionType::get(Void,
                                  { I8Ptr, I8Ptr, I8Ptr, BoolType },
                                  false);
+}
+
+llvm::FunctionType *
+CFGAnalyzer::createStackEffectType(const CSVGlobals &Globals) {
+  Type *StackPointer = Globals.spReg()->getValueType();
+  Type *Index = Type::getInt32Ty(StackPointer->getContext());
+  return llvm::FunctionType::get(StackPointer, { Index }, false);
 }
 
 llvm::FunctionType *CFGAnalyzer::createRetMarkerType(llvm::Module &M) {
@@ -659,6 +676,54 @@ void CFGAnalyzer::materializePCValues(llvm::Function *F,
   }
 }
 
+namespace {
+
+/// A function that aligns its stack pointer moves it down by an amount that
+/// depends on where its caller left it. The function never looks at what it
+/// skips, so what it does is the same whatever the amount: take it to be none,
+/// as the passes that later lay out the stack frame do. Otherwise no height of
+/// the stack is known past that point, and nothing can be learned from them.
+class RemoveStackRealignmentPass
+  : public llvm::PassInfoMixin<RemoveStackRealignmentPass> {
+private:
+  llvm::GlobalVariable *StackPointer = nullptr;
+
+public:
+  RemoveStackRealignmentPass(llvm::GlobalVariable *StackPointer) :
+    StackPointer(StackPointer) {}
+
+  llvm::PreservedAnalyses run(llvm::Function &F,
+                              llvm::FunctionAnalysisManager &) {
+    using namespace llvm;
+    using namespace llvm::PatternMatch;
+
+    bool Changed = false;
+    for (Instruction &I : instructions(F)) {
+      auto *Store = dyn_cast<StoreInst>(&I);
+      if (Store == nullptr or Store->getPointerOperand() != StackPointer)
+        continue;
+
+      Value *Source = nullptr;
+      const APInt *Mask = nullptr;
+      if (not match(Store->getValueOperand(),
+                    m_And(m_Value(Source), m_APInt(Mask))))
+        continue;
+
+      auto *Load = dyn_cast<LoadInst>(Source);
+      if (Load == nullptr or Load->getPointerOperand() != StackPointer
+          or not (-*Mask).isPowerOf2())
+        continue;
+
+      Store->setOperand(0, Load);
+      Changed = true;
+    }
+
+    return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
+  }
+};
+
+} // namespace
+
 void CFGAnalyzer::runOptimizationPipeline(llvm::Function *F) {
   using namespace llvm;
 
@@ -682,6 +747,7 @@ void CFGAnalyzer::runOptimizationPipeline(llvm::Function *F) {
     // compute subexpressions elimination and resolve redundant expressions in
     // order to compute the stack height.
     FPM.addPass(RemoveNewPCCallsPass());
+    FPM.addPass(RemoveStackRealignmentPass(Globals.spReg()));
     FPM.addPass(RemoveHelperCallsPass(Globals.spReg()));
     FPM.addPass(PromoteGlobalToLocalPass());
     FPM.addPass(SimplifyCFGPass());
@@ -1163,7 +1229,8 @@ namespace {
 
 /// How well an analysis explains a function
 struct AnalysisScore {
-  /// The indirect branches that are returns
+  /// The indirect branches the function leaves through as its caller expects:
+  /// the returns and the tail calls
   unsigned Returns = 0;
 
   /// The indirect branches taken for a longjmp
@@ -1185,11 +1252,11 @@ struct AnalysisScore {
            or UnknownHeights != 0;
   }
 
-  /// Either more returns in place of longjmps, or the same branches and
-  /// fewer registers clobbered, or all the same and the height of the stack
-  /// known at more calls. A return that does not come with the registers the
-  /// function saved is not one: it is where code that is not reached, such as
-  /// what follows a call that never returns, happens to end.
+  /// Either more returns or tail calls in place of longjmps, or the same
+  /// branches and fewer registers clobbered, or all the same and the height
+  /// of the stack known at more calls. A return that does not come with the
+  /// registers the function saved is not one: it is where code that is not
+  /// reached, such as what follows a call that never returns, happens to end.
   bool isBetterThan(const AnalysisScore &Other) const {
     if (Returns > Other.Returns and LongJmps < Other.LongJmps)
       return Clobbered <= Other.Clobbered;
@@ -1220,6 +1287,13 @@ struct UnknownCallSite {
   /// Whether the callee is the function itself
   bool IsRecursive = false;
 
+  /// The dynamic function called, if it is one: wherever it is called, it
+  /// removes the same
+  std::string Symbol;
+
+  /// Whether the function leaves no choice about what the callee removes
+  bool IsRequired = false;
+
   /// What its callee most likely removes from the stack, in words, and the
   /// most it can remove
   uint64_t Likeliest = 0;
@@ -1227,6 +1301,242 @@ struct UnknownCallSite {
 };
 
 } // namespace
+
+namespace {
+
+/// What the heights of the stack of a function say about the unknown amounts
+/// its callees move the stack pointer by.
+///
+/// With such an amount for each callee nothing is known about, a height is a
+/// sum of unknowns and a constant. The paths that join at a point of the
+/// function agree on the height there: that is an equation for each of them.
+class StackEquations {
+private:
+  /// The unknowns of the callees come first; then, as they are met, the phis
+  /// and the values that are not sums
+  struct Sum {
+    std::map<unsigned, int64_t> Terms;
+    int64_t Constant = 0;
+    bool IsValid = true;
+
+    void add(const Sum &Other, int64_t Factor) {
+      using Wide = __int128;
+      constexpr int64_t Limit = int64_t(1) << 40;
+      auto Fits = [](Wide Value) { return Value > -Limit and Value < Limit; };
+
+      IsValid = IsValid and Other.IsValid;
+      for (const auto &[Unknown, Coefficient] : Other.Terms) {
+        Wide New = Wide(Terms[Unknown]) + Wide(Coefficient) * Factor;
+        IsValid = IsValid and Fits(New);
+        if (New == 0)
+          Terms.erase(Unknown);
+        else
+          Terms[Unknown] = New;
+      }
+
+      Wide New = Wide(Constant) + Wide(Other.Constant) * Factor;
+      IsValid = IsValid and Fits(New);
+      Constant = New;
+    }
+
+    void scale(int64_t Factor) {
+      Sum Old = std::move(*this);
+      *this = Sum();
+      add(Old, Factor);
+    }
+
+    /// Divide by what all the coefficients have in common
+    void normalize() {
+      int64_t Common = std::abs(Constant);
+      for (const auto &[Unknown, Coefficient] : Terms)
+        Common = std::gcd(Common, std::abs(Coefficient));
+      if (Common <= 1)
+        return;
+      Constant /= Common;
+      for (auto &[Unknown, Coefficient] : Terms)
+        Coefficient /= Common;
+    }
+  };
+
+private:
+  unsigned Callees = 0;
+  llvm::Function *StackEffect = nullptr;
+  llvm::DenseMap<llvm::Value *, unsigned> Others;
+  llvm::DenseMap<llvm::Value *, Sum> Known;
+  std::vector<llvm::PHINode *> Pending;
+
+  /// Each is a sum that is zero
+  std::vector<Sum> Equations;
+
+public:
+  StackEquations(unsigned Callees, llvm::Function *StackEffect) :
+    Callees(Callees), StackEffect(StackEffect) {}
+
+  /// Take what \p Height, a height of the stack, says
+  void visit(llvm::Value *Height) {
+    sumOf(Height);
+
+    while (not Pending.empty()) {
+      llvm::PHINode *Phi = Pending.back();
+      Pending.pop_back();
+      unsigned Unknown = Others.find(Phi)->second;
+      for (llvm::Value *Incoming : Phi->incoming_values()) {
+        if (Incoming == Phi)
+          continue;
+        Sum Equation = sumOf(Incoming);
+        Sum Itself;
+        Itself.Terms[Unknown] = 1;
+        Equation.add(Itself, -1);
+        if (Equation.IsValid)
+          Equations.push_back(std::move(Equation));
+      }
+    }
+  }
+
+  /// \return for each callee, the amount the equations leave no choice about
+  std::vector<std::optional<int64_t>> solve() {
+    struct Row {
+      Sum Equation;
+      unsigned Pivot = 0;
+    };
+    std::vector<Row> Rows;
+
+    auto Eliminate = [](Sum &From, const Row &With) {
+      auto It = From.Terms.find(With.Pivot);
+      if (It == From.Terms.end())
+        return;
+      int64_t Coefficient = It->second;
+      From.scale(With.Equation.Terms.find(With.Pivot)->second);
+      From.add(With.Equation, -Coefficient);
+      From.normalize();
+    };
+
+    // An equation that contradicts those before it is dropped: something else
+    // is wrong on one of the two paths. An unknown that is not a callee's goes
+    // first, so that what is left is about the callees only.
+    for (Sum &Equation : Equations) {
+      for (const Row &Other : Rows)
+        Eliminate(Equation, Other);
+      if (not Equation.IsValid or Equation.Terms.empty())
+        continue;
+      Rows.push_back({ Equation, Equation.Terms.rbegin()->first });
+    }
+
+    for (size_t I = Rows.size(); I-- > 0;)
+      for (size_t J = 0; J < I; ++J)
+        Eliminate(Rows[J].Equation, Rows[I]);
+
+    std::vector<std::optional<int64_t>> Result(Callees);
+    for (const Row &Row : Rows) {
+      const Sum &Equation = Row.Equation;
+      if (Row.Pivot >= Callees or not Equation.IsValid
+          or Equation.Terms.size() != 1)
+        continue;
+      int64_t Coefficient = Equation.Terms.begin()->second;
+      if (Equation.Constant % Coefficient == 0)
+        Result[Row.Pivot] = -Equation.Constant / Coefficient;
+    }
+
+    return Result;
+  }
+
+private:
+  unsigned unknownOf(llvm::Value *V) {
+    auto [It, IsNew] = Others.try_emplace(V, Callees + Others.size());
+    if (IsNew)
+      if (auto *Phi = llvm::dyn_cast<llvm::PHINode>(V))
+        Pending.push_back(Phi);
+    return It->second;
+  }
+
+  Sum sumOf(llvm::Value *V) {
+    using namespace llvm;
+
+    Sum Result;
+    if (auto *Constant = dyn_cast<ConstantInt>(V)) {
+      Result.Constant = Constant->getSExtValue();
+      return Result;
+    }
+
+    auto It = Known.find(V);
+    if (It != Known.end())
+      return It->second;
+
+    auto ConstantOf = [](Value *V) -> std::optional<int64_t> {
+      if (auto *Constant = dyn_cast<ConstantInt>(V))
+        return Constant->getSExtValue();
+      return std::nullopt;
+    };
+
+    bool IsSum = false;
+    if (auto *Call = dyn_cast<CallBase>(V);
+        Call != nullptr and Call->getCalledFunction() == StackEffect) {
+      Result.Terms[getLimitedValue(Call->getArgOperand(0))] = 1;
+      IsSum = true;
+    } else if (auto *Operator = dyn_cast<BinaryOperator>(V)) {
+      Value *Left = Operator->getOperand(0);
+      Value *Right = Operator->getOperand(1);
+      switch (Operator->getOpcode()) {
+      case Instruction::Add:
+      case Instruction::Sub: {
+        bool IsAdd = Operator->getOpcode() == Instruction::Add;
+        Result = sumOf(Left);
+        Result.add(sumOf(Right), IsAdd ? 1 : -1);
+        IsSum = true;
+      } break;
+
+      case Instruction::Mul:
+        if (std::optional<int64_t> Factor = ConstantOf(Right)) {
+          Result = sumOf(Left);
+          Result.scale(*Factor);
+          IsSum = true;
+        }
+        break;
+
+      case Instruction::Shl:
+        if (std::optional<int64_t> Amount = ConstantOf(Right);
+            Amount.has_value() and *Amount >= 0 and *Amount < 31) {
+          Result = sumOf(Left);
+          Result.scale(int64_t(1) << *Amount);
+          IsSum = true;
+        }
+        break;
+
+      default:
+        break;
+      }
+    }
+
+    if (not IsSum)
+      Result.Terms[unknownOf(V)] = 1;
+
+    Known[V] = Result;
+    return Result;
+  }
+};
+
+} // namespace
+
+std::vector<std::optional<int64_t>>
+CFGAnalyzer::solveCallEffects(const MetaAddress &Entry, unsigned Unknowns) {
+  using namespace llvm;
+
+  auto &&[OutlinedFunction, CFG] = optimize(Entry);
+  Function *F = OutlinedFunction.Function.get();
+
+  // The heights the optimizations were left with: those at the calls and at
+  // the starts of the blocks, and those the function is left with
+  StackEquations Equations(Unknowns, StackEffect.get());
+  for (CallBase *Call : callers(StackHeightHook.get()))
+    if (Call->getFunction() == F)
+      Equations.visit(Call->getArgOperand(1));
+
+  for (CallBase *Call : callers(OutlinedFunction.IndirectBranchInfoMarker.get()))
+    if (Call->getFunction() == F)
+      Equations.visit(Call->getArgOperand(StackPointerOffsetIndex));
+
+  return Equations.solve();
+}
 
 FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
   FunctionSummary Result = analyzeOnce(Entry);
@@ -1260,7 +1570,9 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
     AnalysisScore Score;
     for (const efa::BasicBlock &Block : Summary.CFG) {
       for (const auto &Edge : Block.Successors()) {
-        if (Edge->Type() == efa::FunctionEdgeType::Return)
+        const auto *Call = llvm::dyn_cast<efa::CallEdge>(Edge.get());
+        if (Edge->Type() == efa::FunctionEdgeType::Return
+            or (Call != nullptr and Call->IsTailCall()))
           ++Score.Returns;
         else if (Edge->Type() == efa::FunctionEdgeType::LongJmp)
           ++Score.LongJmps;
@@ -1313,10 +1625,16 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
     auto IsItself = [](const UnknownCallSite &Other) {
       return Other.IsRecursive;
     };
+    auto IsSameSymbol = [&Call](const UnknownCallSite &Other) {
+      return not Call.Symbol.empty() and Other.Symbol == Call.Symbol;
+    };
     auto It = llvm::find_if(Sites, IsItself);
-    if (Call.IsRecursive and It != Sites.end()) {
+    if (not Call.IsRecursive)
+      It = llvm::find_if(Sites, IsSameSymbol);
+    if (It != Sites.end()) {
       It->Blocks.push_back(Call.Block);
       It->Likeliest = std::max(It->Likeliest, Likeliest);
+      It->Most = MaxWords;
       continue;
     }
 
@@ -1324,6 +1642,7 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
     New.Blocks.push_back(Call.Block);
     New.IsFirst = IsFirst;
     New.IsRecursive = Call.IsRecursive;
+    New.Symbol = Call.Symbol;
     New.Likeliest = Likeliest;
     New.Most = Call.IsRecursive ? MaxWords : Likeliest;
   }
@@ -1349,6 +1668,30 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
 
   if (Sites.size() == 1)
     Sites[0].Most = MaxWords;
+
+  // Before trying: with an unknown for what each callee removes, the paths
+  // of the function that join give equations. What they leave no choice
+  // about is not to be tried, and can be more than the block of the call
+  // pushes: arguments are also pushed before a call that computes another.
+  {
+    constexpr int64_t MostRequiredWords = 64;
+    for (size_t I = 0; I < Sites.size(); ++I)
+      for (const MetaAddress &Block : Sites[I].Blocks)
+        SymbolicSites[Block] = I;
+    auto Required = solveCallEffects(Entry, Sites.size());
+    SymbolicSites.clear();
+
+    for (size_t I = 0; I < Sites.size(); ++I) {
+      if (not Required[I].has_value())
+        continue;
+      int64_t Extra = *Required[I] - *Default;
+      if (Extra < 0 or Extra % int64_t(Word) != 0
+          or Extra / int64_t(Word) > MostRequiredWords)
+        continue;
+      Sites[I].Likeliest = Extra / Word;
+      Sites[I].IsRequired = true;
+    }
+  }
 
   // An assumption: the words each callee removes
   using Assumption = llvm::SmallVector<uint64_t, 4>;
@@ -1393,7 +1736,8 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
                      and Sites.size() != 1;
     Assumption Next;
     for (size_t I = 0; not IsOver and I < Sites.size(); ++I) {
-      if (OnlyFirst and not Sites[I].IsFirst and not Sites[I].IsRecursive)
+      if (Sites[I].IsRequired
+          or (OnlyFirst and not Sites[I].IsFirst and not Sites[I].IsRecursive))
         continue;
 
       for (uint64_t Words = Sites[I].Most + 1; not IsOver and Words > 0;) {
@@ -1432,7 +1776,8 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
   return Best;
 }
 
-FunctionSummary CFGAnalyzer::analyzeOnce(const MetaAddress &Entry) {
+std::pair<OutlinedFunction, SortedVector<efa::BasicBlock>>
+CFGAnalyzer::optimize(const MetaAddress &Entry) {
   using namespace llvm;
   using llvm::BasicBlock;
 
@@ -1492,6 +1837,15 @@ FunctionSummary CFGAnalyzer::analyzeOnce(const MetaAddress &Entry) {
   // Execute the optimization pipeline over the outlined function
   runOptimizationPipeline(F);
 
+  return { std::move(OutlinedFunction), std::move(CFG) };
+}
+
+FunctionSummary CFGAnalyzer::analyzeOnce(const MetaAddress &Entry) {
+  using namespace llvm;
+
+  auto &&[OutlinedFunction, CFG] = optimize(Entry);
+  Function *F = OutlinedFunction.Function.get();
+
   // The paths that reach a call agree on the height of the stack there, unless
   // something is wrong about a call before it. Where they agree at the start
   // of a block, record it: the steps that come after isolation need not find
@@ -1538,10 +1892,13 @@ CallSummarizer::CallSummarizer(llvm::Module *M,
                                Function *PostCallHook,
                                llvm::Function *RetHook,
                                llvm::Function *StackHeightHook,
+                               llvm::Function *StackEffect,
                                GlobalVariable *SPCSV,
                                llvm::SmallSet<MetaAddress, 4> *ReturnBlocks,
                                const std::map<MetaAddress, int64_t>
                                  *CallSiteFSO,
+                               const std::map<MetaAddress, unsigned>
+                                 *SymbolicSites,
                                llvm::SmallVectorImpl<UnknownCall> *UnknownCalls,
                                CSVSet *CalleeClobbered,
                                const CSVSet *CalleeSaved,
@@ -1551,10 +1908,12 @@ CallSummarizer::CallSummarizer(llvm::Module *M,
   PostCallHook(PostCallHook),
   RetHook(RetHook),
   StackHeightHook(StackHeightHook),
+  StackEffect(StackEffect),
   SPCSV(SPCSV),
   ReturnBlocks(ReturnBlocks),
   Clobberer(M),
   CallSiteFSO(CallSiteFSO),
+  SymbolicSites(SymbolicSites),
   UnknownCalls(UnknownCalls),
   CalleeClobbered(CalleeClobbered),
   CalleeSaved(CalleeSaved),
@@ -1717,6 +2076,7 @@ void CallSummarizer::handleCall(MetaAddress CallerBlock,
   // of the function to itself, what has been found about this call site, if
   // anything, replaces what is assumed
   std::optional<int64_t> FSO = MaybeFSO;
+  std::optional<unsigned> Unknown;
   bool IsRecursive = Callee.isValid() and Callee == Caller;
   if (not IsTailCall and (Callee.isInvalid() or IsRecursive)) {
     UnknownCall &New = UnknownCalls->emplace_back();
@@ -1739,11 +2099,22 @@ void CallSummarizer::handleCall(MetaAddress CallerBlock,
     auto It = CallSiteFSO->find(CallerBlock);
     if (FSO.has_value() and It != CallSiteFSO->end())
       FSO = It->second;
+
+    auto UnknownIt = SymbolicSites->find(CallerBlock);
+    if (UnknownIt != SymbolicSites->end())
+      Unknown = UnknownIt->second;
   }
 
   // Adjust back the stack pointer
   if (not IsTailCall) {
-    if (FSO.has_value()) {
+    if (Unknown.has_value()) {
+      auto *StackPointer = Builder.createLoad(SPCSV);
+      Type *IndexType = StackEffect->getFunctionType()->getParamType(0);
+      Value *Index = ConstantInt::get(IndexType, *Unknown);
+      Value *Offset = Builder.CreateCall(StackEffect, { Index });
+      auto *AdjustedStackPointer = Builder.CreateAdd(StackPointer, Offset);
+      Builder.CreateStore(AdjustedStackPointer, SPCSV);
+    } else if (FSO.has_value()) {
       auto *StackPointer = Builder.createLoad(SPCSV);
       Value *Offset = ConstantInt::get(StackPointer->getType(), *FSO);
       auto *AdjustedStackPointer = Builder.CreateAdd(StackPointer, Offset);
