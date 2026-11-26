@@ -2276,6 +2276,27 @@ FunctionSummary CFGAnalyzer::analyzeCallees(const MetaAddress &Entry) {
     }
   }
 
+  // What a block pushes before a call to something known that leaves it on
+  // the stack, and that the code after the call does not remove, is still
+  // there when the next call is made: it can be for that one. The arguments
+  // of a call through a pointer are pushed before the call that checks the
+  // pointer, which comes first and takes none of them.
+  std::map<MetaAddress, uint64_t> Carried;
+  for (const auto &[Block, Known] : KnownCalls) {
+    auto It = Result.CFG.find(BasicBlockID(Block));
+    if (It == Result.CFG.end())
+      continue;
+
+    // (The blocks are in the order of their addresses: what reaches this
+    // one from the block before it is known by now)
+    int64_t Left = Block == Entry ? Known.PushedAfterSaves : Known.Pushed;
+    if (auto Before = Carried.find(Block); Before != Carried.end())
+      Left += Before->second;
+    Left -= Known.FinalStackOffset - *Default + int64_t(Known.Removed);
+    if (Left > 0)
+      Carried[It->End()] = Left;
+  }
+
   for (const UnknownCall &Call : UnknownCalls) {
     // The call sites of the functions inlined in this one are theirs
     if (not Result.CFG.contains(BasicBlockID(Call.Block))
@@ -2298,6 +2319,15 @@ FunctionSummary CFGAnalyzer::analyzeCallees(const MetaAddress &Entry) {
     HasAssumptions = HasAssumptions or CallSiteFSO.contains(Call.Block);
     bool IsFirst = Call.Block == Entry;
     uint64_t Pushed = IsFirst ? Call.PushedAfterSaves : Call.Pushed;
+
+    // What a known callee left there just before, unless the code after
+    // this call removes it
+    if (auto It = Carried.find(Call.Block); It != Carried.end()) {
+      if (Call.Removed == 0)
+        Pushed += It->second;
+      else if (Call.Removed <= Pushed + It->second)
+        Pushed = 0;
+    }
 
     // What is left on the stack for a later call is not for this one
     if (auto It = Reserved.find(Call.Block); It != Reserved.end())
@@ -2993,6 +3023,7 @@ void CallSummarizer::handleCall(MetaAddress CallerBlock,
 
     // If the caller removes what it pushed, the callee does not
     uint64_t Removed = removedAfterCall(Block, SPCSV);
+    New.Removed = Removed;
     if (Removed != 0 and Removed <= New.Pushed) {
       New.Pushed = 0;
       New.PushedAfterSaves = 0;

@@ -78,6 +78,10 @@ struct UnknownCall {
   /// The same, without what the block pushes up to the last register it
   /// saves: what holds if the block is the first of its function
   uint64_t PushedAfterSaves = 0;
+
+  /// What the code after the call removes from the stack before doing
+  /// anything else with it
+  uint64_t Removed = 0;
 };
 
 class CallSummarizer : public CallHandler {
