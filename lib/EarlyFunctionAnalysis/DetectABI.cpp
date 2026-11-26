@@ -227,6 +227,16 @@ public:
   ///         about the functions that call them, was found with that.
   std::vector<MetaAddress> inferElidedCleanups();
 
+  /// What an imported function removes from the stack is the same wherever
+  /// it is called. Where the model has no prototype for one and the records
+  /// of its call sites, taken together, say what it removes, give it a
+  /// prototype that says so. To be called as attachResumeBlocks.
+  ///
+  /// \return the functions that call such a function and were analyzed with
+  ///         something else for it: what the model says about them, and
+  ///         about the functions that call them, was found with that.
+  std::vector<MetaAddress> electImportPrototypes();
+
   /// Make the model forget what detect-abi found about \p Functions and
   /// about the functions that call them, directly or not: their prototype,
   /// their attributes and what it said about their call sites, except the
@@ -544,6 +554,130 @@ std::vector<MetaAddress> DetectABI::inferElidedCleanups() {
   }
 
   return Changed;
+}
+
+/// The imported function \p Name is given a prototype that removes
+/// \p Offset: \p Agreeing of the records of its call sites say so, \p Others
+/// say something else and \p Silent call sites have no record. (A function of
+/// its own: what was decided, and on what, can be watched from a debugger.)
+[[gnu::noinline]] static void noteElectedImport(const std::string &Name,
+                                                int64_t Offset,
+                                                unsigned Agreeing,
+                                                unsigned Others,
+                                                unsigned Silent) {
+  revng_log(Log,
+            "Imported function " << Name << " removes " << Offset << ": "
+                                 << Agreeing << " call sites say so, " << Others
+                                 << " say something else, " << Silent
+                                 << " say nothing");
+}
+
+std::vector<MetaAddress> DetectABI::electImportPrototypes() {
+  // The function analysis has one unknown for each call to something it
+  // knows nothing about, and settles it with what the function that makes
+  // the call shows. A function where nothing depends on what the callee
+  // removes (it restores its stack pointer from its frame pointer) shows
+  // nothing, and its call is left as removing nothing; two unknown callees
+  // on one path are settled together, and one can be given what is the
+  // other's. But the callee is the same function wherever it is called: what
+  // one caller cannot say, another can.
+  //
+  // So the records of all the call sites of an imported function are put
+  // together. An amount at least two of them have, and more of them than any
+  // other amount, is what the function removes. (One record alone is not
+  // taken: it can be the one that was given another callee's arguments.)
+  constexpr unsigned FewestRecords = 2;
+
+  const model::TypeDefinition *DefaultPrototype = Binary->defaultPrototype();
+  using RawDefinition = model::RawFunctionDefinition;
+  const auto *Default = dyn_cast<RawDefinition>(DefaultPrototype);
+  if (Default == nullptr)
+    return {};
+
+  struct CallSites {
+    /// How many call sites record each amount
+    std::map<int64_t, unsigned> Records;
+
+    /// The callers, and what each was analyzed with (the default if the
+    /// call site has no record)
+    std::vector<std::pair<MetaAddress, int64_t>> Callers;
+  };
+  std::map<std::string, CallSites> Imports;
+
+  int64_t DefaultOffset = Default->FinalStackOffset();
+  for (const model::Function &Function : Binary->Functions()) {
+    for (const efa::BasicBlock &Block :
+         FMC.getControlFlowGraph(Function.Entry()).Blocks()) {
+      if (Block.ID().isInlined())
+        continue;
+
+      for (const auto &Edge : Block.Successors()) {
+        const auto *Call = llvm::dyn_cast<efa::CallEdge>(Edge.get());
+        if (Call == nullptr or Call->DynamicFunction().empty()
+            or Call->IsTailCall())
+          continue;
+
+        const auto &Imported = Binary->ImportedDynamicFunctions();
+        auto It = Imported.find(Call->DynamicFunction());
+        using model::FunctionAttribute::NoReturn;
+        if (It == Imported.end() or not It->Prototype().isEmpty()
+            or It->Attributes().contains(NoReturn))
+          continue;
+
+        CallSites &Sites = Imports[Call->DynamicFunction()];
+        int64_t Assumed = DefaultOffset;
+        MetaAddress BlockAddress = Block.ID().notInlinedAddress();
+        auto SiteIt = Function.CallSitePrototypes().find(BlockAddress);
+        if (SiteIt != Function.CallSitePrototypes().end()) {
+          const model::TypeDefinition *Recorded = SiteIt->prototype();
+          if (const auto *Record = dyn_cast_or_null<RawDefinition>(Recorded)) {
+            Assumed = Record->FinalStackOffset();
+            ++Sites.Records[Assumed];
+          }
+        }
+        Sites.Callers.emplace_back(Function.Entry(), Assumed);
+      }
+    }
+  }
+
+  std::set<MetaAddress> Changed;
+  for (const auto &[Name, Sites] : Imports) {
+    // The amount most records have, if no other has as many
+    int64_t Elected = DefaultOffset;
+    unsigned Most = 0;
+    unsigned Total = 0;
+    bool IsTied = false;
+    for (const auto &[Offset, Count] : Sites.Records) {
+      Total += Count;
+      if (Count > Most) {
+        Elected = Offset;
+        Most = Count;
+        IsTied = false;
+      } else if (Count == Most) {
+        IsTied = true;
+      }
+    }
+
+    if (Most < FewestRecords or IsTied)
+      continue;
+
+    model::UpcastableType Prototype = defaultPrototypeRemoving(Elected);
+    if (Prototype.isEmpty())
+      continue;
+
+    unsigned Silent = Sites.Callers.size() - Total;
+    noteElectedImport(Name, Elected, Most, Total - Most, Silent);
+    Binary->ImportedDynamicFunctions()
+      .at(Name)
+      .Prototype() = std::move(Prototype);
+
+    // Who was analyzed with something else has to be analyzed again
+    for (const auto &[Caller, Assumed] : Sites.Callers)
+      if (Assumed != Elected)
+        Changed.insert(Caller);
+  }
+
+  return { Changed.begin(), Changed.end() };
 }
 
 void DetectABI::attachResumeBlocks() {
@@ -1756,10 +1890,33 @@ DetectABI::buildPrototypeForIndirectCall(const FunctionSummary &CallerSummary,
 
   // Unless the analysis of the caller found what this callee removes
   MetaAddress CallSite = CallerBlock.ID().notInlinedAddress();
-  if (auto FSO = Analyzer.callSiteFinalStackOffset(CallSite))
+  if (auto FSO = Analyzer.callSiteFinalStackOffset(CallSite)) {
     Prototype.FinalStackOffset() = *FSO;
+    setRemovedStackArguments(Prototype,
+                             *FSO,
+                             DefaultSummary.ElectedFSO.value_or(0));
+  }
 
   return std::move(NewType);
+}
+
+void DetectABI::setRemovedStackArguments(model::RawFunctionDefinition
+                                           &Prototype,
+                                         int64_t FinalStackOffset,
+                                         int64_t DefaultOffset) {
+  // The stack arguments of a prototype are otherwise found in the body of
+  // the function that has it, as what it reads above its return address. A
+  // call through a pointer and a call to an imported function without a
+  // prototype have no body to look at: all that is known is what the callee
+  // removes, and for a callee that removes its arguments that is how much it
+  // takes.
+  constexpr int64_t MostBytes = 64 * 16;
+  int64_t Bytes = FinalStackOffset - DefaultOffset;
+  if (Bytes <= 0 or Bytes > MostBytes
+      or not Prototype.StackArgumentsType().isEmpty())
+    return;
+
+  Prototype.StackArgumentsType() = Binary->makeStructDefinition(Bytes).second;
 }
 
 model::UpcastableType
@@ -2134,6 +2291,13 @@ static void runDetectABI(Module &M,
       CFGAnalyzer Analyzer(M, Root, Globals, Binary, Oracle);
       DetectABI Cleaner(M, Root, Globals, FMC, Binary, Oracle, Analyzer);
       Changed = Cleaner.inferElidedCleanups();
+
+      // What the call sites of an imported function say together about it
+      // is a prototype for it: the functions that assumed something else are
+      // found again as well
+      std::vector<MetaAddress> Elected = Cleaner.electImportPrototypes();
+      Changed.insert(Changed.end(), Elected.begin(), Elected.end());
+
       if (Changed.empty())
         break;
       Cleaner.forgetWithCallers(Changed);
