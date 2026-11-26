@@ -1000,6 +1000,11 @@ private:
     }
 
     if (auto *Phi = dyn_cast<PHINode>(V)) {
+      if (std::optional<Result> Found = throughPhis(Phi))
+        return *Found;
+
+      // Not one sum for all that reaches it: it can still be another phi
+      // plus a constant
       std::optional<Result> Common;
       for (Value *Incoming : Phi->incoming_values()) {
         if (Incoming == Phi)
@@ -1016,6 +1021,85 @@ private:
     }
 
     return { V, 0 };
+  }
+
+  /// What \p Root amounts to if everything that reaches it, through the phis
+  /// and the sums with a constant on the way, amounts to the same: the phis
+  /// of a loop refer to each other, and none of them can be worked out before
+  /// the others. They are worked out together: each is the root minus a
+  /// constant, a phi reached twice has to be reached with the same constant
+  /// (going around a loop changes nothing), and what is not a phi has to be
+  /// one value plus one constant.
+  std::optional<Result> throughPhis(llvm::PHINode *Root) {
+    using namespace llvm;
+    constexpr unsigned MostVisited = 4096;
+
+    // For each phi, what the root is that phi plus
+    SmallDenseMap<PHINode *, int64_t, 8> Offsets;
+    SmallVector<std::pair<Value *, int64_t>, 16> Queue;
+    std::optional<Result> Leaf;
+    Offsets[Root] = 0;
+    for (Value *Incoming : Root->incoming_values())
+      Queue.emplace_back(Incoming, 0);
+
+    unsigned Visited = 0;
+    while (not Queue.empty()) {
+      auto [Next, Offset] = Queue.pop_back_val();
+      if (++Visited > MostVisited)
+        return std::nullopt;
+
+      while (true) {
+        if (ThroughCasts
+            and (isa<TruncInst>(Next) or isa<ZExtInst>(Next)
+                 or isa<PtrToIntInst>(Next) or isa<IntToPtrInst>(Next)
+                 or isa<BitCastInst>(Next))) {
+          Next = cast<Instruction>(Next)->getOperand(0);
+          continue;
+        }
+
+        auto *Operator = dyn_cast<BinaryOperator>(Next);
+        if (Operator == nullptr)
+          break;
+        bool IsAdd = Operator->getOpcode() == Instruction::Add;
+        bool IsSub = Operator->getOpcode() == Instruction::Sub;
+        auto *Right = dyn_cast<ConstantInt>(Operator->getOperand(1));
+        auto *Left = dyn_cast<ConstantInt>(Operator->getOperand(0));
+        if ((IsAdd or IsSub) and Right != nullptr
+            and Right->getBitWidth() <= 64) {
+          Offset += IsAdd ? Right->getSExtValue() : -Right->getSExtValue();
+          Next = Operator->getOperand(0);
+        } else if (IsAdd and Left != nullptr and Left->getBitWidth() <= 64) {
+          Offset += Left->getSExtValue();
+          Next = Operator->getOperand(1);
+        } else {
+          break;
+        }
+      }
+
+      if (auto *Phi = dyn_cast<PHINode>(Next)) {
+        auto [It, IsNew] = Offsets.try_emplace(Phi, Offset);
+        if (not IsNew and It->second != Offset)
+          return std::nullopt;
+        if (IsNew)
+          for (Value *Incoming : Phi->incoming_values())
+            Queue.emplace_back(Incoming, Offset);
+        continue;
+      }
+
+      Result Found = of(Next);
+      Result New{ Found.first, Found.second + Offset };
+      if (Leaf.has_value() and *Leaf != New)
+        return std::nullopt;
+      Leaf = New;
+    }
+
+    if (not Leaf.has_value() or isa_and_nonnull<PHINode>(Leaf->first))
+      return std::nullopt;
+
+    // Each phi on the way is known now
+    for (const auto &[Phi, Offset] : Offsets)
+      Known[Phi] = Result{ Leaf->first, Leaf->second - Offset };
+    return *Leaf;
   }
 };
 
@@ -1472,11 +1556,41 @@ FunctionSummary CFGAnalyzer::milkInfo(OutlinedFunction *OutlinedFunction,
   // Process MaybeIndirectTailCalls
   //
 
-  // If no FSO was elected, retry focusing  on MaybeIndirectTailCalls
+  // Whether what is jumped to is known: an imported function with a
+  // prototype, or a call site the model has one for
+  auto IsKnownCallee = [&](CallBase *CI) {
+    auto *Argument = CI->getArgOperand(CalledSymbolIndex);
+    StringRef Symbol = extractFromConstantStringPtr(Argument);
+    if (not Symbol.empty()) {
+      const auto &Imported = Binary->ImportedDynamicFunctions();
+      auto It = Imported.find(Symbol.str());
+      if (It != Imported.end() and not It->Prototype().isEmpty())
+        return true;
+    }
+
+    const efa::BasicBlock &Block = blockFromIndirectBranchInfo(CI, CFG);
+    MetaAddress Site = Block.ID().notInlinedAddress();
+    const model::Function *Function = Binary->Functions()
+                                        .tryGet(OutlinedFunction->Address);
+    return Function != nullptr
+           and Function->CallSitePrototypes().contains(Site);
+  };
+
+  // If no FSO was elected, retry focusing  on MaybeIndirectTailCalls. Those
+  // to something known come first: what they leave the stack pointer at is
+  // what this function leaves it at, where the others were only given what
+  // the default prototype says, and follow.
   bool HasOwnFSO = MaybeWinFSO.has_value();
   if (not HasOwnFSO) {
     revng_assert(MaybeReturns.size() == 0);
-    MaybeWinFSO = electFSO(MaybeIndirectTailCalls);
+    decltype(MaybeIndirectTailCalls) Known;
+    for (const auto &Candidate : MaybeIndirectTailCalls)
+      if (IsKnownCallee(std::get<0>(Candidate)))
+        Known.push_back(Candidate);
+    MaybeWinFSO = electFSO(Known);
+    HasOwnFSO = MaybeWinFSO.has_value();
+    if (not HasOwnFSO)
+      MaybeWinFSO = electFSO(MaybeIndirectTailCalls);
   }
 
   for (const auto &[CI, FSO, Summary] : MaybeIndirectTailCalls) {
@@ -1484,21 +1598,12 @@ FunctionSummary CFGAnalyzer::milkInfo(OutlinedFunction *OutlinedFunction,
     StringRef Symbol = extractFromConstantStringPtr(Argument);
 
     // What is called this way returns in place of this function. If nothing
-    // is known about it, and this function has returns of its own, it removes
-    // from the stack what is left for them to remove: that is not to be
-    // assumed, it follows.
-    bool IsKnown = false;
-    if (not Symbol.empty()) {
-      const auto &Imported = Binary->ImportedDynamicFunctions();
-      auto It = Imported.find(Symbol.str());
-      IsKnown = It != Imported.end() and not It->Prototype().isEmpty();
-    }
+    // is known about it, and this function has returns of its own, or jumps
+    // to something known, it removes from the stack what is left for them to
+    // remove: that is not to be assumed, it follows.
+    bool IsKnown = IsKnownCallee(CI);
     efa::BasicBlock &Block = blockFromIndirectBranchInfo(CI, CFG);
     MetaAddress Site = Block.ID().notInlinedAddress();
-    const model::Function *Function = Binary->Functions()
-                                        .tryGet(OutlinedFunction->Address);
-    if (Function != nullptr and Function->CallSitePrototypes().contains(Site))
-      IsKnown = true;
 
     int64_t Removed = 0;
     if (HasOwnFSO)
