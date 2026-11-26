@@ -29,6 +29,9 @@ public:
   ~StaticDataMemoryOracle() final = default;
 
   MaterializedValue load(uint64_t LoadAddress, unsigned LoadSize) final;
+
+  /// \return whether \p Address is in the code of the program
+  bool isCode(uint64_t Address) const;
 };
 
 class ValueMaterializerPass

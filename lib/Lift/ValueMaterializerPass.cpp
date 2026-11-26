@@ -44,6 +44,151 @@ MaterializedValue StaticDataMemoryOracle::load(uint64_t LoadAddress,
   return JTM.readFromPointer(Address, LoadSize, IsLittleEndian);
 }
 
+bool StaticDataMemoryOracle::isCode(uint64_t Address) const {
+  MetaAddress PC = JTM.fromPC(Address);
+  return PC.isValid() and JTM.isExecutableAddress(PC);
+}
+
+/// The values \p ToTrack can have if it is read from a table of addresses of
+/// code, whatever the index is: all the addresses of code the table starts
+/// with. The table of a `switch` is among them from its first entry to its
+/// last, since what follows it in the program is not an address of code
+/// (the bytes of another table, padding, instructions); if another table of
+/// addresses follows, its entries are there too, which adds targets the jump
+/// never takes and loses none.
+///
+/// This is for the jumps whose index the analysis of values cannot bound:
+/// the index was checked before a call the lifter cannot see through, or the
+/// block of the jump is also reached from bytes that are not code.
+static std::optional<MaterializedValues>
+tableTargets(Value *ToTrack, StaticDataMemoryOracle &MO) {
+  using namespace llvm;
+
+  // From the value back to what is read from memory: casts, and operations
+  // with a constant
+  SmallVector<Instruction *, 8> Steps;
+  Value *V = ToTrack;
+  LoadInst *Load = nullptr;
+  for (unsigned Depth = 0; Depth < 8 and Load == nullptr; ++Depth) {
+    if ((Load = dyn_cast<LoadInst>(V)))
+      break;
+
+    auto *I = dyn_cast<Instruction>(V);
+    if (I == nullptr)
+      return std::nullopt;
+
+    if (isa<ZExtInst>(I) or isa<TruncInst>(I)) {
+      V = I->getOperand(0);
+    } else if (auto *Operator = dyn_cast<BinaryOperator>(I);
+               Operator != nullptr
+               and (Operator->getOpcode() == Instruction::Add
+                    or Operator->getOpcode() == Instruction::Or)) {
+      if (isa<ConstantInt>(Operator->getOperand(1)))
+        V = Operator->getOperand(0);
+      else if (isa<ConstantInt>(Operator->getOperand(0)))
+        V = Operator->getOperand(1);
+      else
+        return std::nullopt;
+    } else {
+      return std::nullopt;
+    }
+    Steps.push_back(I);
+  }
+
+  if (Load == nullptr or not Load->getType()->isIntegerTy())
+    return std::nullopt;
+  unsigned EntrySize = Load->getType()->getIntegerBitWidth() / 8;
+  if (EntrySize != 4 and EntrySize != 8)
+    return std::nullopt;
+
+  // The address: a constant plus an index times the size of an entry
+  Value *Address = Load->getPointerOperand();
+  if (auto *ToPointer = dyn_cast<IntToPtrInst>(Address))
+    Address = ToPointer->getOperand(0);
+  else
+    return std::nullopt;
+
+  uint64_t Base = 0;
+  bool HasIndex = false;
+  for (unsigned Depth = 0; Depth < 8 and not HasIndex; ++Depth) {
+    if (isa<ZExtInst>(Address) or isa<TruncInst>(Address)) {
+      Address = cast<Instruction>(Address)->getOperand(0);
+      continue;
+    }
+
+    auto *Operator = dyn_cast<BinaryOperator>(Address);
+    if (Operator == nullptr)
+      return std::nullopt;
+    auto *Constant = dyn_cast<ConstantInt>(Operator->getOperand(1));
+    switch (Operator->getOpcode()) {
+    case Instruction::Add:
+      if (Constant != nullptr) {
+        Base += Constant->getZExtValue();
+        Address = Operator->getOperand(0);
+      } else if (auto *Left = dyn_cast<ConstantInt>(Operator->getOperand(0))) {
+        Base += Left->getZExtValue();
+        Address = Operator->getOperand(1);
+      } else {
+        return std::nullopt;
+      }
+      break;
+
+    case Instruction::Shl:
+      if (Constant == nullptr
+          or (uint64_t(1) << Constant->getLimitedValue(63)) != EntrySize)
+        return std::nullopt;
+      HasIndex = true;
+      break;
+
+    case Instruction::Mul:
+      if (Constant == nullptr or Constant->getLimitedValue() != EntrySize)
+        return std::nullopt;
+      HasIndex = true;
+      break;
+
+    default:
+      return std::nullopt;
+    }
+  }
+
+  if (not HasIndex or Base == 0)
+    return std::nullopt;
+
+  constexpr unsigned MostEntries = 4096;
+  MaterializedValues Result;
+  for (unsigned Index = 0; Index < MostEntries; ++Index) {
+    MaterializedValue Entry = MO.load(Base + uint64_t(Index) * EntrySize,
+                                      EntrySize);
+    if (not Entry.isValid() or Entry.hasSymbol()
+        or not MO.isCode(Entry.value().getLimitedValue()))
+      break;
+
+    // What the value is when this entry is what was read
+    APInt Value = Entry.value().zextOrTrunc(EntrySize * 8);
+    for (Instruction *Step : llvm::reverse(Steps)) {
+      unsigned Bits = Step->getType()->getIntegerBitWidth();
+      if (isa<ZExtInst>(Step) or isa<TruncInst>(Step)) {
+        Value = Value.zextOrTrunc(Bits);
+        continue;
+      }
+
+      auto *Left = dyn_cast<ConstantInt>(Step->getOperand(0));
+      auto *Right = dyn_cast<ConstantInt>(Step->getOperand(1));
+      const APInt &Other = (Right != nullptr ? Right : Left)->getValue();
+      if (Step->getOpcode() == Instruction::Add)
+        Value = Value + Other;
+      else
+        Value = Value | Other;
+    }
+
+    Result.push_back(MaterializedValue::fromConstant(Value));
+  }
+
+  if (Result.empty())
+    return std::nullopt;
+  return Result;
+}
+
 static void demoteOrToAdd(Function &F) {
   using namespace llvm;
 
@@ -128,6 +273,21 @@ PreservedAnalyses ValueMaterializerPass::run(Function &F,
                                                      &Candidates);
     if (Results.values())
       Values = std::move(*Results.values());
+
+    // No value at all, or values that are not addresses of code, for what
+    // is read from a table of them and goes in the program counter (the
+    // only values that are followed through loads with this oracle): the
+    // table says what it can be
+    if (Oracle == Oracle::AdvancedValueInfo and MaxLoad != 0) {
+      bool IsOff = Values.empty();
+      for (const MaterializedValue &V : Values)
+        if (not V.hasSymbol()
+            and not MO.isCode(V.value().trunc(64).getZExtValue()))
+          IsOff = true;
+      if (IsOff)
+        if (auto FromTable = tableTargets(ToTrack, MO))
+          Values = std::move(*FromTable);
+    }
 
     if (DumpValueMaterializer
         or count(DumpValueMaterializerAt, CurrentAddress) > 0) {

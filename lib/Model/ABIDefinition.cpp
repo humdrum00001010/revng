@@ -435,6 +435,12 @@ assertOnFailure(std::optional<AlignmentInfo> &&ComputationResult,
   return std::move(ComputationResult);
 }
 
+bool Definition::canBeAligned(const model::TypeDefinition &Type) const {
+  AlignmentCache Cache;
+  std::optional<AlignmentInfo> Result = naturalAlignment(*this, Type, Cache);
+  return Result.has_value();
+}
+
 std::optional<uint64_t> Definition::alignment(const model::Type &Type,
                                               AlignmentCache &Cache) const {
   auto Result = assertOnFailure(naturalAlignment(*this, Type, Cache),

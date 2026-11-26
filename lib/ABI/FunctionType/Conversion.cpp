@@ -474,6 +474,16 @@ TCC::tryConvertingStackArguments(const model::UpcastableType &StackStruct,
     return llvm::SmallVector<model::Argument, 8>{};
   }
   auto &Stack = StackStruct->toStruct();
+
+  // What the stack arguments are made of can be something the ABI gives no
+  // alignment to: such a function is not converted
+  if (not ABI.canBeAligned(Stack)) {
+    revng_log(Log,
+              "The alignment of the stack arguments cannot be computed, abort "
+              "the conversion.");
+    return std::nullopt;
+  }
+
   uint64_t StackSize = paddedSizeOnStack(Stack.Size(),
                                          adjustedAlignment(Stack));
 
