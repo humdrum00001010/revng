@@ -651,7 +651,8 @@ bool DetectABI::offer(const MetaAddress &Candidate, Ownership &Whose) {
   // lies: code that was put away from its function, as what is seldom run
   // is, leads back into it. A candidate that was made a function has blocks:
   // the first of them that the functions of Whose have too is where it joins
-  // them, and it is theirs or nobody's.
+  // them, and they are asked first. (If they refuse, the functions around it
+  // are still asked, as before: nothing that was taken stops being taken.)
   if (Binary->Functions().contains(Candidate)) {
     const auto &Blocks = FMC.getControlFlowGraph(Candidate).Blocks();
     OwnerList Into;
@@ -674,8 +675,9 @@ bool DetectABI::offer(const MetaAddress &Candidate, Ownership &Whose) {
           Queue.insert(Edge->Destination());
     }
 
-    if (not Into.empty())
-      return Into.size() <= MostSharing and AllSave(Into) and Attach(Into);
+    if (not Into.empty() and Into.size() <= MostSharing and AllSave(Into)
+        and Attach(Into))
+      return true;
   }
 
   MetaAddress Gap = MetaAddress::invalid();
