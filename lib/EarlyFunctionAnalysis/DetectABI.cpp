@@ -306,6 +306,14 @@ private:
   ///         offset, or an empty type if that is the one it has
   model::UpcastableType defaultPrototypeRemoving(int64_t FinalStackOffset);
 
+  /// A callee that removes more from the stack than its return address
+  /// removes its arguments: they are those bytes. Give \p Prototype, which
+  /// removes \p FinalStackOffset where a callee that leaves its arguments
+  /// removes \p DefaultOffset, the stack arguments that says it has.
+  void setRemovedStackArguments(model::RawFunctionDefinition &Prototype,
+                                int64_t FinalStackOffset,
+                                int64_t DefaultOffset);
+
 private:
   /// The copies of the default prototype \ref defaultPrototypeRemoving made,
   /// by their final stack offset
@@ -1772,6 +1780,7 @@ DetectABI::defaultPrototypeRemoving(int64_t FinalStackOffset) {
   Copy.ReturnValues() = Default->ReturnValues();
   Copy.PreservedRegisters() = Default->PreservedRegisters();
   Copy.FinalStackOffset() = FinalStackOffset;
+  setRemovedStackArguments(Copy, FinalStackOffset, Default->FinalStackOffset());
   DefaultPrototypeCopies.emplace(FinalStackOffset, Copy.key());
 
   return std::move(NewType);
