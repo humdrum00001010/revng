@@ -23,6 +23,7 @@
 #include "revng/Model/IRHelpers.h"
 #include "revng/Model/NameBuilder.h"
 #include "revng/Model/VerifyHelper.h"
+#include "revng/PromoteStackPointer/DetachStackAllocations.h"
 #include "revng/PromoteStackPointer/InstrumentStackAccessesPass.h"
 #include "revng/PromoteStackPointer/Markers.h"
 #include "revng/PromoteStackPointer/SegregateStackAccesses.h"
@@ -453,6 +454,34 @@ CallSite CallSite::make(CallInst *SSACSCall,
   // Find old call instruction
   Result.OldCall = findAssociatedCall(SSACSCall);
   revng_assert(Result.OldCall != nullptr);
+
+  // Where the function allocated a block on its stack at run time, only what
+  // it pushed since is in the frame above the stack pointer: the marker says
+  // how much that is. The return address has to be there, and so does every
+  // argument the callee takes from the stack. One that is not lies in the
+  // block (the arguments were copied into it): here they are taken from the
+  // frame, so nothing is known about the arguments of this call.
+  if (std::optional<int64_t> Room = stackRoomOf(*SSACSCall);
+      Room.has_value() and Result.MaybeStackOffset.has_value()) {
+    OverflowSafeInt<int64_t> AfterPush(CallInstructionPushSize);
+    bool Fits = *AfterPush <= *Room;
+    for (const auto &Argument : Result.Layout.Arguments) {
+      if (not Argument.Stack.has_value())
+        continue;
+      auto End = AfterPush + Argument.Stack->Offset + Argument.Stack->Size;
+      Fits = Fits and End and *End <= *Room;
+    }
+
+    if (not Fits) {
+      revng_log(Log,
+                "The arguments reach into a block allocated at run time: "
+                "taking the stack size as unknown");
+      Result.MaybeStackOffset = std::nullopt;
+    }
+  }
+
+  // (what the marker said is not for what its metadata is copied to)
+  SSACSCall->setMetadata(StackRoomMetadata, nullptr);
 
   if (not Result.MaybeStackOffset.has_value()) {
     revng_log(Log, "Stack size unknown, ignoring stack arguments");
