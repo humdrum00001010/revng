@@ -881,6 +881,199 @@ private:
 
 } // namespace
 
+namespace {
+
+/// Values as a value plus a constant, or as a constant alone (no value).
+/// Where the paths of a function join with the same sum, computed on each of
+/// them, LLVM is left with a phi of those: it is that sum.
+class SameOnAllPaths {
+public:
+  using Result = std::pair<llvm::Value *, int64_t>;
+
+private:
+  /// What each value was found to be: each is looked at once. A phi that is
+  /// met again while it is being worked out stands for itself.
+  llvm::DenseMap<llvm::Value *, Result> Known;
+
+  /// Whether a value is the value a cast is applied to: not where what is
+  /// found has to replace the value
+  bool ThroughCasts = true;
+
+public:
+  SameOnAllPaths(bool ThroughCasts = true) : ThroughCasts(ThroughCasts) {}
+
+  Result of(llvm::Value *V) {
+    using namespace llvm;
+
+    if (auto *Constant = dyn_cast<ConstantInt>(V))
+      return { nullptr, Constant->getSExtValue() };
+
+    if (not isa<Instruction>(V))
+      return { V, 0 };
+
+    auto It = Known.find(V);
+    if (It != Known.end()) {
+      // A phi that stood for another one while that one was being worked
+      // out is what that one turned out to be
+      Result Found = It->second;
+      for (unsigned Hops = 0; Hops < 8; ++Hops) {
+        if (Found.first == nullptr or Found.first == V
+            or not isa<PHINode>(Found.first))
+          break;
+        auto Next = Known.find(Found.first);
+        if (Next == Known.end() or Next->second.first == Found.first)
+          break;
+        Found = { Next->second.first, Next->second.second + Found.second };
+      }
+      return Found;
+    }
+
+    Known[V] = Result{ V, 0 };
+    Result New = compute(V);
+    Known[V] = New;
+    return New;
+  }
+
+  /// Make the argument \p Index of \p Call the constant it amounts to, if it
+  /// is one LLVM does not see
+  void fold(llvm::CallBase *Call, unsigned Index) {
+    using namespace llvm;
+    Value *Argument = Call->getArgOperand(Index);
+    if (isa<ConstantInt>(Argument) or not Argument->getType()->isIntegerTy())
+      return;
+
+    auto &&[Base, Offset] = of(Argument);
+    if (Base != nullptr)
+      return;
+
+    unsigned Bits = Argument->getType()->getIntegerBitWidth();
+    APInt Folded(64, uint64_t(Offset), true);
+    Call->setArgOperand(Index,
+                        ConstantInt::get(Argument->getType(),
+                                         Folded.sextOrTrunc(Bits)));
+  }
+
+private:
+  Result compute(llvm::Value *V) {
+    using namespace llvm;
+
+    if (ThroughCasts
+        and (isa<TruncInst>(V) or isa<ZExtInst>(V) or isa<PtrToIntInst>(V)
+             or isa<IntToPtrInst>(V) or isa<BitCastInst>(V)))
+      return of(cast<Instruction>(V)->getOperand(0));
+
+    if (auto *Operator = dyn_cast<BinaryOperator>(V)) {
+      bool IsAdd = Operator->getOpcode() == Instruction::Add;
+      if (IsAdd or Operator->getOpcode() == Instruction::Sub) {
+        Result Left = of(Operator->getOperand(0));
+        Result Right = of(Operator->getOperand(1));
+        if (Right.first == nullptr)
+          return { Left.first,
+                   IsAdd ? Left.second + Right.second :
+                           Left.second - Right.second };
+        if (IsAdd and Left.first == nullptr)
+          return { Right.first, Left.second + Right.second };
+        if (not IsAdd and Left.first == Right.first)
+          return { nullptr, Left.second - Right.second };
+      }
+      return { V, 0 };
+    }
+
+    if (auto *Phi = dyn_cast<PHINode>(V)) {
+      std::optional<Result> Common;
+      for (Value *Incoming : Phi->incoming_values()) {
+        if (Incoming == Phi)
+          continue;
+        Result New = of(Incoming);
+        if (New.first == Phi and New.second == 0)
+          continue;
+        if (Common.has_value() and *Common != New)
+          return { V, 0 };
+        Common = New;
+      }
+      if (Common.has_value())
+        return *Common;
+    }
+
+    return { V, 0 };
+  }
+};
+
+/// Where the paths of a function join with the same stack pointer, computed
+/// on each of them, LLVM keeps a phi (it does not see through the phis of a
+/// loop that refer to each other, nor through sums made in different blocks):
+/// an access to memory through it is not seen as an access to the stack, and
+/// what the function saved there (its return address, the registers it
+/// restores) is not found again. The phi is replaced by the stack pointer the
+/// function is entered with plus the constant all the paths bring.
+///
+/// Only that: the form the other values have is what the passes after this
+/// one expect.
+class MergeSameOnAllPathsPass
+  : public llvm::PassInfoMixin<MergeSameOnAllPathsPass> {
+private:
+  llvm::GlobalVariable *StackPointer = nullptr;
+
+public:
+  explicit MergeSameOnAllPathsPass(llvm::GlobalVariable *StackPointer) :
+    StackPointer(StackPointer) {}
+
+  llvm::PreservedAnalyses run(llvm::Function &F,
+                              llvm::FunctionAnalysisManager &FAM) {
+    using namespace llvm;
+    using llvm::BasicBlock;
+
+    // The stack pointer the function is entered with: what is read from the
+    // register at the start, before anything is written to it
+    SmallPtrSet<Value *, 4> EntryLoads;
+    for (Instruction &I : F.getEntryBlock()) {
+      if (auto *Store = dyn_cast<StoreInst>(&I)) {
+        if (skipCasts(Store->getPointerOperand()) == StackPointer)
+          break;
+      } else if (auto *Load = dyn_cast<LoadInst>(&I)) {
+        if (skipCasts(Load->getPointerOperand()) == StackPointer)
+          EntryLoads.insert(Load);
+      }
+    }
+
+    // (Sums are followed through the casts between the stack pointer and the
+    // numbers the code computes with: for a value of the size of the stack
+    // pointer what comes out is exact)
+    SameOnAllPaths Same;
+    SmallVector<std::pair<PHINode *, SameOnAllPaths::Result>, 8> ToReplace;
+    for (BasicBlock &BB : F) {
+      if (&BB == &F.getEntryBlock())
+        continue;
+
+      for (PHINode &Phi : BB.phis()) {
+        if (Phi.getType() != StackPointer->getValueType())
+          continue;
+
+        SameOnAllPaths::Result Found = Same.of(&Phi);
+        if (Found.first != nullptr and EntryLoads.contains(Found.first))
+          ToReplace.emplace_back(&Phi, Found);
+      }
+    }
+
+    const DataLayout &DL = F.getParent()->getDataLayout();
+    for (auto &[Phi, Found] : ToReplace) {
+      revng::IRBuilder Builder(&*Phi->getParent()->getFirstInsertionPt());
+      Value *Base = Found.first;
+      if (Base->getType()->isPointerTy())
+        Base = Builder.CreatePtrToInt(Base, DL.getIntPtrType(Base->getType()));
+      Base = Builder.CreateZExtOrTrunc(Base, Phi->getType());
+      auto *Offset = ConstantInt::getSigned(Phi->getType(), Found.second);
+      Phi->replaceAllUsesWith(Builder.CreateAdd(Base, Offset));
+      Phi->eraseFromParent();
+    }
+
+    return ToReplace.empty() ? PreservedAnalyses::all() :
+                               PreservedAnalyses::none();
+  }
+};
+
+} // namespace
+
 void CFGAnalyzer::runOptimizationPipeline(llvm::Function *F) {
   using namespace llvm;
 
@@ -947,7 +1140,10 @@ void CFGAnalyzer::runOptimizationPipeline(llvm::Function *F) {
     // The address of an access can become the stack pointer plus a constant
     // only now, where the paths that reach it leave the stack pointer the
     // same: such an access was taken for one that is not to the stack, and
-    // what was stored there is not found. Tell the accesses apart again.
+    // what was stored there is not found. Tell the accesses apart again;
+    // first, where LLVM has kept a phi of the same stack pointer, put the
+    // stack pointer in its place.
+    FPM.addPass(MergeSameOnAllPathsPass(Globals.spReg()));
     FPM.addPass(SDSAP(Globals.spReg(), ThreadPointers));
     FPM.addPass(GVNPass());
 
@@ -2714,106 +2910,6 @@ FunctionSummary CFGAnalyzer::analyzeCallees(const MetaAddress &Entry) {
   Assume(Current);
   return Best;
 }
-
-namespace {
-
-/// Values as a value plus a constant, or as a constant alone (no value).
-/// Where the paths of a function join with the same sum, computed on each of
-/// them, LLVM is left with a phi of those: it is that sum.
-class SameOnAllPaths {
-public:
-  using Result = std::pair<llvm::Value *, int64_t>;
-
-private:
-  /// What each value was found to be: each is looked at once. A phi that is
-  /// met again while it is being worked out stands for itself.
-  llvm::DenseMap<llvm::Value *, Result> Known;
-
-public:
-  Result of(llvm::Value *V) {
-    using namespace llvm;
-
-    if (auto *Constant = dyn_cast<ConstantInt>(V))
-      return { nullptr, Constant->getSExtValue() };
-
-    if (not isa<Instruction>(V))
-      return { V, 0 };
-
-    auto It = Known.find(V);
-    if (It != Known.end())
-      return It->second;
-
-    Known[V] = Result{ V, 0 };
-    Result New = compute(V);
-    Known[V] = New;
-    return New;
-  }
-
-  /// Make the argument \p Index of \p Call the constant it amounts to, if it
-  /// is one LLVM does not see
-  void fold(llvm::CallBase *Call, unsigned Index) {
-    using namespace llvm;
-    Value *Argument = Call->getArgOperand(Index);
-    if (isa<ConstantInt>(Argument) or not Argument->getType()->isIntegerTy())
-      return;
-
-    auto &&[Base, Offset] = of(Argument);
-    if (Base != nullptr)
-      return;
-
-    unsigned Bits = Argument->getType()->getIntegerBitWidth();
-    APInt Folded(64, uint64_t(Offset), true);
-    Call->setArgOperand(Index,
-                        ConstantInt::get(Argument->getType(),
-                                         Folded.sextOrTrunc(Bits)));
-  }
-
-private:
-  Result compute(llvm::Value *V) {
-    using namespace llvm;
-
-    if (isa<TruncInst>(V) or isa<ZExtInst>(V) or isa<PtrToIntInst>(V)
-        or isa<IntToPtrInst>(V) or isa<BitCastInst>(V))
-      return of(cast<Instruction>(V)->getOperand(0));
-
-    if (auto *Operator = dyn_cast<BinaryOperator>(V)) {
-      bool IsAdd = Operator->getOpcode() == Instruction::Add;
-      if (IsAdd or Operator->getOpcode() == Instruction::Sub) {
-        Result Left = of(Operator->getOperand(0));
-        Result Right = of(Operator->getOperand(1));
-        if (Right.first == nullptr)
-          return { Left.first,
-                   IsAdd ? Left.second + Right.second :
-                           Left.second - Right.second };
-        if (IsAdd and Left.first == nullptr)
-          return { Right.first, Left.second + Right.second };
-        if (not IsAdd and Left.first == Right.first)
-          return { nullptr, Left.second - Right.second };
-      }
-      return { V, 0 };
-    }
-
-    if (auto *Phi = dyn_cast<PHINode>(V)) {
-      std::optional<Result> Common;
-      for (Value *Incoming : Phi->incoming_values()) {
-        if (Incoming == Phi)
-          continue;
-        Result New = of(Incoming);
-        if (New.first == Phi and New.second == 0)
-          continue;
-        if (Common.has_value() and *Common != New)
-          return { V, 0 };
-        Common = New;
-      }
-      if (Common.has_value())
-        return *Common;
-    }
-
-    return { V, 0 };
-  }
-};
-
-} // namespace
 
 std::pair<OutlinedFunction, SortedVector<efa::BasicBlock>>
 CFGAnalyzer::optimize(const MetaAddress &Entry) {
