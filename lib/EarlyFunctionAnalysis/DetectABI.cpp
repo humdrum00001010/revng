@@ -315,7 +315,7 @@ void DetectABI::computeApproximateCallGraph() {
 
       if (hasMarker(Current, FunctionCallMarker)) {
         // If not an indirect call, add the node to the CG
-        if (BasicBlock *Callee = getFunctionCallCallee(Current)) {
+        if (BasicBlock *Callee = getOnlyCallee(Current)) {
           BasicBlockNode *GraphNode = nullptr;
           auto It = BasicBlockNodeMap.find(Callee);
           if (It != BasicBlockNodeMap.end()) {
@@ -1735,6 +1735,26 @@ static void collectFunctionsFromCallees(Module &M, model::Binary &Binary) {
       Binary.Functions()[Entry];
       revng_log(FunctionFromCalleesLog,
                 "Found function from callee: " << BB.getName().str());
+    }
+  }
+
+  // The only place a call through a pointer can go to is called too
+  if (auto *Marker = functionOrNull(FunctionCallMarker.get(M))) {
+    for (CallBase *Call : callersIn(Marker, &Root)) {
+      if (not isa<ConstantPointerNull>(Call->getArgOperand(0)))
+        continue;
+
+      llvm::BasicBlock *Callee = getOnlyCallee(Call->getParent());
+      if (Callee == nullptr)
+        continue;
+
+      MetaAddress Entry = getBasicBlockAddress(Callee);
+      if (Entry.isValid() and not Binary.Functions().contains(Entry)) {
+        Binary.Functions()[Entry];
+        revng_log(FunctionFromCalleesLog,
+                  "Found function from the only target of a call: "
+                    << Callee->getName().str());
+      }
     }
   }
 }

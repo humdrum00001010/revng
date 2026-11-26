@@ -13,6 +13,7 @@
 #include "revng/EarlyFunctionAnalysis/TemporaryOpaqueFunction.h"
 #include "revng/Model/FunctionTags.h"
 #include "revng/Model/NamedTypedRegister.h"
+#include "revng/Support/BlockType.h"
 #include "revng/Support/OpaqueFunctionsPool.h"
 #include "revng/Support/UniqueValuePtr.h"
 
@@ -20,6 +21,53 @@ namespace efa {
 
 class CallHandler;
 class OutlinedFunctionsMap;
+
+/// \return the block a call goes to: the callee its function_call marker
+///         names or, for a call through a pointer, the only address the
+///         lifter found the program counter can have there. That is the case
+///         of a pointer read from memory that cannot change, such as the
+///         entry of a virtual table that is known where the call is made:
+///         the call is to what the entry points to.
+inline llvm::BasicBlock *getOnlyCallee(llvm::Instruction *T) {
+  if (llvm::BasicBlock *Callee = getFunctionCallCallee(T))
+    return Callee;
+
+  if (not hasMarker(T, FunctionCallMarker))
+    return nullptr;
+
+  // The values that were found are checked one part of the program counter
+  // at a time, and anything else is unexpected: follow the checks down to
+  // the blocks they lead to
+  llvm::BasicBlock *Only = nullptr;
+  llvm::SmallVector<llvm::Instruction *, 4> Queue{ T };
+  unsigned Visited = 0;
+  while (not Queue.empty()) {
+    auto *Switch = llvm::dyn_cast<llvm::SwitchInst>(Queue.pop_back_val());
+    if (Switch == nullptr or ++Visited > 16
+        or getType(Switch->getDefaultDest()) != BlockType::UnexpectedPCBlock)
+      return nullptr;
+
+    for (const auto &Case : Switch->cases()) {
+      llvm::BasicBlock *Successor = Case.getCaseSuccessor();
+      BlockType::Values Type = getType(Successor);
+      if (Type == BlockType::IndirectBranchDispatcherHelperBlock) {
+        Queue.push_back(Successor->getTerminator());
+      } else if (Type == BlockType::JumpTargetBlock) {
+        if (Only != nullptr and Only != Successor)
+          return nullptr;
+        Only = Successor;
+      } else {
+        return nullptr;
+      }
+    }
+  }
+
+  return Only;
+}
+
+inline llvm::BasicBlock *getOnlyCallee(llvm::BasicBlock *BB) {
+  return getOnlyCallee(BB->getTerminator());
+}
 
 /// An outlined function helper object.
 struct OutlinedFunction {

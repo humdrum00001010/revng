@@ -181,9 +181,6 @@ void Outliner::integrateFunctionCallee(CallHandler *TheCallHandler,
   bool IsInline = false;
   bool IsCallToUnexpected = false;
   if (FunctionCall != nullptr) {
-    auto *T = FunctionCall->getParent()->getTerminator();
-    BasicBlock *CalleeBlock = getFunctionCallCallee(T);
-
     using namespace model::FunctionAttribute;
     bool IsMarkedInline = Summary->Attributes.contains(HasOneBrokenReturn);
     bool IsCallingTheCaller = CallerFunction == Callee;
@@ -314,7 +311,7 @@ Outliner::outlineFunctionInternal(CallHandler *TheCallHandler,
     if (auto *FunctionCall = getMarker(Current, FunctionCallMarker)) {
       // Compute callee
       MetaAddress PCCallee = MetaAddress::invalid();
-      if (auto *Next = getFunctionCallCallee(Current))
+      if (auto *Next = getOnlyCallee(Current))
         PCCallee = getBasicBlockAddress(Next);
 
       CallInst *JumpToSymbol = getMarker(Current, JumpToSymbolMarker);
@@ -390,9 +387,10 @@ Outliner::outlineFunctionInternal(CallHandler *TheCallHandler,
     if (CallInst *FunctionCall = getMarker(BB, FunctionCallMarker)) {
       auto *Term = BB->getTerminator();
 
-      // If the function callee is null, we are dealing with an indirect call
+      // If the function callee is null and the call can go to more than one
+      // place, we are dealing with an indirect call
       MetaAddress PCCallee = MetaAddress::invalid();
-      if (BasicBlock *Next = getFunctionCallCallee(Term))
+      if (BasicBlock *Next = getOnlyCallee(Term))
         PCCallee = getBasicBlockAddress(Next);
 
       CallToCallee[FunctionCall] = PCCallee;
