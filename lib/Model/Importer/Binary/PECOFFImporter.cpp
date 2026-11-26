@@ -85,6 +85,8 @@ private:
   void parseDelayImportedSymbols();
 
   using DelayDirectoryRef = const DelayImportDirectoryEntryRef;
+  using DelayTable = llvm::object::delay_import_directory_table_entry;
+  void recordDelayImportedFunctionsByAddress(const DelayTable &Table);
   void recordDelayImportedFunctions(DelayDirectoryRef &I,
                                     ImportedSymbolRange Range,
                                     uint64_t AddressTable);
@@ -628,13 +630,6 @@ void PECOFFImporter::recordDelayImportedFunctions(DelayDirectoryRef &I,
 
 void PECOFFImporter::parseDelayImportedSymbols() {
   for (DelayDirectoryRef &I : TheBinary.ObjectFile.delay_import_directories()) {
-    StringRef Name;
-    if (Error E = I.getName(Name)) {
-      std::string Message = toString(std::move(E));
-      revng_log(Log, "No name of a delay imported dll: " << Message);
-      continue;
-    }
-
     const delay_import_directory_table_entry *Table;
     if (Error E = I.getDelayImportTable(Table)) {
       std::string Message = toString(std::move(E));
@@ -642,16 +637,80 @@ void PECOFFImporter::parseDelayImportedSymbols() {
       continue;
     }
 
+    // The fields of the table are RVAs if the first bit of the attributes is
+    // set, virtual addresses otherwise: the format of older linkers, which
+    // the reader of the object file does not know. Read here.
+    if ((Table->Attributes & 1) == 0) {
+      recordDelayImportedFunctionsByAddress(*Table);
+      continue;
+    }
+
+    StringRef Name;
+    if (Error E = I.getName(Name)) {
+      std::string Message = toString(std::move(E));
+      revng_log(Log, "No name of a delay imported dll: " << Message);
+      continue;
+    }
+
     if (not Model->ImportedLibraries().insert(Name.str()).second)
       continue;
 
-    // The fields of the table are RVAs if the first bit of the attributes is
-    // set, virtual addresses otherwise (the format of older linkers)
     uint64_t AddressTable = Table->DelayImportAddressTable;
-    if ((Table->Attributes & 1) == 0)
-      AddressTable -= ImageBase.address();
-
     recordDelayImportedFunctions(I, I.imported_symbols(), AddressTable);
+  }
+}
+
+void PECOFFImporter::recordDelayImportedFunctionsByAddress(const DelayTable
+                                                             &Table) {
+  auto Architecture = Model->Architecture();
+  uint64_t PointerSize = model::Architecture::getPointerSize(Architecture);
+  uint64_t Base = ImageBase.address();
+  constexpr uint64_t Word = 4;
+  if (PointerSize != Word or Table.Name < Base
+      or Table.DelayImportAddressTable < Base
+      or Table.DelayImportNameTable < Base)
+    return;
+
+  std::optional<StringRef> Library = readString(Table.Name - Base);
+  if (not Library.has_value()) {
+    revng_log(Log, "No name of a delay imported dll");
+    return;
+  }
+
+  if (not Model->ImportedLibraries().insert(Library->str()).second)
+    return;
+
+  constexpr uint64_t MostEntries = 1 << 16;
+  for (uint64_t Index = 0; Index < MostEntries; ++Index) {
+    MetaAddress NameEntry = fromGeneric(Table.DelayImportNameTable
+                                        + Index * Word);
+    std::optional<uint64_t> Thunk = File.readInteger(NameEntry, Word);
+    if (not Thunk.has_value() or *Thunk == 0)
+      break;
+
+    // By its number, or by the address of its hint and its name
+    std::string Symbol;
+    constexpr uint64_t OrdinalFlag = uint64_t(1) << 31;
+    if (*Thunk & OrdinalFlag) {
+      Symbol = nameOfOrdinal(*Library, *Thunk & 0xFFFF);
+    } else if (*Thunk >= Base) {
+      if (std::optional<StringRef> Name = readString(*Thunk - Base + 2))
+        Symbol = Name->str();
+    }
+
+    if (Symbol.empty() or Model->ImportedDynamicFunctions().contains(Symbol))
+      continue;
+
+    // The loader stores the address of the function in the entry of the
+    // delay import address table: that entry is what the code goes through
+    MetaAddress Entry = fromGeneric(Table.DelayImportAddressTable
+                                    + Index * Word);
+    using namespace model::RelocationType;
+    auto [RelocationType, Size] = formCOFFRelocation(Model->Architecture());
+    model::Relocation NewRelocation(Entry, RelocationType, Size, 0);
+    auto NewIt = Model->ImportedDynamicFunctions().insert(Symbol).first;
+    revng_assert(NewRelocation.verify(true));
+    NewIt->Relocations().insert(NewRelocation);
   }
 }
 

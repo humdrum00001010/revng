@@ -334,7 +334,7 @@ void DetectABI::computeApproximateCallGraph() {
 
       if (hasMarker(Current, FunctionCallMarker)) {
         // If not an indirect call, add the node to the CG
-        if (BasicBlock *Callee = getOnlyCallee(Current)) {
+        if (BasicBlock *Callee = getOnlyCallee(Current, *Binary)) {
           BasicBlockNode *GraphNode = nullptr;
           auto It = BasicBlockNodeMap.find(Callee);
           if (It != BasicBlockNodeMap.end()) {
@@ -1865,7 +1865,7 @@ static void collectFunctionsFromCallees(Module &M, model::Binary &Binary) {
       if (not isa<ConstantPointerNull>(Call->getArgOperand(0)))
         continue;
 
-      llvm::BasicBlock *Callee = getOnlyCallee(Call->getParent());
+      llvm::BasicBlock *Callee = getOnlyCallee(Call->getParent(), Binary);
       if (Callee == nullptr)
         continue;
 

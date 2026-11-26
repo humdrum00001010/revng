@@ -4,6 +4,7 @@
 // This file is distributed under the MIT License. See LICENSE.md for details.
 //
 
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/ModRef.h"
 #include "llvm/Transforms/Utils/CodeExtractor.h"
@@ -11,6 +12,7 @@
 #include "revng/BasicAnalyses/RootFunction.h"
 #include "revng/EarlyFunctionAnalysis/FunctionSummaryOracle.h"
 #include "revng/EarlyFunctionAnalysis/TemporaryOpaqueFunction.h"
+#include "revng/Model/Binary.h"
 #include "revng/Model/FunctionTags.h"
 #include "revng/Model/NamedTypedRegister.h"
 #include "revng/Support/BlockType.h"
@@ -22,13 +24,82 @@ namespace efa {
 class CallHandler;
 class OutlinedFunctionsMap;
 
+/// \return whether \p Target, the address a call goes to, is read from an
+///         address that is known and lies in memory the program cannot write
+inline bool isReadFromConstantMemory(llvm::Value *Target,
+                                     const model::Binary &Binary) {
+  using namespace llvm;
+
+  while (isa<TruncInst>(Target) or isa<ZExtInst>(Target))
+    Target = cast<Instruction>(Target)->getOperand(0);
+  auto *Load = dyn_cast<LoadInst>(Target);
+  if (Load == nullptr)
+    return false;
+
+  // The address: a number, or what stands for the start of a segment plus
+  // an offset
+  Value *Pointer = Load->getPointerOperand();
+  while (isa<IntToPtrInst>(Pointer) or isa<BitCastInst>(Pointer)
+         or isa<TruncInst>(Pointer) or isa<ZExtInst>(Pointer))
+    Pointer = cast<Instruction>(Pointer)->getOperand(0);
+  if (auto *Expression = dyn_cast<ConstantExpr>(Pointer))
+    if (Expression->getOpcode() == Instruction::IntToPtr)
+      Pointer = Expression->getOperand(0);
+
+  uint64_t Address = 0;
+  if (auto *Operator = dyn_cast<BinaryOperator>(Pointer);
+      Operator != nullptr and Operator->getOpcode() == Instruction::Add) {
+    auto *Offset = dyn_cast<ConstantInt>(Operator->getOperand(1));
+    if (Offset == nullptr or Offset->getBitWidth() > 64)
+      return false;
+    Address = Offset->getZExtValue();
+    Pointer = Operator->getOperand(0);
+    while (isa<TruncInst>(Pointer) or isa<ZExtInst>(Pointer))
+      Pointer = cast<Instruction>(Pointer)->getOperand(0);
+  }
+
+  if (auto *Constant = dyn_cast<ConstantInt>(Pointer)) {
+    if (Constant->getBitWidth() > 64)
+      return false;
+    Address += Constant->getZExtValue();
+  } else if (auto *Call = dyn_cast<CallBase>(Pointer)) {
+    Function *Getter = Call->getCalledFunction();
+    if (Getter == nullptr or not FunctionTags::SegmentGlobalGetter.isTagOf(Getter))
+      return false;
+    StringRef Name = Getter->getName();
+    uint64_t Start = 0;
+    if (not Name.consume_front("get_segment_0x")
+        or Name.take_while(isHexDigit).getAsInteger(16, Start))
+      return false;
+    Address += Start;
+  } else {
+    return false;
+  }
+
+  unsigned Size = Load->getType()->isIntegerTy() ?
+                    Load->getType()->getIntegerBitWidth() / 8 :
+                    0;
+  MetaAddress Where = MetaAddress::fromGeneric(Binary.Architecture(), Address);
+  if (Size == 0 or Where.isInvalid())
+    return false;
+
+  for (const model::Segment &Segment : Binary.Segments())
+    if (Segment.contains(Where, Size))
+      return not Segment.IsWriteable();
+  return false;
+}
+
 /// \return the block a call goes to: the callee its function_call marker
 ///         names or, for a call through a pointer, the only address the
-///         lifter found the program counter can have there. That is the case
-///         of a pointer read from memory that cannot change, such as the
-///         entry of a virtual table that is known where the call is made:
-///         the call is to what the entry points to.
-inline llvm::BasicBlock *getOnlyCallee(llvm::Instruction *T) {
+///         lifter found the program counter can have there, if the pointer is
+///         read from memory that cannot change: an entry of a virtual table
+///         that is known where the call is made. The call is then to what
+///         the entry points to. (The lifter also finds what a pointer the
+///         program can write starts with, such as the slot of a function
+///         imported at its first use: that is where the call goes the first
+///         time.)
+inline llvm::BasicBlock *getOnlyCallee(llvm::Instruction *T,
+                                       const model::Binary &Binary) {
   if (llvm::BasicBlock *Callee = getFunctionCallCallee(T))
     return Callee;
 
@@ -39,6 +110,7 @@ inline llvm::BasicBlock *getOnlyCallee(llvm::Instruction *T) {
   // at a time, and anything else is unexpected: follow the checks down to
   // the blocks they lead to
   llvm::BasicBlock *Only = nullptr;
+  llvm::Value *Target = nullptr;
   llvm::SmallVector<llvm::Instruction *, 4> Queue{ T };
   unsigned Visited = 0;
   while (not Queue.empty()) {
@@ -56,17 +128,22 @@ inline llvm::BasicBlock *getOnlyCallee(llvm::Instruction *T) {
         if (Only != nullptr and Only != Successor)
           return nullptr;
         Only = Successor;
+        Target = Switch->getCondition();
       } else {
         return nullptr;
       }
     }
   }
 
+  if (Only == nullptr or not isReadFromConstantMemory(Target, Binary))
+    return nullptr;
+
   return Only;
 }
 
-inline llvm::BasicBlock *getOnlyCallee(llvm::BasicBlock *BB) {
-  return getOnlyCallee(BB->getTerminator());
+inline llvm::BasicBlock *getOnlyCallee(llvm::BasicBlock *BB,
+                                       const model::Binary &Binary) {
+  return getOnlyCallee(BB->getTerminator(), Binary);
 }
 
 /// An outlined function helper object.

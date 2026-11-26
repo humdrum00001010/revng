@@ -311,7 +311,7 @@ Outliner::outlineFunctionInternal(CallHandler *TheCallHandler,
     if (auto *FunctionCall = getMarker(Current, FunctionCallMarker)) {
       // Compute callee
       MetaAddress PCCallee = MetaAddress::invalid();
-      if (auto *Next = getOnlyCallee(Current))
+      if (auto *Next = getOnlyCallee(Current, Oracle.binary()))
         PCCallee = getBasicBlockAddress(Next);
 
       CallInst *JumpToSymbol = getMarker(Current, JumpToSymbolMarker);
@@ -390,7 +390,7 @@ Outliner::outlineFunctionInternal(CallHandler *TheCallHandler,
       // If the function callee is null and the call can go to more than one
       // place, we are dealing with an indirect call
       MetaAddress PCCallee = MetaAddress::invalid();
-      if (BasicBlock *Next = getOnlyCallee(Term))
+      if (BasicBlock *Next = getOnlyCallee(Term, Oracle.binary()))
         PCCallee = getBasicBlockAddress(Next);
 
       CallToCallee[FunctionCall] = PCCallee;
