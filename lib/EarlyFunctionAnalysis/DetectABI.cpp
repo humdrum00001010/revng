@@ -573,9 +573,10 @@ DetectABI::ownersOfBlocks(llvm::function_ref<bool(const model::Function &)>
 }
 
 bool DetectABI::offer(const MetaAddress &Candidate, Ownership &Whose) {
-  // Code nothing jumps to is offered to the function it lies in (between two
-  // of its blocks) or follows: whether it is its own is for tryToAttach to
-  // say. Between a function and the code it goes on with there can be the
+  // Code nothing jumps to is offered to the functions it leads into, if
+  // that is known, or else to the function it lies in (between two of its
+  // blocks) or follows: whether it is its own is for tryToAttach to say.
+  // Between a function and the code it goes on with there can be the
   // handlers the function is resumed from, which are functions of their own
   // and cannot be resumed: they are looked past, up to a point.
   //
@@ -596,6 +597,86 @@ bool DetectABI::offer(const MetaAddress &Candidate, Ownership &Whose) {
   // (What has become a block of a function since is that function's)
   if (Whose.Owners.contains(Candidate))
     return false;
+
+  // Only a function that saves its stack pointer for whoever resumes it
+  // can be resumed: looking for that is much cheaper than trying
+  using OwnerList = llvm::SmallVector<MetaAddress, 1>;
+  auto AllSave = [this](const OwnerList &Sharing) {
+    bool Result = true;
+    for (const MetaAddress &Owner : Sharing) {
+      auto [SavesIt, IsNew] = SavesStackPointer.try_emplace(Owner, false);
+      if (IsNew)
+        SavesIt->second = Analyzer.savesStackPointer(Owner);
+      Result = Result and SavesIt->second;
+    }
+    return Result;
+  };
+
+  // The code becomes that of all the functions of \p Sharing, or of none
+  auto Attach = [this, &Candidate, &Whose](const OwnerList &Sharing) {
+    // What each of them was, to go back to if one of them refuses
+    using Blocks = SortedVector<efa::BasicBlock>;
+    llvm::SmallVector<std::pair<MetaAddress, Blocks>, 1> Attached;
+    bool AllTake = true;
+    for (const MetaAddress &Owner : Sharing) {
+      Blocks Old = FMC.getControlFlowGraph(Owner).Blocks();
+      if (not tryToAttach(Binary->Functions().at(Owner), Candidate)) {
+        AllTake = false;
+        break;
+      }
+      Attached.emplace_back(Owner, std::move(Old));
+    }
+
+    if (AllTake) {
+      // The code is theirs now
+      Whose.Unowned.erase(Candidate);
+      for (const MetaAddress &Owner : Sharing)
+        addBlocksOf(Whose, Owner);
+      return true;
+    }
+
+    for (auto &[Owner, Old] : Attached) {
+      Binary->Functions().at(Owner).ResumeAddresses().erase(Candidate);
+      TupleTree<efa::FunctionBundle> Bundle;
+      efa::ControlFlowGraph &Main = Bundle->MainFunction();
+      Main.Entry() = Owner;
+      Main.Blocks() = std::move(Old);
+      FMC.set(std::move(Bundle));
+    }
+
+    return false;
+  };
+
+  // Where the code goes says whose it is, and says it better than where it
+  // lies: code that was put away from its function, as what is seldom run
+  // is, leads back into it. A candidate that was made a function has blocks:
+  // the first of them that the functions of Whose have too is where it joins
+  // them, and it is theirs or nobody's.
+  if (Binary->Functions().contains(Candidate)) {
+    const auto &Blocks = FMC.getControlFlowGraph(Candidate).Blocks();
+    OwnerList Into;
+    OnceQueue<BasicBlockID> Queue;
+    Queue.insert(BasicBlockID(Candidate));
+    while (Into.empty() and not Queue.empty()) {
+      auto It = Blocks.find(Queue.pop());
+      if (It == Blocks.end())
+        continue;
+
+      auto Owned = Whose.Owners.find(It->ID().start());
+      if (Owned != Whose.Owners.end() and It->ID().start() != Candidate) {
+        Into = Owned->second;
+        break;
+      }
+
+      for (const auto &Edge : It->Successors())
+        if (Edge->Type() == efa::FunctionEdgeType::DirectBranch
+            and not Edge->Destination().isInlined())
+          Queue.insert(Edge->Destination());
+    }
+
+    if (not Into.empty())
+      return Into.size() <= MostSharing and AllSave(Into) and Attach(Into);
+  }
 
   MetaAddress Gap = MetaAddress::invalid();
   if (auto It = Whose.Unowned.lower_bound(Candidate);
@@ -631,51 +712,15 @@ bool DetectABI::offer(const MetaAddress &Candidate, Ownership &Whose) {
     if (not IsInside and (IsBehindGap or PastNearest))
       continue;
 
-    // Only a function that saves its stack pointer for whoever resumes it
-    // can be resumed: looking for that is much cheaper than trying
-    bool AllSave = true;
-    for (const MetaAddress &Owner : Sharing) {
-      auto [SavesIt, IsNew] = SavesStackPointer.try_emplace(Owner, false);
-      if (IsNew)
-        SavesIt->second = Analyzer.savesStackPointer(Owner);
-      AllSave = AllSave and SavesIt->second;
-    }
-    if (not AllSave)
+    if (not AllSave(Sharing))
       continue;
 
     ++Tried;
     if (not IsInside and Whose.OnlyNearest)
       PastNearest = true;
 
-    // What each of them was, to go back to if one of them refuses
-    using Blocks = SortedVector<efa::BasicBlock>;
-    llvm::SmallVector<std::pair<MetaAddress, Blocks>, 1> Attached;
-    bool AllTake = true;
-    for (const MetaAddress &Owner : Sharing) {
-      Blocks Old = FMC.getControlFlowGraph(Owner).Blocks();
-      if (not tryToAttach(Binary->Functions().at(Owner), Candidate)) {
-        AllTake = false;
-        break;
-      }
-      Attached.emplace_back(Owner, std::move(Old));
-    }
-
-    if (AllTake) {
-      // The code is theirs now
-      Whose.Unowned.erase(Candidate);
-      for (const MetaAddress &Owner : Sharing)
-        addBlocksOf(Whose, Owner);
+    if (Attach(Sharing))
       return true;
-    }
-
-    for (auto &[Owner, Old] : Attached) {
-      Binary->Functions().at(Owner).ResumeAddresses().erase(Candidate);
-      TupleTree<efa::FunctionBundle> Bundle;
-      efa::ControlFlowGraph &Main = Bundle->MainFunction();
-      Main.Entry() = Owner;
-      Main.Blocks() = std::move(Old);
-      FMC.set(std::move(Bundle));
-    }
   }
 
   return false;
