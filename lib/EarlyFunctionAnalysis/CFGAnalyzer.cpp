@@ -1725,10 +1725,14 @@ public:
   ///         Where they only say what some callees amount to together,
   ///         \p Likeliest, what each is taken to be otherwise, is made to
   ///         agree with them, and \p IsAmbiguous is set for those callees.
+  ///
+  /// \p Least is what a callee that removes nothing amounts to: none
+  /// amounts to less.
   std::vector<std::optional<int64_t>>
   solve(std::vector<int64_t> &Likeliest,
         std::vector<bool> &IsAmbiguous,
-        const std::vector<std::optional<int64_t>> &Most) {
+        const std::vector<std::optional<int64_t>> &Most,
+        int64_t Least) {
     for (unsigned I = 0; I < Callees; ++I)
       if (Most[I].has_value() and Likeliest[I] > *Most[I])
         Likeliest[I] = *Most[I];
@@ -1771,6 +1775,26 @@ public:
       const Sum &Equation = Row.Equation;
       if (Row.Pivot >= Callees or not Equation.IsValid)
         continue;
+
+      // Callees that count the same way and amount together to the least
+      // they can: each of them removes nothing. (An argument pushed before
+      // the calls that compute the next ones, for a callee that leaves it to
+      // the caller.)
+      if (Equation.Terms.size() > 1) {
+        bool AllPositive = true;
+        bool AllNegative = true;
+        int64_t AtLeast = Equation.Constant;
+        for (const auto &[Unknown, Other] : Equation.Terms) {
+          AllPositive = AllPositive and Other > 0;
+          AllNegative = AllNegative and Other < 0;
+          AtLeast += Other * Least;
+        }
+        if ((AllPositive or AllNegative) and AtLeast == 0) {
+          for (const auto &[Unknown, Other] : Equation.Terms)
+            Result[Unknown] = Least;
+          continue;
+        }
+      }
 
       // The rows of the callees have no other unknowns: those went first
       int64_t Coefficient = Equation.Terms.find(Row.Pivot)->second;
@@ -2036,7 +2060,8 @@ CFGAnalyzer::solveCallEffects(const MetaAddress &Entry,
 
   DominatorTree DT(*F);
   Most = Equations.bounds(DT);
-  return Equations.solve(Likeliest, IsAmbiguous, Most);
+  int64_t Least = Oracle.getDefault().ElectedFSO.value_or(0);
+  return Equations.solve(Likeliest, IsAmbiguous, Most, Least);
 }
 
 FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {

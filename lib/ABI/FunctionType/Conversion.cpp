@@ -153,9 +153,7 @@ private:
   }
 };
 
-/// \return the ABIs to try for a function that removes its own stack
-///         arguments, when \p ABI leaves that to the caller
-static llvm::SmallVector<model::ABI::Values, 3>
+llvm::SmallVector<model::ABI::Values, 3>
 calleeCleanupCounterparts(model::ABI::Values ABI) {
   switch (ABI) {
   case model::ABI::Microsoft_x86_cdecl:
@@ -189,12 +187,6 @@ tryConvertToCABI(const model::RawFunctionDefinition &FunctionType,
   LoggerIndent Indentation(Log);
 
   const abi::Definition &ABI = abi::Definition::get(*MaybeABI);
-  if (!ABI.isPreliminarilyCompatibleWith(FunctionType)) {
-    revng_log(Log,
-              "FAIL: the function is not compatible with `"
-                << model::ABI::getName(ABI.ABI()) << "`.");
-    return std::nullopt;
-  }
 
   // Where the caller removes the stack arguments, a function leaves the stack
   // as it found it, apart from the return address. One that leaves it higher
@@ -202,11 +194,34 @@ tryConvertToCABI(const model::RawFunctionDefinition &FunctionType,
   // that, and with it what the analyses of its callers know about the stack
   // after the call. It can still be a prototype of an ABI of the same family
   // where the callee does the cleaning.
+  //
+  // The same goes for a register the function takes an argument in while the
+  // ABI passes none in it (`this`, for one): forced into that ABI, the
+  // function would be left reading something nobody gives it. The ABI of the
+  // family that has that register describes it. One that would drop a
+  // register is not tried.
   const auto Architecture = model::ABI::getArchitecture(ABI.ABI());
   uint64_t CallPushSize = model::Architecture::getCallPushSize(Architecture);
   bool RemovesArguments = FunctionType.FinalStackOffset() > CallPushSize;
-  if (RemovesArguments and not ABI.CalleeIsResponsibleForStackCleanup()) {
+  bool CallerRemoves = not ABI.CalleeIsResponsibleForStackCleanup();
+
+  abi::Definition::RegisterSet Registers;
+  for (const model::NamedTypedRegister &Argument : FunctionType.Arguments())
+    Registers.emplace(Argument.Location());
+  using RegisterSet = abi::Definition::RegisterSet;
+  auto Takes = [&Registers](const abi::Definition &Candidate) {
+    if (Registers.empty())
+      return true;
+    RegisterSet Copy = Registers;
+    return Candidate.tryDeducingArgumentRegisterState(std::move(Copy))
+      .has_value();
+  };
+
+  if (CallerRemoves and (RemovesArguments or not Takes(ABI))) {
     for (model::ABI::Values Other : calleeCleanupCounterparts(ABI.ABI())) {
+      if (not Takes(abi::Definition::get(Other)))
+        continue;
+
       auto Result = tryConvertToCABI(FunctionType,
                                      Binary,
                                      Index,
@@ -216,9 +231,19 @@ tryConvertToCABI(const model::RawFunctionDefinition &FunctionType,
         return Result;
     }
 
+    if (RemovesArguments) {
+      revng_log(Log,
+                "FAIL: the function removes its stack arguments, which `"
+                  << model::ABI::getName(ABI.ABI())
+                  << "` leaves to the caller.");
+      return std::nullopt;
+    }
+  }
+
+  if (!ABI.isPreliminarilyCompatibleWith(FunctionType)) {
     revng_log(Log,
-              "FAIL: the function removes its stack arguments, which `"
-                << model::ABI::getName(ABI.ABI()) << "` leaves to the caller.");
+              "FAIL: the function is not compatible with `"
+                << model::ABI::getName(ABI.ABI()) << "`.");
     return std::nullopt;
   }
 
@@ -244,8 +269,13 @@ tryConvertToCABI(const model::RawFunctionDefinition &FunctionType,
     Definition.Arguments().insert(std::move(Argument));
   Definition.ReturnType() = Converted->ReturnValueType;
 
-  // The new prototype must leave the stack where the original one does
-  if (RemovesArguments
+  // The new prototype must leave the stack where the original one does:
+  // where the function removes arguments, and where it was given an ABI under
+  // which it would, for the register it takes one in
+  const auto &Default = abi::Definition::get(Binary->DefaultABI());
+  bool IsCounterpart = not CallerRemoves
+                       and not Default.CalleeIsResponsibleForStackCleanup();
+  if ((RemovesArguments or IsCounterpart)
       and finalStackOffset(Definition) != FunctionType.FinalStackOffset()) {
     revng_log(Log,
               "FAIL: the stack arguments do not add up to what the function "

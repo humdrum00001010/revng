@@ -19,6 +19,7 @@
 #include "llvm/Support/GraphWriter.h"
 #include "llvm/Transforms/Utils/Mem2Reg.h"
 
+#include "revng/ABI/FunctionType/Conversion.h"
 #include "revng/ABI/FunctionType/Layout.h"
 #include "revng/ADT/Queue.h"
 #include "revng/BasicAnalyses/CSVGlobals.h"
@@ -477,17 +478,24 @@ bool DetectABI::offer(const MetaAddress &Candidate,
   // the code there can be the handlers the function is resumed from, which
   // are functions of their own: so the few functions before it are tried in
   // turn, the nearest first.
+  //
+  // A function with several handlers has them all between its code and where
+  // it goes on: the functions that cannot be resumed are looked past, up to a
+  // point, and do not count among those that are tried.
   constexpr unsigned MostOwners = 4;
-  llvm::SmallVector<MetaAddress, MostOwners> Tried;
+  constexpr unsigned MostSeen = 32;
+  llvm::SmallVector<MetaAddress, MostSeen> Seen;
+  unsigned Tried = 0;
   auto It = Owners.upper_bound(Candidate);
-  while (It != Owners.begin() and Tried.size() < MostOwners) {
+  while (It != Owners.begin() and Tried < MostOwners
+         and Seen.size() < MostSeen) {
     --It;
     const MetaAddress &Owner = It->second;
     if (It->first == Candidate or Owner.isInvalid() or Owner == Candidate
-        or llvm::is_contained(Tried, Owner))
+        or llvm::is_contained(Seen, Owner))
       continue;
 
-    Tried.push_back(Owner);
+    Seen.push_back(Owner);
 
     // Only a function that saves its stack pointer for whoever resumes it
     // can be resumed: looking for that is much cheaper than trying
@@ -497,6 +505,7 @@ bool DetectABI::offer(const MetaAddress &Candidate,
     if (not SavesIt->second)
       continue;
 
+    ++Tried;
     if (tryToAttach(Binary->Functions().at(Owner), Candidate))
       return true;
   }
@@ -546,8 +555,11 @@ void DetectABI::reattachFunctions(const std::set<MetaAddress> &Before) {
     }
   }
 
+  // One that starts where a block of a function found before it starts is
+  // code of that function already: it only looked unused when the functions
+  // were less well known
   for (const MetaAddress &Candidate : Candidates)
-    if (offer(Candidate, Owners))
+    if (Owners.contains(Candidate) or offer(Candidate, Owners))
       dropFunctionNowPartOfAnother(*Binary, Candidate);
 }
 
@@ -1046,8 +1058,32 @@ void DetectABI::applyABIDeductions() {
     }
 
     if (ABIEnforcement == FullABIEnforcement) {
-      Arguments = ABI.enforceArgumentRegisterState(std::move(Arguments));
-      RValues = ABI.enforceReturnValueRegisterState(std::move(RValues));
+      // A register the function reads before writing it, where the default
+      // ABI passes no argument in it, is not to be taken away from it if an
+      // ABI of the same family passes one there: a member function takes
+      // `this` in a register in 32-bit Windows code, whatever the default of
+      // the binary is. Enforcing the default would leave the function
+      // reading a value nobody gives it.
+      const abi::Definition *Chosen = &ABI;
+      using RegisterSet = abi::Definition::RegisterSet;
+      auto Takes = [&Arguments](const abi::Definition &Candidate) {
+        RegisterSet Copy = Arguments;
+        return Candidate.tryDeducingArgumentRegisterState(std::move(Copy))
+          .has_value();
+      };
+      if (not Arguments.empty() and not Takes(ABI)) {
+        using abi::FunctionType::calleeCleanupCounterparts;
+        for (model::ABI::Values Other : calleeCleanupCounterparts(ABI.ABI())) {
+          const abi::Definition &Counterpart = abi::Definition::get(Other);
+          if (Takes(Counterpart)) {
+            Chosen = &Counterpart;
+            break;
+          }
+        }
+      }
+
+      Arguments = Chosen->enforceArgumentRegisterState(std::move(Arguments));
+      RValues = Chosen->enforceReturnValueRegisterState(std::move(RValues));
     } else {
       if (auto R = ABI.tryDeducingArgumentRegisterState(std::move(Arguments)))
         Arguments = *R;
