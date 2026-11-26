@@ -266,6 +266,10 @@ private:
   /// The registers the default prototype preserves
   CSVSet CalleeSaved;
 
+  /// The registers the function analyzed last saves: those it stores in
+  /// memory with what they had when it was entered
+  CSVSet SavedRegisters;
+
   /// The functions for which no assumption about their call sites helped
   std::set<MetaAddress> Unsolved;
 
@@ -366,6 +370,14 @@ public:
 
 private:
   FunctionSummary analyzeOnce(const MetaAddress &Entry);
+
+  /// \return how many registers \p Summary, of the function analyzed last,
+  ///         leaves changed for no known reason: the default prototype
+  ///         preserves them, no callee clobbers them, and the function saves
+  ///         them. Saving a register is how a function says that it gives it
+  ///         back: one it writes without saving is clobbered whatever its
+  ///         callees do, and says nothing about them.
+  unsigned clobberedThoughSaved(const FunctionSummary &Summary) const;
 
   /// analyzeOnce, again as long as it finds out who a call through a pointer
   /// goes to

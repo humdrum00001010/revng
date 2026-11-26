@@ -1578,6 +1578,29 @@ struct AnalysisScore {
   }
 };
 
+/// The search for what the callees of the function at \p Entry remove is
+/// over: what it started from, the best it found and whether that is kept.
+/// (A function of its own: how a search ended can be watched from a
+/// debugger.)
+[[gnu::noinline]] static void noteSearchOutcome(const MetaAddress &Entry,
+                                                const AnalysisScore &Base,
+                                                const AnalysisScore &Best,
+                                                bool IsKept) {
+  auto Dump = [](const AnalysisScore &Score) {
+    Log << Score.Returns << " returns, " << Score.LongJmps << " longjmps, "
+        << Score.Clobbered << " registers clobbered though saved, "
+        << Score.UnknownHeights << " unknown heights";
+  };
+
+  if (not Log.isEnabled())
+    return;
+  Log << "Callees of " << Entry.toString() << ": from ";
+  Dump(Base);
+  Log << " to ";
+  Dump(Best);
+  Log << (IsKept ? ": kept" : ": not kept") << DoLog;
+}
+
 /// A callee nothing is known about: that of a call site or, at all the sites
 /// where the function calls itself, the function
 struct UnknownCallSite {
@@ -2374,6 +2397,17 @@ FunctionSummary CFGAnalyzer::analyze(const MetaAddress &Entry) {
   return analyzeCallees(Entry);
 }
 
+unsigned
+CFGAnalyzer::clobberedThoughSaved(const FunctionSummary &Summary) const {
+  const CSVSet &ByDefault = Oracle.getDefault().ClobberedRegisters;
+  unsigned Result = 0;
+  for (llvm::GlobalVariable *CSV : Summary.ClobberedRegisters)
+    if (not ByDefault.contains(CSV) and not CalleeClobbered.contains(CSV)
+        and SavedRegisters.contains(CSV))
+      ++Result;
+  return Result;
+}
+
 std::optional<FunctionSummary>
 CFGAnalyzer::analyzeElidedCleanups(const MetaAddress &Entry,
                                    std::map<MetaAddress, uint64_t> &Found) {
@@ -2395,8 +2429,7 @@ CFGAnalyzer::analyzeElidedCleanups(const MetaAddress &Entry,
   if (Function == nullptr or not Default.has_value())
     return std::nullopt;
 
-  const CSVSet &ByDefault = Oracle.getDefault().ClobberedRegisters;
-  auto RankOf = [this, &ByDefault](const FunctionSummary &Summary) {
+  auto RankOf = [this](const FunctionSummary &Summary) {
     int64_t Exits = 0;
     int64_t LongJmps = 0;
     for (const efa::BasicBlock &Block : Summary.CFG) {
@@ -2410,11 +2443,7 @@ CFGAnalyzer::analyzeElidedCleanups(const MetaAddress &Entry,
       }
     }
 
-    int64_t Clobbered = 0;
-    for (llvm::GlobalVariable *CSV : Summary.ClobberedRegisters)
-      if (not ByDefault.contains(CSV) and not CalleeClobbered.contains(CSV))
-        ++Clobbered;
-
+    int64_t Clobbered = clobberedThoughSaved(Summary);
     return std::tuple(Exits, -LongJmps, -Clobbered, -int64_t(UnknownHeights));
   };
 
@@ -2508,8 +2537,7 @@ FunctionSummary CFGAnalyzer::searchCalleeEffects(const MetaAddress &Entry) {
       or not Function->Prototype().isEmpty() or not Default.has_value())
     return Result;
 
-  const CSVSet &ByDefault = Oracle.getDefault().ClobberedRegisters;
-  auto ScoreOf = [this, &ByDefault](const FunctionSummary &Summary) {
+  auto ScoreOf = [this](const FunctionSummary &Summary) {
     AnalysisScore Score;
     for (const efa::BasicBlock &Block : Summary.CFG) {
       for (const auto &Edge : Block.Successors()) {
@@ -2522,10 +2550,7 @@ FunctionSummary CFGAnalyzer::searchCalleeEffects(const MetaAddress &Entry) {
       }
     }
 
-    for (llvm::GlobalVariable *CSV : Summary.ClobberedRegisters)
-      if (not ByDefault.contains(CSV) and not CalleeClobbered.contains(CSV))
-        ++Score.Clobbered;
-
+    Score.Clobbered = clobberedThoughSaved(Summary);
     Score.UnknownHeights = UnknownHeights;
 
     return Score;
@@ -2976,7 +3001,9 @@ FunctionSummary CFGAnalyzer::searchCalleeEffects(const MetaAddress &Entry) {
     while (not BestScore.leavesNothingToExplain() and Move())
       ;
 
-  if (not BestScore.isBetterThan(Base)) {
+  bool IsKept = BestScore.isBetterThan(Base);
+  noteSearchOutcome(Entry, Base, BestScore, IsKept);
+  if (not IsKept) {
     Unsolved.insert(Entry);
     Forget();
     return Result;
@@ -3232,6 +3259,22 @@ FunctionSummary CFGAnalyzer::analyzeOnce(const MetaAddress &Entry) {
 
   auto &&[OutlinedFunction, CFG] = optimize(Entry);
   Function *F = OutlinedFunction.Function.get();
+
+  // The registers the function saves: what it stores in memory is what they
+  // had when it was entered. Only those does it mean to give back.
+  SavedRegisters.clear();
+  for (Instruction &I : instructions(F)) {
+    auto *Store = dyn_cast<StoreInst>(&I);
+    if (Store == nullptr
+        or isa<GlobalVariable>(skipCasts(Store->getPointerOperand())))
+      continue;
+    auto *Value = dyn_cast<LoadInst>(Store->getValueOperand());
+    if (Value == nullptr)
+      continue;
+    auto *CSV = dyn_cast<GlobalVariable>(skipCasts(Value->getPointerOperand()));
+    if (CSV != nullptr and CalleeSaved.contains(CSV))
+      SavedRegisters.insert(CSV);
+  }
 
   // The paths that reach a call agree on the height of the stack there, unless
   // something is wrong about a call before it. Where they agree at the start
