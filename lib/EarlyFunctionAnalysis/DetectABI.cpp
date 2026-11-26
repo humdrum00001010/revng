@@ -250,6 +250,10 @@ private:
     /// Where each block ends, by where it starts
     std::map<MetaAddress, MetaAddress> End;
 
+    /// How long the longest block is: no block that starts further before an
+    /// address than this contains it
+    uint64_t LongestBlock = 0;
+
     /// The code no function has: where a function that has not been found
     /// yet can be
     std::set<MetaAddress> Unowned;
@@ -562,6 +566,8 @@ void DetectABI::addBlocksOf(Ownership &Whose, const MetaAddress &Function) {
                                                      Block.End());
     if (not IsNewBlock and EndIt->second < Block.End())
       EndIt->second = Block.End();
+    if (std::optional<uint64_t> Length = Block.End() - Block.ID().start())
+      Whose.LongestBlock = std::max(Whose.LongestBlock, *Length);
     auto [It, IsNew] = Whose.LastBlock.try_emplace(Function,
                                                    Block.ID().start());
     if (not IsNew and It->second < Block.ID().start())
@@ -670,21 +676,32 @@ bool DetectABI::offer(const MetaAddress &Candidate, Ownership &Whose) {
       if (It == Blocks.end())
         continue;
 
-      // The block of theirs that starts there, or that the address is in:
+      // The blocks of theirs that start there, or that the address is in:
       // nothing in the function jumps to where it goes on, so that place is
-      // most often in the middle of one of its blocks
+      // most often in the middle of one of its blocks. Functions that share
+      // code do not cut it into the same blocks: all the blocks the address
+      // is in are looked at, and the code is offered to the functions of
+      // all of them.
       MetaAddress Start = It->ID().start();
       auto Owned = Whose.Owners.upper_bound(Start);
-      if (Start != Candidate and Owned != Whose.Owners.begin()) {
+      while (Start != Candidate and Owned != Whose.Owners.begin()) {
         --Owned;
+        std::optional<uint64_t> Before = Start - Owned->first;
+        if (not Before.has_value() or *Before > Whose.LongestBlock)
+          break;
+
         auto EndIt = Whose.End.find(Owned->first);
         bool IsInside = Owned->first == Start
                         or (EndIt != Whose.End.end() and Start < EndIt->second);
-        if (IsInside and not Owned->second.empty()) {
-          Into = Owned->second;
-          break;
-        }
+        if (not IsInside)
+          continue;
+
+        for (const MetaAddress &Owner : Owned->second)
+          if (Owner != Candidate and not llvm::is_contained(Into, Owner))
+            Into.push_back(Owner);
       }
+      if (not Into.empty())
+        break;
 
       for (const auto &Edge : It->Successors())
         if (Edge->Type() == efa::FunctionEdgeType::DirectBranch
