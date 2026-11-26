@@ -809,13 +809,23 @@ public:
       // With a size known when the code was compiled, the test is made on
       // the difference: it is either kept or replaced by zero, depending on
       // how it compares, as an unsigned number, with a constant
+      // (The test can be on the stack pointer before the size is taken
+      // from it or after, and what follows can have been added to both
+      // values: a stack address is told from a small number, whatever the
+      // test that chooses between them is.)
       if (not IsSaturating and not IsSelect) {
         Value *Kept = nullptr;
+        ConstantInt *Otherwise = nullptr;
         auto Compared = m_ICmp(Predicate, m_Value(From), m_ConstantInt());
-        if ((match(&I, m_Select(Compared, m_Value(Kept), m_Zero()))
-             or match(&I, m_Select(Compared, m_Zero(), m_Value(Kept))))
-            and Kept == From
-            and ICmpInst::isUnsigned(Predicate)) {
+        if ((match(&I,
+                   m_Select(Compared, m_Value(Kept), m_ConstantInt(Otherwise)))
+             or match(&I,
+                      m_Select(Compared,
+                               m_ConstantInt(Otherwise),
+                               m_Value(Kept))))
+            and ICmpInst::isUnsigned(Predicate)
+            and Otherwise->getValue().abs().ult(0x10000)
+            and isStackAddress(Kept)) {
           IsSelect = true;
           Difference = Kept;
         }
@@ -966,6 +976,17 @@ void CFGAnalyzer::runOptimizationPipeline(llvm::Function *F) {
     PB.registerModuleAnalyses(MAM);
 
     FPM.run(*F, FAM);
+
+    // The last steps can be what brings the probe of the stack into the form
+    // that is recognized: once more, and only then fold what it leaves
+    AssumeStackAllocationFitsPass Fits(Globals.spReg());
+    if (not Fits.run(*F, FAM).areAllPreserved()) {
+      FAM.invalidate(*F, PreservedAnalyses::none());
+      FunctionPassManager Again;
+      Again.addPass(InstCombinePass());
+      Again.addPass(GVNPass());
+      Again.run(*F, FAM);
+    }
   }
 }
 
