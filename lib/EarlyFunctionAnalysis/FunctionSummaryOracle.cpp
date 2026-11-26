@@ -123,6 +123,16 @@ bool FunctionSummaryOracle::registerLocalFunction(MetaAddress PC,
   if (not Changed) {
     auto &Recorded = It->second;
     Changed = not New.containedOrEqual(Recorded);
+
+    // What the function removes from the stack is part of what its callers
+    // were analyzed with: one that was analyzed before it, as happens where
+    // functions call each other, took what the default prototype says. A
+    // function whose answer keeps changing is not asked again forever.
+    constexpr unsigned MostChanges = 4;
+    if (New.ElectedFSO.has_value() and New.ElectedFSO != Recorded.ElectedFSO
+        and ++StackEffectChanges[PC] <= MostChanges)
+      Changed = true;
+
     New.combine(Recorded);
     Recorded = std::move(New);
   } else {

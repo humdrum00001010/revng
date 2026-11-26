@@ -819,6 +819,16 @@ void Outliner::connectResumePoint(OutlinedFunction *Outlined) {
   std::optional<int64_t> Offset = SlotOffset;
   bool IsUnique = true;
 
+  // Only where the function itself gets to counts: code it would be resumed
+  // at does not make a function one that can be resumed, and would be left
+  // with nothing leading to it from the entry
+  df_iterator_default_set<BasicBlock *, 32> FromEntry;
+  for (BasicBlock *BB : depth_first_ext(&F->getEntryBlock(), FromEntry))
+    (void) BB;
+  llvm::erase_if(Anchors, [&FromEntry](StoreInst *Anchor) {
+    return not FromEntry.contains(Anchor->getParent());
+  });
+
   if (not IsUnique or Anchors.empty()) {
     // Nothing leads to the code the function would be resumed at: it goes
     // away, with whatever only it reaches

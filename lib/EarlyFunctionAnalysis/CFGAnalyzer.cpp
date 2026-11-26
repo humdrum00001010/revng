@@ -806,6 +806,21 @@ public:
                              m_Sub(m_Specific(From), m_Specific(Size)));
       }
 
+      // With a size known when the code was compiled, the test is made on
+      // the difference: it is either kept or replaced by zero, depending on
+      // how it compares, as an unsigned number, with a constant
+      if (not IsSaturating and not IsSelect) {
+        Value *Kept = nullptr;
+        auto Compared = m_ICmp(Predicate, m_Value(From), m_ConstantInt());
+        if ((match(&I, m_Select(Compared, m_Value(Kept), m_Zero()))
+             or match(&I, m_Select(Compared, m_Zero(), m_Value(Kept))))
+            and Kept == From
+            and ICmpInst::isUnsigned(Predicate)) {
+          IsSelect = true;
+          Difference = Kept;
+        }
+      }
+
       if ((not IsSaturating and not IsSelect) or not isStackAddress(From))
         continue;
 
@@ -835,6 +850,14 @@ private:
       if (match(V, m_Add(m_Value(Base), m_ConstantInt()))
           or match(V, m_Sub(m_Value(Base), m_ConstantInt()))) {
         V = Base;
+        continue;
+      }
+
+      // The stack pointer is a pointer where the code is 32-bit: it is
+      // computed with as a number of that size
+      if (isa<TruncInst>(V) or isa<ZExtInst>(V) or isa<PtrToIntInst>(V)
+          or isa<IntToPtrInst>(V) or isa<BitCastInst>(V)) {
+        V = cast<Instruction>(V)->getOperand(0);
         continue;
       }
 
@@ -907,6 +930,7 @@ void CFGAnalyzer::runOptimizationPipeline(llvm::Function *F) {
     using SDSAP = SegregateDirectStackAccessesPass;
     FPM.addPass(SDSAP(Globals.spReg(), ThreadPointers));
     FPM.addPass(EarlyCSEPass(true));
+    FPM.addPass(AssumeStackAllocationFitsPass(Globals.spReg()));
     FPM.addPass(InstCombinePass());
     FPM.addPass(GVNPass());
 
@@ -1533,6 +1557,13 @@ private:
   std::vector<Site> Sites;
   std::vector<Save> Saves;
   llvm::DenseMap<llvm::Value *, unsigned> Others;
+
+  /// The values of the unknowns that are not a callee's, in their order
+  std::vector<llvm::Value *> ValueOf;
+
+  /// The sums \ref isStackAddress has looked at for the address it is asked
+  /// about
+  unsigned Visits = 0;
   llvm::DenseMap<llvm::Value *, Sum> Known;
   std::vector<llvm::PHINode *> Pending;
 
@@ -1570,7 +1601,9 @@ public:
     if (CSV == nullptr or not CalleeSaved->contains(CSV))
       return;
 
-    if (std::optional<Sum> Slot = heightOf(Store->getPointerOperand()))
+    std::optional<Sum> Slot = heightOf(Store->getPointerOperand());
+    join();
+    if (Slot.has_value())
       Saves.push_back({ Store, std::move(*Slot) });
   }
 
@@ -1589,6 +1622,7 @@ public:
       return;
 
     std::optional<Sum> Restored = heightOf(Pointer);
+    join();
     if (not Restored.has_value())
       return;
 
@@ -1642,7 +1676,12 @@ public:
   /// Take what \p Height, a height of the stack, says
   void visit(llvm::Value *Height) {
     sumOf(Height);
+    join();
+  }
 
+private:
+  /// Each phi met since the last time is what comes in on each of its paths
+  void join() {
     while (not Pending.empty()) {
       llvm::PHINode *Phi = Pending.back();
       Pending.pop_back();
@@ -1660,6 +1699,7 @@ public:
     }
   }
 
+public:
   /// \return for each callee, the amount the equations leave no choice about.
   ///         Where they only say what some callees amount to together,
   ///         \p Likeliest, what each is taken to be otherwise, is made to
@@ -1772,19 +1812,78 @@ private:
       Address = Extended->getOperand(0);
 
     Sum Absolute = sumOf(Address);
-    auto It = Absolute.Terms.find(unknownOf(StackPointer));
-    if (It == Absolute.Terms.end() or It->second != 1)
+    if (not isStackAddress(Absolute, 0))
       return std::nullopt;
-    Absolute.Terms.erase(It);
+
+    // Where the paths of the function have joined, the stack pointer is one
+    // of the unknowns: the height is then that unknown minus the stack
+    // pointer the function is entered with, which the equations tell apart
+    Sum Origin;
+    Origin.Terms[unknownOf(StackPointer)] = 1;
     Result.add(Absolute, 1);
+    Result.add(Origin, -1);
     return Result;
+  }
+
+  /// \return whether \p Address is the stack pointer the function is entered
+  ///         with, plus constants and what callees remove, as such or
+  ///         through the phis that join such addresses
+  bool isStackAddress(const Sum &Address, unsigned Depth) {
+    using namespace llvm;
+
+    // (Not more than a few hundred phis are looked at for one address)
+    if (Depth == 0)
+      Visits = 0;
+    if (not Address.IsValid or Depth > 8 or ++Visits > 400)
+      return false;
+
+    unsigned Origin = unknownOf(StackPointer);
+    const PHINode *Joined = nullptr;
+    bool HasOrigin = false;
+    for (const auto &[Unknown, Coefficient] : Address.Terms) {
+      if (Unknown < Callees)
+        continue;
+      if (Coefficient != 1 or HasOrigin or Joined != nullptr)
+        return false;
+      if (Unknown == Origin) {
+        HasOrigin = true;
+        continue;
+      }
+      Joined = dyn_cast_or_null<PHINode>(ValueOf.at(Unknown - Callees));
+      if (Joined == nullptr)
+        return false;
+    }
+
+    if (HasOrigin)
+      return true;
+    if (Joined == nullptr)
+      return false;
+
+    // A phi that only goes around a loop says nothing
+    bool HasOther = false;
+    for (Value *Incoming : Joined->incoming_values()) {
+      if (Incoming == Joined)
+        continue;
+      Sum Other = sumOf(Incoming);
+      auto It = Other.Terms.find(Others.find(Joined)->second);
+      if (It != Other.Terms.end() and It->second == 1
+          and Other.Terms.size() == 1 and Other.Constant == 0)
+        continue;
+      if (not isStackAddress(Other, Depth + 1))
+        return false;
+      HasOther = true;
+    }
+
+    return HasOther;
   }
 
   unsigned unknownOf(llvm::Value *V) {
     auto [It, IsNew] = Others.try_emplace(V, Callees + Others.size());
-    if (IsNew)
+    if (IsNew) {
+      ValueOf.push_back(V);
       if (auto *Phi = llvm::dyn_cast<llvm::PHINode>(V))
         Pending.push_back(Phi);
+    }
     return It->second;
   }
 
@@ -1806,6 +1905,15 @@ private:
         return Constant->getSExtValue();
       return std::nullopt;
     };
+
+    // The stack pointer is a pointer, and the code computes with numbers of
+    // its own size: what is looked for here goes through that unchanged
+    if (isa<TruncInst>(V) or isa<ZExtInst>(V) or isa<PtrToIntInst>(V)
+        or isa<IntToPtrInst>(V) or isa<BitCastInst>(V)) {
+      Result = sumOf(cast<Instruction>(V)->getOperand(0));
+      Known[V] = Result;
+      return Result;
+    }
 
     bool IsSum = false;
     if (auto *Call = dyn_cast<CallBase>(V);
@@ -2376,6 +2484,106 @@ FunctionSummary CFGAnalyzer::analyzeCallees(const MetaAddress &Entry) {
   return Best;
 }
 
+namespace {
+
+/// Values as a value plus a constant, or as a constant alone (no value).
+/// Where the paths of a function join with the same sum, computed on each of
+/// them, LLVM is left with a phi of those: it is that sum.
+class SameOnAllPaths {
+public:
+  using Result = std::pair<llvm::Value *, int64_t>;
+
+private:
+  /// What each value was found to be: each is looked at once. A phi that is
+  /// met again while it is being worked out stands for itself.
+  llvm::DenseMap<llvm::Value *, Result> Known;
+
+public:
+  Result of(llvm::Value *V) {
+    using namespace llvm;
+
+    if (auto *Constant = dyn_cast<ConstantInt>(V))
+      return { nullptr, Constant->getSExtValue() };
+
+    if (not isa<Instruction>(V))
+      return { V, 0 };
+
+    auto It = Known.find(V);
+    if (It != Known.end())
+      return It->second;
+
+    Known[V] = Result{ V, 0 };
+    Result New = compute(V);
+    Known[V] = New;
+    return New;
+  }
+
+  /// Make the argument \p Index of \p Call the constant it amounts to, if it
+  /// is one LLVM does not see
+  void fold(llvm::CallBase *Call, unsigned Index) {
+    using namespace llvm;
+    Value *Argument = Call->getArgOperand(Index);
+    if (isa<ConstantInt>(Argument) or not Argument->getType()->isIntegerTy())
+      return;
+
+    auto &&[Base, Offset] = of(Argument);
+    if (Base != nullptr)
+      return;
+
+    unsigned Bits = Argument->getType()->getIntegerBitWidth();
+    APInt Folded(64, uint64_t(Offset), true);
+    Call->setArgOperand(Index,
+                        ConstantInt::get(Argument->getType(),
+                                         Folded.sextOrTrunc(Bits)));
+  }
+
+private:
+  Result compute(llvm::Value *V) {
+    using namespace llvm;
+
+    if (isa<TruncInst>(V) or isa<ZExtInst>(V) or isa<PtrToIntInst>(V)
+        or isa<IntToPtrInst>(V) or isa<BitCastInst>(V))
+      return of(cast<Instruction>(V)->getOperand(0));
+
+    if (auto *Operator = dyn_cast<BinaryOperator>(V)) {
+      bool IsAdd = Operator->getOpcode() == Instruction::Add;
+      if (IsAdd or Operator->getOpcode() == Instruction::Sub) {
+        Result Left = of(Operator->getOperand(0));
+        Result Right = of(Operator->getOperand(1));
+        if (Right.first == nullptr)
+          return { Left.first,
+                   IsAdd ? Left.second + Right.second :
+                           Left.second - Right.second };
+        if (IsAdd and Left.first == nullptr)
+          return { Right.first, Left.second + Right.second };
+        if (not IsAdd and Left.first == Right.first)
+          return { nullptr, Left.second - Right.second };
+      }
+      return { V, 0 };
+    }
+
+    if (auto *Phi = dyn_cast<PHINode>(V)) {
+      std::optional<Result> Common;
+      for (Value *Incoming : Phi->incoming_values()) {
+        if (Incoming == Phi)
+          continue;
+        Result New = of(Incoming);
+        if (New.first == Phi and New.second == 0)
+          continue;
+        if (Common.has_value() and *Common != New)
+          return { V, 0 };
+        Common = New;
+      }
+      if (Common.has_value())
+        return *Common;
+    }
+
+    return { V, 0 };
+  }
+};
+
+} // namespace
+
 std::pair<OutlinedFunction, SortedVector<efa::BasicBlock>>
 CFGAnalyzer::optimize(const MetaAddress &Entry) {
   using namespace llvm;
@@ -2437,6 +2645,16 @@ CFGAnalyzer::optimize(const MetaAddress &Entry) {
 
   // Execute the optimization pipeline over the outlined function
   runOptimizationPipeline(F);
+
+  // The heights of the stack the paths of the function agree on, where LLVM
+  // does not see that they do
+  SameOnAllPaths Same;
+  for (CallBase *Call : callers(StackHeightHook.get()))
+    if (Call->getFunction() == F)
+      Same.fold(Call, 1);
+  for (CallBase *Call : callers(OutlinedFunction.IndirectBranchInfoMarker.get()))
+    if (Call->getFunction() == F)
+      Same.fold(Call, StackPointerOffsetIndex);
 
   return { std::move(OutlinedFunction), std::move(CFG) };
 }
