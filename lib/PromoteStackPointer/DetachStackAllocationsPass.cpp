@@ -42,7 +42,10 @@ static unsigned countUnknownSizes(Function &F, Function *SizeMarker) {
   if (not Log.isEnabled())
     return;
 
-  Log << F.getName().str() << ": " << Done.Blocks << " blocks, " << Done.Folded
+  Log << F.getName().str() << ": ";
+  if (Done.Refused != nullptr)
+    Log << "left as it was (" << Done.Refused << "); ";
+  Log << Done.Blocks << " blocks, " << Done.Folded
       << " allocations of a constant size, " << Done.ToFrame
       << " values to places of the frame, " << Done.IntoBlocks
       << " into a block, " << Done.Loops

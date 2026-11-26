@@ -11,19 +11,30 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DataLayout.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/Module.h"
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/IR/Value.h"
 
 /// \return \p V without the phis that have one incoming value and without
-///         the sums with a constant: the value under them, and the constant
-inline std::pair<llvm::Value *, int64_t> skipConstantSums(llvm::Value *V) {
+///         the sums with a constant: the value under them, and the constant.
+///         If \p ThroughCasts, also without the casts between a pointer and
+///         the numbers the code computes with, and without the constant
+///         offsets of a pointer: for a value of the size of the stack
+///         pointer, what comes out is the same number.
+inline std::pair<llvm::Value *, int64_t>
+skipConstantSums(llvm::Value *V, bool ThroughCasts = false) {
   using namespace llvm;
   using namespace llvm::PatternMatch;
 
+  // (A value can only be its own sum in code nothing reaches: no walk is
+  // longer than this in code that runs)
+  constexpr unsigned MostSteps = 1024;
+
   int64_t Offset = 0;
-  while (true) {
+  for (unsigned Step = 0; Step < MostSteps; ++Step) {
     Value *Inner = nullptr;
     ConstantInt *Constant = nullptr;
     if (auto *Phi = dyn_cast<PHINode>(V);
@@ -37,10 +48,27 @@ inline std::pair<llvm::Value *, int64_t> skipConstantSums(llvm::Value *V) {
                and Constant->getBitWidth() <= 64) {
       Offset -= Constant->getSExtValue();
       V = Inner;
+    } else if (ThroughCasts
+               and (isa<TruncInst>(V) or isa<ZExtInst>(V)
+                    or isa<PtrToIntInst>(V) or isa<IntToPtrInst>(V)
+                    or isa<BitCastInst>(V))) {
+      V = cast<Instruction>(V)->getOperand(0);
+    } else if (auto *GEP = dyn_cast<GetElementPtrInst>(V);
+               ThroughCasts and GEP != nullptr
+               and GEP->hasAllConstantIndices()) {
+      const DataLayout &DL = GEP->getModule()->getDataLayout();
+      APInt Bytes(DL.getIndexTypeSizeInBits(GEP->getType()), 0);
+      if (not GEP->accumulateConstantOffset(DL, Bytes)
+          or Bytes.getSignificantBits() > 64)
+        break;
+      Offset += Bytes.getSExtValue();
+      V = GEP->getPointerOperand();
     } else {
-      return { V, Offset };
+      break;
     }
   }
+
+  return { V, Offset };
 }
 
 /// What two values differ by: `Minuend - Subtrahend + Constant`
@@ -59,10 +87,13 @@ struct ValueDifference {
 ///         that are not such phis differ by themselves.
 ///
 /// \param Through if not null, the blocks of the phis that were paired
+///
+/// \param ThroughCasts see skipConstantSums
 inline std::optional<ValueDifference>
 differenceOf(llvm::Value *A,
              llvm::Value *B,
-             llvm::SmallVectorImpl<llvm::BasicBlock *> *Through = nullptr) {
+             llvm::SmallVectorImpl<llvm::BasicBlock *> *Through = nullptr,
+             bool ThroughCasts = false) {
   using namespace llvm;
   constexpr unsigned MostPairs = 64;
 
@@ -78,8 +109,8 @@ differenceOf(llvm::Value *A,
   Queue.push_back({ A, B, 0 });
   while (not Queue.empty()) {
     Pair Next = Queue.pop_back_val();
-    auto [BaseA, OffsetA] = skipConstantSums(Next.A);
-    auto [BaseB, OffsetB] = skipConstantSums(Next.B);
+    auto [BaseA, OffsetA] = skipConstantSums(Next.A, ThroughCasts);
+    auto [BaseB, OffsetB] = skipConstantSums(Next.B, ThroughCasts);
     int64_t Constant = Next.Constant + OffsetA - OffsetB;
 
     auto *PhiA = dyn_cast<PHINode>(BaseA);
