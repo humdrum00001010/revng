@@ -163,6 +163,9 @@ CFGAnalyzer::CFGAnalyzer(llvm::Module &M,
                   "stack_height_hook",
                   &M),
   StackEffect(createStackEffectType(Globals), "stack_effect", &M),
+  CallTargetHook(createCallTargetMarkerType(Globals),
+                 "call_target_hook",
+                 &M),
   OutlinerState(M),
   Outliner(M, Root, Globals, Oracle, OutlinerState),
   OpaqueBranchConditionsPool(&M, false),
@@ -177,6 +180,11 @@ CFGAnalyzer::CFGAnalyzer(llvm::Module &M,
 
   // An unknown is a value, not something that happens
   StackEffect.get()->setDoesNotAccessMemory();
+
+  // Read after the optimizations too
+  CallTargetHook.get()->setMemoryEffects(MemoryEffects::inaccessibleMemOnly());
+  CallTargetHook.get()->addFnAttr(Attribute::NoMerge);
+  Outliner.ResolvedCallees = &ResolvedCallees;
 
   // Collect all ABI CSVs except for the stack pointer
   for (GlobalVariable *CSV : Globals.abiRegisters())
@@ -207,7 +215,9 @@ OutlinedFunction CFGAnalyzer::outline(const MetaAddress &Entry) {
                             RetHook.get(),
                             StackHeightHook.get(),
                             StackEffect.get(),
+                            CallTargetHook.get(),
                             Globals.spReg(),
+                            Globals.pcReg(),
                             HasCFG ? &ReturnBlocks : nullptr,
                             &CallSiteFSO,
                             &SymbolicSites,
@@ -265,6 +275,16 @@ CFGAnalyzer::createStackEffectType(const CSVGlobals &Globals) {
   Type *StackPointer = Globals.spReg()->getValueType();
   Type *Index = Type::getInt32Ty(StackPointer->getContext());
   return llvm::FunctionType::get(StackPointer, { Index }, false);
+}
+
+llvm::FunctionType *
+CFGAnalyzer::createCallTargetMarkerType(const CSVGlobals &Globals) {
+  Type *Target = Globals.pcReg()->getValueType();
+  LLVMContext &Context = Target->getContext();
+  Type *I8Ptr = Type::getInt8PtrTy(Context);
+  return llvm::FunctionType::get(Type::getVoidTy(Context),
+                                 { I8Ptr, Target, I8Ptr, I8Ptr },
+                                 false);
 }
 
 llvm::FunctionType *CFGAnalyzer::createRetMarkerType(llvm::Module &M) {
@@ -2131,9 +2151,11 @@ public:
       if (Equation.Terms.size() == 1) {
         Result[Row.Pivot] = Value;
       } else {
-        // If that is more than the callee can remove, leave it: the answer
-        // is another one
-        if (not Most[Row.Pivot].has_value() or Value <= *Most[Row.Pivot])
+        // If that is more than the callee can remove, or less than a callee
+        // that removes nothing amounts to, leave it: the answer is another
+        // one
+        if (Value >= Least
+            and (not Most[Row.Pivot].has_value() or Value <= *Most[Row.Pivot]))
           Likeliest[Row.Pivot] = Value;
         for (const auto &[Unknown, Other] : Equation.Terms)
           IsAmbiguous[Unknown] = true;
@@ -2465,7 +2487,7 @@ CFGAnalyzer::analyzeElidedCleanups(const MetaAddress &Entry,
 
   ElidedCleanups.clear();
   std::optional<FunctionSummary> Best;
-  FunctionSummary Base = analyzeOnce(Entry);
+  FunctionSummary Base = analyzeResolving(Entry);
   auto BestRank = RankOf(Base);
   if (std::get<1>(BestRank) == 0 and std::get<2>(BestRank) == 0
       and std::get<3>(BestRank) == 0)
@@ -2513,7 +2535,7 @@ CFGAnalyzer::analyzeElidedCleanups(const MetaAddress &Entry,
 }
 
 FunctionSummary CFGAnalyzer::analyzeCallees(const MetaAddress &Entry) {
-  FunctionSummary Result = analyzeOnce(Entry);
+  FunctionSummary Result = analyzeResolving(Entry);
 
   // The callee of an indirect call, and a dynamic function without a
   // prototype, are assumed to leave the stack as the default prototype says.
@@ -2625,6 +2647,89 @@ FunctionSummary CFGAnalyzer::analyzeCallees(const MetaAddress &Entry) {
       Carried[It->End()] = Left;
   }
 
+  // A caller removes what it pushed for the callees that leave it to it, and
+  // nothing else: where the code after a call removes more than the block of
+  // that call pushed, the rest is what the blocks before it pushed, for the
+  // calls they end with. If what those blocks pushed, and no known callee
+  // removed, is exactly what is removed there, each of those callees leaves
+  // what was pushed for it. (The arguments of several calls removed at once,
+  // after the last of them.)
+  std::set<MetaAddress> LeftToCaller;
+  {
+    struct CallRecord {
+      MetaAddress Block;
+      MetaAddress End;
+      int64_t Pushed = 0;
+      int64_t Removed = 0;
+      std::optional<int64_t> Takes;
+    };
+    std::map<MetaAddress, CallRecord> Records;
+    auto EndOf = [&Result](const MetaAddress &Block) {
+      auto It = Result.CFG.find(BasicBlockID(Block));
+      return It == Result.CFG.end() ? MetaAddress::invalid() : It->End();
+    };
+
+    for (const auto &[Block, Known] : KnownCalls) {
+      bool IsFirst = Block == Entry;
+      int64_t Pushed = IsFirst ? Known.PushedAfterSaves : Known.Pushed;
+      int64_t Removed = Known.Removed;
+      Records[Block] = { Block,
+                         EndOf(Block),
+                         Pushed,
+                         Removed,
+                         Known.FinalStackOffset - *Default };
+    }
+
+    for (const UnknownCall &Call : UnknownCalls) {
+      bool IsFirst = Call.Block == Entry;
+      CallRecord New{ Call.Block,
+                      EndOf(Call.Block),
+                      int64_t(IsFirst ? Call.AllPushedAfterSaves :
+                                        Call.AllPushed),
+                      int64_t(Call.Removed),
+                      std::nullopt };
+
+      // A dynamic function with a prototype is known
+      if (not Call.Symbol.empty() and Call.FinalStackOffset.has_value()) {
+        const auto &Imported = Binary->ImportedDynamicFunctions();
+        auto It = Imported.find(Call.Symbol);
+        if (It != Imported.end() and not It->Prototype().isEmpty())
+          New.Takes = *Call.FinalStackOffset - *Default;
+      }
+
+      if (not Call.IsRecursive)
+        Records.emplace(Call.Block, New);
+    }
+
+    for (auto Last = Records.begin(); Last != Records.end(); ++Last) {
+      if (Last->second.Removed <= Last->second.Pushed)
+        continue;
+
+      int64_t Left = Last->second.Removed;
+      llvm::SmallVector<MetaAddress, 4> Unknown;
+      auto It = Last;
+      while (true) {
+        const CallRecord &Call = It->second;
+        if (not Call.Takes.has_value())
+          Unknown.push_back(Call.Block);
+        Left -= Call.Pushed - Call.Takes.value_or(0);
+        if (Left <= 0 or It == Records.begin())
+          break;
+
+        // Only the block right before, and only if nothing was removed
+        // after its call
+        auto Before = std::prev(It);
+        if (Before->second.End != Call.Block or Before->second.Removed != 0
+            or Before->second.End.isInvalid())
+          break;
+        It = Before;
+      }
+
+      if (Left == 0)
+        LeftToCaller.insert(Unknown.begin(), Unknown.end());
+    }
+  }
+
   for (const UnknownCall &Call : UnknownCalls) {
     // The call sites of the functions inlined in this one are theirs
     if (not Result.CFG.contains(BasicBlockID(Call.Block))
@@ -2663,6 +2768,12 @@ FunctionSummary CFGAnalyzer::analyzeCallees(const MetaAddress &Entry) {
 
     uint64_t Likeliest = std::min(MaxWords, Pushed / Word);
 
+    // What the caller removes later, the callee most likely leaves: but the
+    // callee can still be tried with what its block pushed
+    uint64_t MostLikely = Likeliest;
+    if (LeftToCaller.contains(Call.Block))
+      Likeliest = 0;
+
     // The function removes the same wherever it calls itself, and its
     // arguments can have been pushed in another block
     auto IsItself = [](const UnknownCallSite &Other) {
@@ -2689,7 +2800,7 @@ FunctionSummary CFGAnalyzer::analyzeCallees(const MetaAddress &Entry) {
     New.IsRecursive = Call.IsRecursive;
     New.Symbol = Call.Symbol;
     New.Likeliest = Likeliest;
-    New.Most = Call.IsRecursive ? MaxWords : Likeliest;
+    New.Most = Call.IsRecursive ? MaxWords : MostLikely;
   }
 
   AnalysisScore Base = ScoreOf(Result);
@@ -2973,6 +3084,9 @@ CFGAnalyzer::optimize(const MetaAddress &Entry) {
   // Execute the optimization pipeline over the outlined function
   runOptimizationPipeline(F);
 
+  // Who the calls through a pointer go to, where another call says
+  resolveCallees(F);
+
   // The heights of the stack the paths of the function agree on, where LLVM
   // does not see that they do
   SameOnAllPaths Same;
@@ -2984,6 +3098,87 @@ CFGAnalyzer::optimize(const MetaAddress &Entry) {
       Same.fold(Call, StackPointerOffsetIndex);
 
   return { std::move(OutlinedFunction), std::move(CFG) };
+}
+
+void CFGAnalyzer::resolveCallees(llvm::Function *F) {
+  using namespace llvm;
+  using Callee = std::pair<MetaAddress, std::string>;
+
+  auto Through = [](CallBase *Call) {
+    Value *Target = Call->getArgOperand(1);
+    while (isa<TruncInst>(Target) or isa<ZExtInst>(Target)
+           or isa<BitCastInst>(Target))
+      Target = cast<Instruction>(Target)->getOperand(0);
+    return Target;
+  };
+
+  // What the calls whose callee the code says go through
+  DenseMap<Value *, Callee> Known;
+  SmallPtrSet<Value *, 4> Several;
+  SmallVector<std::pair<MetaAddress, Value *>, 8> Unknown;
+  for (CallBase *Call : callers(CallTargetHook.get())) {
+    if (Call->getFunction() != F)
+      continue;
+
+    BasicBlockID Block = BasicBlockID::fromValue(Call->getArgOperand(0));
+    Value *Target = Through(Call);
+    if (Block.isInlined() or not isa<Instruction>(Target))
+      continue;
+
+    MetaAddress Address = BasicBlockID::fromValue(Call->getArgOperand(2))
+                            .notInlinedAddress();
+    Value *SymbolArgument = Call->getArgOperand(3);
+    std::string Symbol;
+    if (not isa<ConstantPointerNull>(SymbolArgument))
+      Symbol = extractFromConstantStringPtr(SymbolArgument).str();
+    bool IsFunction = Address.isValid() and Binary->Functions().contains(Address);
+
+    if (ResolvedCallees.contains(Block.start())) {
+      // (Found here before: it says nothing new)
+    } else if (IsFunction or not Symbol.empty()) {
+      Callee New{ IsFunction ? Address : MetaAddress::invalid(), Symbol };
+      auto [It, IsNew] = Known.try_emplace(Target, New);
+      if (not IsNew and It->second != New)
+        Several.insert(Target);
+    } else {
+      Unknown.emplace_back(Block.start(), Target);
+    }
+  }
+
+  for (const auto &[Block, Target] : Unknown) {
+    auto It = Known.find(Target);
+    if (It == Known.end() or Several.contains(Target))
+      continue;
+
+    // A callee that does not come back, or that is part of its callers, is
+    // not handled as the others are where its call is outlined
+    using namespace model::FunctionAttribute;
+    const Callee &Found = It->second;
+    const FunctionSummary &Summary = Found.first.isValid() ?
+                                       Oracle.getLocalFunction(Found.first) :
+                                       Oracle.getDynamicFunction(Found.second);
+    if (Summary.Attributes.contains(NoReturn)
+        or Summary.Attributes.contains(HasOneBrokenReturn))
+      continue;
+
+    if (ResolvedCallees.try_emplace(Block, Found).second) {
+      HasNewCallees = true;
+      CallSiteFSO.erase(Block);
+      AmbiguousSites.erase(Block);
+    }
+  }
+}
+
+FunctionSummary CFGAnalyzer::analyzeResolving(const MetaAddress &Entry) {
+  constexpr unsigned MostRounds = 3;
+  HasNewCallees = false;
+  FunctionSummary Result = analyzeOnce(Entry);
+  for (unsigned Round = 0; HasNewCallees and Round < MostRounds; ++Round) {
+    HasNewCallees = false;
+    Unsolved.erase(Entry);
+    Result = analyzeOnce(Entry);
+  }
+  return Result;
 }
 
 FunctionSummary CFGAnalyzer::analyzeOnce(const MetaAddress &Entry) {
@@ -3039,7 +3234,9 @@ CallSummarizer::CallSummarizer(llvm::Module *M,
                                llvm::Function *RetHook,
                                llvm::Function *StackHeightHook,
                                llvm::Function *StackEffect,
+                               llvm::Function *CallTargetHook,
                                GlobalVariable *SPCSV,
+                               GlobalVariable *PCCSV,
                                llvm::SmallSet<MetaAddress, 4> *ReturnBlocks,
                                const std::map<MetaAddress, int64_t>
                                  *CallSiteFSO,
@@ -3058,7 +3255,9 @@ CallSummarizer::CallSummarizer(llvm::Module *M,
   RetHook(RetHook),
   StackHeightHook(StackHeightHook),
   StackEffect(StackEffect),
+  CallTargetHook(CallTargetHook),
   SPCSV(SPCSV),
+  PCCSV(PCCSV),
   ReturnBlocks(ReturnBlocks),
   Clobberer(M),
   CallSiteFSO(CallSiteFSO),
@@ -3209,12 +3408,18 @@ void CallSummarizer::handleCall(MetaAddress CallerBlock,
 
   Module *M = Builder.GetInsertBlock()->getParent()->getParent();
 
-  // Leave a trace of where the stack pointer is when the call is made
+  // Leave a trace of where the stack pointer is when the call is made, and
+  // of what the call goes through
   if (not IsTailCall) {
     Builder.CreateCall(StackHeightHook,
                        { BasicBlockID(CallerBlock).toValue(M),
                          Builder.createLoad(SPCSV),
                          Builder.getInt32(StackHeightAtCall) });
+    Builder.CreateCall(CallTargetHook,
+                       { BasicBlockID(CallerBlock).toValue(M),
+                         Builder.createLoad(PCCSV),
+                         Callee.toValue(M),
+                         SymbolNamePointer });
   }
 
   Builder.CreateCall(PreCallHook, Args);
@@ -3248,6 +3453,8 @@ void CallSummarizer::handleCall(MetaAddress CallerBlock,
     }
     New.Pushed = pushedBeforeCall(Block, End, SPCSV, nullptr);
     New.PushedAfterSaves = pushedBeforeCall(Block, End, SPCSV, CalleeSaved);
+    New.AllPushed = New.Pushed;
+    New.AllPushedAfterSaves = New.PushedAfterSaves;
 
     // If the caller removes what it pushed, the callee does not
     uint64_t Removed = removedAfterCall(Block, SPCSV);

@@ -269,6 +269,14 @@ private:
     }
 
     StringRef SymbolName = extractFromConstantStringPtr(SymbolNamePointer);
+
+    // Where the code of the call does not say who is called, the function
+    // analysis can have found out: its graph says
+    if (SymbolName.empty() and Callee.isInvalid()) {
+      SymbolName = CallEdge->DynamicFunction();
+      Callee = CallEdge->Destination().notInlinedAddress();
+    }
+
     revng_assert(SymbolName == CallEdge->DynamicFunction());
 
     if (Callee != CallEdge->Destination().notInlinedAddress()) {

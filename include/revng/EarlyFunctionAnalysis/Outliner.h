@@ -233,6 +233,14 @@ public:
     }
   };
 
+public:
+  /// The callee of the calls through a pointer that has been found by other
+  /// means than the code of the call, if whoever outlines has any: by the
+  /// address of the block of the call, a function of the binary or the name
+  /// of a dynamic function
+  using ResolvedCallee = std::pair<MetaAddress, std::string>;
+  const std::map<MetaAddress, ResolvedCallee> *ResolvedCallees = nullptr;
+
 private:
   llvm::Module &M;
   RootFunction &RootF;

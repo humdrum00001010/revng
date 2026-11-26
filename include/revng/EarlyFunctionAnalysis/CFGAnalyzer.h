@@ -82,6 +82,13 @@ struct UnknownCall {
   /// What the code after the call removes from the stack before doing
   /// anything else with it
   uint64_t Removed = 0;
+
+  /// What the block pushes before the call, whoever removes it
+  uint64_t AllPushed = 0;
+
+  /// The same, without what the block pushes up to the last register it
+  /// saves
+  uint64_t AllPushedAfterSaves = 0;
 };
 
 class CallSummarizer : public CallHandler {
@@ -92,7 +99,9 @@ private:
   llvm::Function *RetHook = nullptr;
   llvm::Function *StackHeightHook = nullptr;
   llvm::Function *StackEffect = nullptr;
+  llvm::Function *CallTargetHook = nullptr;
   llvm::GlobalVariable *SPCSV = nullptr;
+  llvm::GlobalVariable *PCCSV = nullptr;
   llvm::SmallSet<MetaAddress, 4> *ReturnBlocks = nullptr;
   OpaqueRegisterUser Clobberer;
 
@@ -132,7 +141,9 @@ public:
                  llvm::Function *RetHook,
                  llvm::Function *StackHeightHook,
                  llvm::Function *StackEffect,
+                 llvm::Function *CallTargetHook,
                  llvm::GlobalVariable *SPCSV,
+                 llvm::GlobalVariable *PCCSV,
                  llvm::SmallSet<MetaAddress, 4> *ReturnBlocks,
                  const std::map<MetaAddress, int64_t> *CallSiteFSO,
                  const std::map<MetaAddress, unsigned> *SymbolicSites,
@@ -193,6 +204,11 @@ private:
   /// unknown, the same wherever the argument is the same
   TemporaryOpaqueFunction StackEffect;
 
+  /// Marks what a call goes through (the value the program counter is given
+  /// there), with what is known about who that is: read after the
+  /// optimizations, to see which calls of a function go to the same place
+  TemporaryOpaqueFunction CallTargetHook;
+
   Outliner::ModuleState OutlinerState;
   Outliner Outliner;
 
@@ -203,6 +219,17 @@ private:
   /// The final stack offset found for the callee of a call site, by the
   /// address of the block of the call
   std::map<MetaAddress, int64_t> CallSiteFSO;
+
+  /// The callee of the calls through a pointer that go where another call
+  /// of the same function goes, one that the code says the callee of (a
+  /// register loaded once with the address of a function and called several
+  /// times: the lifter knows who is called the first time only). By the
+  /// address of the block of the call: a function of the binary, or the name
+  /// of a dynamic function.
+  std::map<MetaAddress, std::pair<MetaAddress, std::string>> ResolvedCallees;
+
+  /// Whether the last analyses found such callees
+  bool HasNewCallees = false;
 
   /// The call sites whose callee moves the stack pointer by an unknown amount
   /// in the analysis that finds what the function requires it to be
@@ -331,6 +358,13 @@ public:
 private:
   FunctionSummary analyzeOnce(const MetaAddress &Entry);
 
+  /// analyzeOnce, again as long as it finds out who a call through a pointer
+  /// goes to
+  FunctionSummary analyzeResolving(const MetaAddress &Entry);
+
+  /// See ResolvedCallees
+  void resolveCallees(llvm::Function *F);
+
   /// Find what the callees nothing is known about remove from the stack
   FunctionSummary analyzeCallees(const MetaAddress &Entry);
 
@@ -357,6 +391,7 @@ private:
   static llvm::FunctionType *createRetMarkerType(llvm::Module &M);
   static llvm::FunctionType *createStackHeightMarkerType(const CSVGlobals &);
   static llvm::FunctionType *createStackEffectType(const CSVGlobals &);
+  static llvm::FunctionType *createCallTargetMarkerType(const CSVGlobals &);
 
 private:
   std::optional<UpcastablePointer<efa::FunctionEdgeBase>>

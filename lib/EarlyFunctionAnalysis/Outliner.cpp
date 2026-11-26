@@ -162,6 +162,17 @@ void Outliner::integrateFunctionCallee(CallHandler *TheCallHandler,
     SymbolNamePointer = CPN::get(Type::getInt8PtrTy(Context));
   }
 
+  // A call through a pointer whose callee is known all the same
+  if (ResolvedCallees != nullptr and FunctionCall != nullptr
+      and Callee.isInvalid() and not TargetIsSymbol) {
+    auto It = ResolvedCallees->find(CallerBlockAddress);
+    if (It != ResolvedCallees->end()) {
+      Callee = It->second.first;
+      if (not It->second.second.empty())
+        SymbolNamePointer = getUniqueString(&M, It->second.second);
+    }
+  }
+
   if (FunctionCall == nullptr)
     IsTailCall = true;
 
@@ -935,6 +946,17 @@ Outliner::getCallSiteInfo(MetaAddress CallerFunction,
   if (JumpToSymbol != nullptr) {
     // The target is a symbol
     CalledSymbol = extractFromConstantStringPtr(JumpToSymbol->getArgOperand(0));
+  }
+
+  // A call through a pointer whose callee is known all the same
+  if (ResolvedCallees != nullptr and FunctionCall != nullptr
+      and Callee.isInvalid() and CalledSymbol.empty()
+      and not CallSiteAddress.isInlined()) {
+    auto It = ResolvedCallees->find(CallSiteAddress.start());
+    if (It != ResolvedCallees->end()) {
+      Callee = It->second.first;
+      CalledSymbol = It->second.second;
+    }
   }
 
   return Oracle.getCallSite(CallerFunction,
