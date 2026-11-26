@@ -231,6 +231,15 @@ private:
   /// Whether the last analyses found such callees
   bool HasNewCallees = false;
 
+  /// The imported function each slot is for: a call through what is read
+  /// from a slot goes to its function, wherever the slot is read
+  struct ImportSlot {
+    const model::DynamicFunction *Imported = nullptr;
+    uint64_t Size = 0;
+  };
+  std::map<MetaAddress, ImportSlot> ImportSlots;
+  bool HasImportSlots = false;
+
   /// The call sites whose callee moves the stack pointer by an unknown amount
   /// in the analysis that finds what the function requires it to be
   std::map<MetaAddress, unsigned> SymbolicSites;
@@ -365,8 +374,14 @@ private:
   /// See ResolvedCallees
   void resolveCallees(llvm::Function *F);
 
+  /// \return the imported function whose slot \p Place is, if it is one
+  const model::DynamicFunction *importedAt(const ReadPlace &Place);
+
   /// Find what the callees nothing is known about remove from the stack
   FunctionSummary analyzeCallees(const MetaAddress &Entry);
+
+  /// One search of analyzeCallees, with the callees known when it starts
+  FunctionSummary searchCalleeEffects(const MetaAddress &Entry);
 
 
   /// The function, outlined and optimized, and its direct control flow

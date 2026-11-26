@@ -2535,6 +2535,20 @@ CFGAnalyzer::analyzeElidedCleanups(const MetaAddress &Entry,
 }
 
 FunctionSummary CFGAnalyzer::analyzeCallees(const MetaAddress &Entry) {
+  // A callee found while the search was trying is something the search did
+  // not know when it chose among the answers the function leaves open: what
+  // it chose was assumed with less than is known now, and can be what the
+  // callee that was found rules out. Search again, knowing it.
+  constexpr unsigned MostSearches = 3;
+  FunctionSummary Result = searchCalleeEffects(Entry);
+  for (unsigned Search = 1; HasNewCallees and Search < MostSearches; ++Search) {
+    Unsolved.erase(Entry);
+    Result = searchCalleeEffects(Entry);
+  }
+  return Result;
+}
+
+FunctionSummary CFGAnalyzer::searchCalleeEffects(const MetaAddress &Entry) {
   FunctionSummary Result = analyzeResolving(Entry);
 
   // The callee of an indirect call, and a dynamic function without a
@@ -3100,6 +3114,32 @@ CFGAnalyzer::optimize(const MetaAddress &Entry) {
   return { std::move(OutlinedFunction), std::move(CFG) };
 }
 
+const model::DynamicFunction *
+CFGAnalyzer::importedAt(const ReadPlace &Place) {
+  if (not HasImportSlots) {
+    HasImportSlots = true;
+    for (const model::DynamicFunction &Imported :
+         Binary->ImportedDynamicFunctions()) {
+      for (const model::Relocation &Relocation : Imported.Relocations()) {
+        if (Relocation.Type() != model::RelocationType::Absolute
+            or Relocation.Addend() != 0)
+          continue;
+
+        // (A slot two functions claim says nothing)
+        ImportSlot New{ &Imported, Relocation.Size() };
+        auto [It, IsNew] = ImportSlots.try_emplace(Relocation.Address(), New);
+        if (not IsNew and It->second.Imported != &Imported)
+          It->second.Imported = nullptr;
+      }
+    }
+  }
+
+  auto It = ImportSlots.find(Place.Address);
+  if (It == ImportSlots.end() or It->second.Size != Place.Size)
+    return nullptr;
+  return It->second.Imported;
+}
+
 void CFGAnalyzer::resolveCallees(llvm::Function *F) {
   using namespace llvm;
   using Callee = std::pair<MetaAddress, std::string>;
@@ -3112,10 +3152,54 @@ void CFGAnalyzer::resolveCallees(llvm::Function *F) {
     return Target;
   };
 
+  // What a call goes through is a value or, if all the paths that reach the
+  // call read it from the same place, that place: the slot of an imported
+  // function, or memory the program cannot write, holds the same whenever it
+  // is read. LLVM gives two such reads one value only where it also knows
+  // that nothing in between writes there, and that takes the heights of the
+  // stack, which take what the callees remove: what this is here to find.
+  constexpr unsigned MostValues = 32;
+  using Source = std::pair<Value *, MetaAddress>;
+  auto SourceOf = [this](Value *Target) -> std::pair<Source, ReadPlace> {
+    std::optional<ReadPlace> Place;
+    SmallPtrSet<Value *, 8> Visited;
+    SmallVector<Value *, 8> Queue{ Target };
+    while (not Queue.empty()) {
+      Value *Next = Queue.pop_back_val();
+      while (isa<TruncInst>(Next) or isa<ZExtInst>(Next)
+             or isa<BitCastInst>(Next))
+        Next = cast<Instruction>(Next)->getOperand(0);
+      if (not Visited.insert(Next).second)
+        continue;
+
+      if (auto *Phi = dyn_cast<PHINode>(Next)) {
+        if (Visited.size() > MostValues)
+          return { Source{ Target, MetaAddress::invalid() }, ReadPlace{} };
+        for (Value *Incoming : Phi->incoming_values())
+          Queue.push_back(Incoming);
+        continue;
+      }
+
+      std::optional<ReadPlace> Read = placeReadFrom(Next, *Binary);
+      if (not Read.has_value()
+          or (Place.has_value()
+              and (Place->Address != Read->Address
+                   or Place->Size != Read->Size))
+          or (importedAt(*Read) == nullptr
+              and not isConstantMemory(*Read, *Binary)))
+        return { Source{ Target, MetaAddress::invalid() }, ReadPlace{} };
+      Place = Read;
+    }
+
+    if (not Place.has_value())
+      return { Source{ Target, MetaAddress::invalid() }, ReadPlace{} };
+    return { Source{ nullptr, Place->Address }, *Place };
+  };
+
   // What the calls whose callee the code says go through
-  DenseMap<Value *, Callee> Known;
-  SmallPtrSet<Value *, 4> Several;
-  SmallVector<std::pair<MetaAddress, Value *>, 8> Unknown;
+  std::map<Source, Callee> Known;
+  std::set<Source> Several;
+  SmallVector<std::pair<MetaAddress, Source>, 8> Unknown;
   for (CallBase *Call : callers(CallTargetHook.get())) {
     if (Call->getFunction() != F)
       continue;
@@ -3124,6 +3208,16 @@ void CFGAnalyzer::resolveCallees(llvm::Function *F) {
     Value *Target = Through(Call);
     if (Block.isInlined() or not isa<Instruction>(Target))
       continue;
+
+    // The slot of an imported function says who a call through it is for,
+    // whether or not another call goes through it
+    auto &&[From, Place] = SourceOf(Target);
+    if (From.first == nullptr) {
+      if (const model::DynamicFunction *Imported = importedAt(Place)) {
+        Callee New{ MetaAddress::invalid(), Imported->Name() };
+        Known.try_emplace(From, New);
+      }
+    }
 
     MetaAddress Address = BasicBlockID::fromValue(Call->getArgOperand(2))
                             .notInlinedAddress();
@@ -3137,17 +3231,17 @@ void CFGAnalyzer::resolveCallees(llvm::Function *F) {
       // (Found here before: it says nothing new)
     } else if (IsFunction or not Symbol.empty()) {
       Callee New{ IsFunction ? Address : MetaAddress::invalid(), Symbol };
-      auto [It, IsNew] = Known.try_emplace(Target, New);
+      auto [It, IsNew] = Known.try_emplace(From, New);
       if (not IsNew and It->second != New)
-        Several.insert(Target);
+        Several.insert(From);
     } else {
-      Unknown.emplace_back(Block.start(), Target);
+      Unknown.emplace_back(Block.start(), From);
     }
   }
 
-  for (const auto &[Block, Target] : Unknown) {
-    auto It = Known.find(Target);
-    if (It == Known.end() or Several.contains(Target))
+  for (const auto &[Block, From] : Unknown) {
+    auto It = Known.find(From);
+    if (It == Known.end() or Several.contains(From))
       continue;
 
     // A callee that does not come back, or that is part of its callers, is

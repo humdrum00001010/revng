@@ -24,17 +24,23 @@ namespace efa {
 class CallHandler;
 class OutlinedFunctionsMap;
 
-/// \return whether \p Target, the address a call goes to, is read from an
-///         address that is known and lies in memory the program cannot write
-inline bool isReadFromConstantMemory(llvm::Value *Target,
-                                     const model::Binary &Binary) {
+/// Where a value is read from, and how many bytes
+struct ReadPlace {
+  MetaAddress Address = MetaAddress::invalid();
+  unsigned Size = 0;
+};
+
+/// \return where \p Target is read from, if it is read from an address that
+///         is known
+inline std::optional<ReadPlace> placeReadFrom(llvm::Value *Target,
+                                              const model::Binary &Binary) {
   using namespace llvm;
 
   while (isa<TruncInst>(Target) or isa<ZExtInst>(Target))
     Target = cast<Instruction>(Target)->getOperand(0);
   auto *Load = dyn_cast<LoadInst>(Target);
   if (Load == nullptr)
-    return false;
+    return std::nullopt;
 
   // The address: a number, or what stands for the start of a segment plus
   // an offset
@@ -51,7 +57,7 @@ inline bool isReadFromConstantMemory(llvm::Value *Target,
       Operator != nullptr and Operator->getOpcode() == Instruction::Add) {
     auto *Offset = dyn_cast<ConstantInt>(Operator->getOperand(1));
     if (Offset == nullptr or Offset->getBitWidth() > 64)
-      return false;
+      return std::nullopt;
     Address = Offset->getZExtValue();
     Pointer = Operator->getOperand(0);
     while (isa<TruncInst>(Pointer) or isa<ZExtInst>(Pointer))
@@ -60,20 +66,20 @@ inline bool isReadFromConstantMemory(llvm::Value *Target,
 
   if (auto *Constant = dyn_cast<ConstantInt>(Pointer)) {
     if (Constant->getBitWidth() > 64)
-      return false;
+      return std::nullopt;
     Address += Constant->getZExtValue();
   } else if (auto *Call = dyn_cast<CallBase>(Pointer)) {
     Function *Getter = Call->getCalledFunction();
     if (Getter == nullptr or not FunctionTags::SegmentGlobalGetter.isTagOf(Getter))
-      return false;
+      return std::nullopt;
     StringRef Name = Getter->getName();
     uint64_t Start = 0;
     if (not Name.consume_front("get_segment_0x")
         or Name.take_while(isHexDigit).getAsInteger(16, Start))
-      return false;
+      return std::nullopt;
     Address += Start;
   } else {
-    return false;
+    return std::nullopt;
   }
 
   unsigned Size = Load->getType()->isIntegerTy() ?
@@ -81,12 +87,26 @@ inline bool isReadFromConstantMemory(llvm::Value *Target,
                     0;
   MetaAddress Where = MetaAddress::fromGeneric(Binary.Architecture(), Address);
   if (Size == 0 or Where.isInvalid())
-    return false;
+    return std::nullopt;
 
+  return ReadPlace{ Where, Size };
+}
+
+/// \return whether the program cannot write the memory at \p Place
+inline bool isConstantMemory(const ReadPlace &Place,
+                             const model::Binary &Binary) {
   for (const model::Segment &Segment : Binary.Segments())
-    if (Segment.contains(Where, Size))
+    if (Segment.contains(Place.Address, Place.Size))
       return not Segment.IsWriteable();
   return false;
+}
+
+/// \return whether \p Target, the address a call goes to, is read from an
+///         address that is known and lies in memory the program cannot write
+inline bool isReadFromConstantMemory(llvm::Value *Target,
+                                     const model::Binary &Binary) {
+  std::optional<ReadPlace> Place = placeReadFrom(Target, Binary);
+  return Place.has_value() and isConstantMemory(*Place, Binary);
 }
 
 /// \return the block a call goes to: the callee its function_call marker
