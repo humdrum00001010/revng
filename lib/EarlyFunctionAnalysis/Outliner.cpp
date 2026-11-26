@@ -129,6 +129,36 @@ bool OutlinedFunctionsMap::banRecursiveFunctions() {
   return Result;
 }
 
+llvm::CallInst *Outliner::stubOf(MetaAddress Callee) {
+  using namespace llvm;
+
+  if (Callee.isInvalid())
+    return nullptr;
+
+  auto [It, IsNew] = Stubs.try_emplace(Callee, nullptr);
+  if (not IsNew)
+    return It->second;
+
+  // One instruction, a jump, to what the lifter names as an imported function
+  llvm::BasicBlock *Entry = RootF.getBlockAt(Callee);
+  if (Entry == nullptr or getMarker(Entry, FunctionCallMarker) != nullptr)
+    return nullptr;
+
+  CallInst *JumpToSymbol = getMarker(Entry, JumpToSymbolMarker);
+  if (JumpToSymbol == nullptr)
+    return nullptr;
+
+  unsigned Instructions = 0;
+  for (Instruction &I : *Entry)
+    if (NewPCHelper.getCall(&I).has_value())
+      ++Instructions;
+  if (Instructions != 1)
+    return nullptr;
+
+  Stubs[Callee] = JumpToSymbol;
+  return JumpToSymbol;
+}
+
 void Outliner::integrateFunctionCallee(CallHandler *TheCallHandler,
                                        MetaAddress CallerFunction,
                                        llvm::BasicBlock *CallerBlock,
@@ -170,6 +200,15 @@ void Outliner::integrateFunctionCallee(CallHandler *TheCallHandler,
       Callee = It->second.first;
       if (not It->second.second.empty())
         SymbolNamePointer = getUniqueString(&M, It->second.second);
+    }
+  }
+
+  // A call to a function that is only a jump to an imported one is a call to
+  // the imported one
+  if (FunctionCall != nullptr and not TargetIsSymbol) {
+    if (CallInst *Stub = stubOf(Callee)) {
+      Callee = MetaAddress::invalid();
+      SymbolNamePointer = Stub->getArgOperand(0);
     }
   }
 
@@ -956,6 +995,15 @@ Outliner::getCallSiteInfo(MetaAddress CallerFunction,
     if (It != ResolvedCallees->end()) {
       Callee = It->second.first;
       CalledSymbol = It->second.second;
+    }
+  }
+
+  // A call to a function that is only a jump to an imported one is a call to
+  // the imported one
+  if (FunctionCall != nullptr and CalledSymbol.empty()) {
+    if (CallInst *Stub = stubOf(Callee)) {
+      Callee = MetaAddress::invalid();
+      CalledSymbol = extractFromConstantStringPtr(Stub->getArgOperand(0));
     }
   }
 

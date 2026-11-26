@@ -98,6 +98,9 @@ private:
   /// Give the imported C++ functions that have no prototype the one their
   /// decorated name describes.
   void importPrototypesFromDecoratedNames();
+
+  /// Mark the imported functions the libraries document as never returning
+  void markFunctionsKnownNotToReturn();
 };
 
 Error PECOFFImporter::parseSectionsHeaders() {
@@ -1028,6 +1031,38 @@ void PECOFFImporter::importPrototypesFromDecoratedNames() {
   }
 }
 
+void PECOFFImporter::markFunctionsKnownNotToReturn() {
+  // What the C and C++ run-time libraries and the system declare as never
+  // returning to their caller. A compiler that knows it puts nothing after
+  // the call to one of them: what follows is another function, or data (later
+  // compilers put a trap there). Nothing in the file says it, the name of
+  // the imported function is all there is to go by.
+  static constexpr const char *Names[] = { "_CxxThrowException",
+                                           "?terminate@@YAXXZ",
+                                           "__std_terminate",
+                                           "_invalid_parameter_noinfo_noreturn",
+                                           "_invoke_watson",
+                                           "_amsg_exit",
+                                           "abort",
+                                           "exit",
+                                           "_exit",
+                                           "_Exit",
+                                           "quick_exit",
+                                           "longjmp",
+                                           "ExitProcess",
+                                           "ExitThread",
+                                           "RaiseFailFastException" };
+
+  auto &Imported = Model->ImportedDynamicFunctions();
+  for (const char *Name : Names) {
+    auto It = Imported.find(Name);
+    if (It != Imported.end()) {
+      revng_log(Log, Name << " is known not to return");
+      It->Attributes().insert(model::FunctionAttribute::NoReturn);
+    }
+  }
+}
+
 Error PECOFFImporter::import(const ImporterOptions &Options) {
   if (Error E = parseSectionsHeaders())
     return E;
@@ -1107,6 +1142,7 @@ Error PECOFFImporter::import(const ImporterOptions &Options) {
   // arguments on the stack, which the member functions of C++ classes do not:
   // their names tell
   importPrototypesFromDecoratedNames();
+  markFunctionsKnownNotToReturn();
 
   model::flattenPrimitiveTypedefs(Model);
   model::deduplicateCollidingNames(Model);

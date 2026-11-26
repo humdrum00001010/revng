@@ -262,6 +262,23 @@ public:
   const std::map<MetaAddress, ResolvedCallee> *ResolvedCallees = nullptr;
 
 private:
+  /// See stubOf
+  std::map<MetaAddress, llvm::CallInst *> Stubs;
+
+public:
+  /// \return the marker that names the imported function the function at
+  ///         \p Callee jumps to, if that jump is all the function is: the
+  ///         one place a linker gives the calls to an imported function to
+  ///         go through. A call to it is a call to the imported function:
+  ///         what is known about that function is known about the call, and
+  ///         what is not, such as what it removes from the stack, is as
+  ///         unknown as for a call through the pointer itself. (The stub
+  ///         analysed as a function of its own would have to be given what
+  ///         the function it jumps to is assumed to do, and its callers
+  ///         would take that as found.)
+  llvm::CallInst *stubOf(MetaAddress Callee);
+
+private:
   llvm::Module &M;
   RootFunction &RootF;
   const CSVGlobals &Globals;
