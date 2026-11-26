@@ -12,6 +12,7 @@
 #include "revng/Support/IRBuilder.h"
 #include "revng/Support/IRHelpers.h"
 #include "revng/Support/OpaqueFunctionsPool.h"
+#include "revng/Support/SameOnAllPaths.h"
 
 using namespace llvm;
 
@@ -116,20 +117,36 @@ InstrumentStackAccesses::findStackAccesses(Function &F) {
 void InstrumentStackAccesses::instrumentStackAccess(Instruction *I) {
   auto *Pointer = cast<Instruction>(getPointer(I));
 
-  auto *IntegerPointer = cast<Instruction>(skipCasts(Pointer));
   revng::IRBuilder B(I);
 
-  if (not IntegerPointer->getType()->isIntegerTy()) {
-    Value *PtrToInt = B.CreatePtrToInt(IntegerPointer, SPType);
-    IntegerPointer = cast<Instruction>(PtrToInt);
-  }
+  // Where the address is the stack pointer plus one constant on every path
+  // that reaches the access, the offset is that constant. LLVM does not
+  // always get there: a store moved out of the blocks that end with it is
+  // left with a phi of the addresses they computed, each from the stack
+  // pointer with the same constant, and nothing after this sees through a phi
+  // of pointers. The access would then not count as one to the stack: a word
+  // pushed for a call would not be given to it.
+  Value *StackOffset = nullptr;
+  SameOnAllPaths Same;
+  auto &&[Base, Offset] = Same.of(Pointer);
+  if (Base == SP0) {
+    unsigned Bits = SPType->getIntegerBitWidth();
+    APInt Folded(64, static_cast<uint64_t>(Offset), true);
+    StackOffset = ConstantInt::get(SPType, Folded.sextOrTrunc(Bits));
+  } else {
+    // Compute offset from SP0
+    // Note: here we're using `(x + - SP0)` instead of `x - SP0` since
+    //       otherwise certain optimization passes cannot correctly
+    //       reassociate the sum and elide SP0.
+    auto *IntegerPointer = cast<Instruction>(skipCasts(Pointer));
+    if (not IntegerPointer->getType()->isIntegerTy()) {
+      Value *PtrToInt = B.CreatePtrToInt(IntegerPointer, SPType);
+      IntegerPointer = cast<Instruction>(PtrToInt);
+    }
 
-  // Compute offset from SP0
-  // Note: here we're using `(x + - SP0)` instead of `x - SP0` since otherwise
-  //       certain optimization passes cannot correctly reassociate the sum and
-  //       elide SP0.
-  Value *StackOffset = B.CreateAdd(B.CreateZExtOrTrunc(IntegerPointer, SPType),
-                                   B.CreateNeg(SP0));
+    StackOffset = B.CreateAdd(B.CreateZExtOrTrunc(IntegerPointer, SPType),
+                              B.CreateNeg(SP0));
+  }
 
   // Get/create an identity function taking as second argument the stack
   // offset
