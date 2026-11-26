@@ -11,3 +11,7 @@ inline IRHelper<> UndefinedLocalSPMarker("revng_undefined_local_sp");
 
 /// Records the height of the stack at a call site
 inline IRHelper<> StackSizeAtCallSite("stack_size_at_call_site");
+
+/// Stands for an allocation a function makes on its stack at run time: takes
+/// the size, returns the address of the block
+inline IRHelper<> StackAllocation("revng_stack_alloc");

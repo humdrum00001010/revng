@@ -1157,6 +1157,56 @@ inline bool replaceAllUsesInFunctionWith(llvm::Function *F,
   return Changed;
 }
 
+/// Replace, in \p F, the uses of each global variable that is a key of
+/// \p Replacements with the value it maps to.
+///
+/// It does what calling the function above once per entry does, but it visits
+/// the instructions of \p F instead of the users of each global variable,
+/// which are all over the module.
+///
+/// \return true if it changes something, false otherwise.
+template<typename MapType>
+inline bool
+replaceAllUsesInFunctionWith(llvm::Function *F, const MapType &Replacements) {
+  using namespace llvm;
+
+  bool Changed = false;
+
+  auto Find = [&Replacements](Value *V) -> Value * {
+    if (auto *Old = dyn_cast<GlobalVariable>(V)) {
+      auto It = Replacements.find(Old);
+      if (It != Replacements.end())
+        return It->second;
+    }
+    return nullptr;
+  };
+
+  for (BasicBlock &BB : *F) {
+    for (Instruction &I : BB) {
+      for (Use &U : I.operands()) {
+        if (Value *New = Find(U.get())) {
+          U.set(New);
+          Changed = true;
+        } else if (auto *CE = dyn_cast<ConstantExpr>(U.get());
+                   CE != nullptr and CE->isCast()) {
+          Value *Old = CE->getOperand(0);
+          if (Value *New = Find(Old)) {
+            // The constant expression might be used somewhere else: turn it
+            // into an instruction and replace Old there
+            Instruction *CastInst = CE->getAsInstruction();
+            CastInst->replaceUsesOfWith(Old, New);
+            CastInst->insertBefore(&I);
+            U.set(CastInst);
+            Changed = true;
+          }
+        }
+      }
+    }
+  }
+
+  return Changed;
+}
+
 inline llvm::Constant *toLLVMConstant(llvm::LLVMContext &Context,
                                       const llvm::APInt &Value) {
   using namespace llvm;
@@ -1582,6 +1632,21 @@ cloneFiltered(llvm::Module &Module,
 // Shortcut for the above with a set of functions to clone
 std::unique_ptr<llvm::Module>
 cloneFiltered(llvm::Module &Module, std::set<const llvm::Function *> &ToClone);
+
+/// Produce what `cloneFiltered` produces, for a caller that already knows
+/// which global variables and functions \p Action does not omit: only those
+/// are visited, so the cost does not depend on how many global values
+/// \p Module has.
+///
+/// \param Variables all the global variables for which \p Action does not
+///        return `Omit`, in the order they have in \p Module
+/// \param Functions the same, for the functions
+std::unique_ptr<llvm::Module>
+cloneSelected(llvm::Module &Module,
+              llvm::ArrayRef<const llvm::GlobalVariable *> Variables,
+              llvm::ArrayRef<const llvm::Function *> Functions,
+              llvm::function_ref<llvm::CloneAction(const llvm::GlobalValue *)>
+                Action);
 
 /// Serialize a module to bitcode, this is preferable over
 /// llvm::WriteBitcodeToFile as it does not create a redundant temporary buffer

@@ -331,8 +331,11 @@ public:
   private:
     SortedVector *SV = nullptr;
 
+    /// How many elements, which are sorted, there were before the batch
+    size_t OldSize = 0;
+
   public:
-    BatchInserterBase(SortedVector &SV) : SV(&SV) {
+    BatchInserterBase(SortedVector &SV) : SV(&SV), OldSize(SV.size()) {
       revng_assert(not SV.BatchInsertInProgress);
       SV.BatchInsertInProgress = true;
     }
@@ -342,11 +345,13 @@ public:
 
     BatchInserterBase(BatchInserterBase &&Other) {
       SV = Other.SV;
+      OldSize = Other.OldSize;
       Other.SV = nullptr;
     }
 
     BatchInserterBase &operator=(BatchInserterBase &&Other) {
       SV = Other.SV;
+      OldSize = Other.OldSize;
       Other.SV = nullptr;
     }
 
@@ -355,7 +360,7 @@ public:
     void commit() {
       if (SV != nullptr && SV->BatchInsertInProgress) {
         SV->BatchInsertInProgress = false;
-        SV->sort<EnsureUnique>();
+        SV->template sort<EnsureUnique>(OldSize);
       }
     }
 
@@ -439,15 +444,28 @@ private:
     return not compareKeys(LHS, RHS) and not compareKeys(RHS, LHS);
   }
 
+  /// \param Sorted how many elements, the first ones, are sorted already
   template<bool EnsureUnique>
-  void sort() {
+  void sort(size_t Sorted = 0) {
+    auto Middle = begin() + Sorted;
+    if (Middle == end())
+      return;
+
+    if constexpr (EnsureUnique)
+      std::sort(Middle, end(), compareElements);
+    else
+      std::stable_sort(Middle, end(), compareElements);
+
+    // The elements before the place of the first new one stay where they are
+    // and are smaller than all the new ones
+    auto First = std::lower_bound(begin(), Middle, *Middle, compareElements);
+    std::inplace_merge(First, Middle, end(), compareElements);
+
     if constexpr (EnsureUnique) {
-      std::sort(begin(), end(), compareElements);
-      revng_check(std::adjacent_find(begin(), end(), elementsEqual) == end(),
+      revng_check(std::adjacent_find(First, end(), elementsEqual) == end(),
                   "Multiples of the same element in a `SortedVector`.");
     } else {
-      std::stable_sort(begin(), end(), compareElements);
-      auto NewEnd = unique_last(begin(), end(), elementsEqual);
+      auto NewEnd = unique_last(First, end(), elementsEqual);
       TheVector.erase(NewEnd, end());
     }
   }

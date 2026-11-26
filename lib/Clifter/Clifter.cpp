@@ -829,6 +829,12 @@ private:
     if (SourceType == TargetType)
       return Value;
 
+    // The result of a cast has no qualifiers: what is declared `const`, such
+    // as a parameter, takes a value of the unqualified type
+    TargetType = removeConst(TargetType);
+    if (SourceType == TargetType)
+      return Value;
+
     auto SourceT = clift::unwrapped_dyn_cast<ValueType>(SourceType);
     if (not SourceT)
       return Value;

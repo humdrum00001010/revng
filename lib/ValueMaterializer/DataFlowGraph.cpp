@@ -330,8 +330,14 @@ DataFlowGraph::materializeImpl(DataFlowGraph::Node *N,
       if (not MaybeMaterialized)
         rc_return std::nullopt;
 
-      for (MaterializedValue &Value : *MaybeMaterialized)
+      // What an input brings is what the edge it comes through lets pass
+      auto RangeIt = N->IncomingRanges.find(Successor->Value);
+      for (MaterializedValue &Value : *MaybeMaterialized) {
+        if (RangeIt != N->IncomingRanges.end() and not Value.hasSymbol()
+            and not RangeIt->second.contains(ConstantRangeSet(Value.value())))
+          continue;
         Result.push_back(Value);
+      }
     }
 
   } else {

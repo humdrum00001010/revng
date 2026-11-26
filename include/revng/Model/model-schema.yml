@@ -882,6 +882,17 @@ definitions:
           type: SortedVector
           elementType: CallSitePrototype
 
+      - name: ResumeAddresses
+        doc: |-
+          Addresses of code of this function that no jump of the function
+          leads to: the code the function goes on with after an exception has
+          been handled. It is entered with the frame of the function as the
+          function left it where it saved its stack pointer in it, with the
+          register that holds the frame, and with no other register.
+        sequence:
+          type: SortedVector
+          elementType: MetaAddress
+
       - name: ExportedNames
         doc: |-
           The list of names used to make this function available as a dynamic
@@ -1123,6 +1134,16 @@ definitions:
       - name: IsTailCall
         doc: Whether this call site is a tail call or not.
         type: bool
+
+      - name: ElidedStackCleanup
+        doc: |-
+          The size of the arguments the caller pushes for this call that
+          neither it nor the callee removes from the stack: the code that
+          would remove them is not there, because the call does not return or
+          because the function sets its stack pointer again in another way
+          before it matters. From this call on the stack is as high as if
+          they had been removed.
+        type: uint64_t
 
       - name: Attributes
         doc: Attributes for this call site.

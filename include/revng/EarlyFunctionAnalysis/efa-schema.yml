@@ -75,6 +75,17 @@ definitions:
         type: MetaAddress
         doc: Address of the function this basic block has been inlined from
         default: ":Invalid"
+      - name: HasStackDepth
+        doc: Whether `StackDepth` is known
+        type: bool
+        default: false
+      - name: StackDepth
+        doc: |
+          How far below the value it has at the entry of the function the stack
+          pointer is at the start of this block, as proven by the analysis of
+          the function. Only meaningful if `HasStackDepth`.
+        type: uint64_t
+        default: 0
       - name: Successors
         doc: List of successor edges
         sequence:

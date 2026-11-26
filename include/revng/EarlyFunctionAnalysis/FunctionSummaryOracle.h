@@ -149,6 +149,10 @@ private:
   /// Local functions
   std::map<MetaAddress, FunctionSummary> LocalFunctions;
 
+  /// How many times what a local function removes from the stack has turned
+  /// out to be something else than what its callers were analyzed with
+  std::map<MetaAddress, unsigned> StackEffectChanges;
+
   /// Dynamic functions
   std::map<std::string, FunctionSummary> DynamicFunctions;
 
@@ -157,6 +161,8 @@ private:
 
 public:
   FunctionSummaryOracle() = delete;
+  const model::Binary &binary() const { return Binary; }
+
   FunctionSummaryOracle(const model::Binary &Binary,
                         PrototypeImporter Importer) :
     Binary(Binary), Importer(std::move(Importer)) {}

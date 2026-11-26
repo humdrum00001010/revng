@@ -59,9 +59,13 @@ void ValueMaterializer::computeOracleConstraints() {
     break;
 
   case Oracle::AdvancedValueInfo:
-    std::tie(OracleConstraints,
-             CFEG,
-             MFIResults) = runAVI(DataFlowGraph, Context, DT, LVI, DFRA, true);
+    std::tie(OracleConstraints, CFEG, MFIResults) = runAVI(DataFlowGraph,
+                                                           Context,
+                                                           DT,
+                                                           LVI,
+                                                           DFRA,
+                                                           true,
+                                                           Candidates);
     break;
 
   default:
@@ -177,6 +181,41 @@ void ValueMaterializer::applyOracleResultsToDataFlowGraph() {
       revng_abort("Unexpected value type");
     }
 
+    // What comes into a phi is, on each edge, what the condition of the jump
+    // taken there lets through. The check of the index of a table is often
+    // made on one path only, the others bringing constants: where the paths
+    // have joined it holds for nothing, and all of the table would be read.
+    if (auto *Phi = dyn_cast<PHINode>(V)) {
+      BasicBlock *To = Phi->getParent();
+      for (unsigned I = 0; I < Phi->getNumIncomingValues(); ++I) {
+        auto *Incoming = dyn_cast<Instruction>(Phi->getIncomingValue(I));
+        if (Incoming == nullptr or not Incoming->getType()->isIntegerTy())
+          continue;
+
+        BasicBlock *From = Phi->getIncomingBlock(I);
+        ConstantRangeSet Range = LVI.getConstantRangeOnEdge(Incoming,
+                                                            From,
+                                                            To,
+                                                            Context);
+        auto *Branch = dyn_cast<BranchInst>(From->getTerminator());
+        if (Branch != nullptr and Branch->isConditional()
+            and Branch->getSuccessor(0) != Branch->getSuccessor(1)) {
+          auto MaybeRange = DFRA.visit(*Branch->getCondition(), *Incoming);
+          if (MaybeRange.has_value()) {
+            if (Branch->getSuccessor(0) == To)
+              Range = Range & *MaybeRange;
+            else
+              Range = Range & ~*MaybeRange;
+          }
+        }
+
+        // The same value can come in through several edges
+        auto [It, IsNew] = Node->IncomingRanges.try_emplace(Incoming, Range);
+        if (not IsNew)
+          It->second = It->second | Range;
+      }
+    }
+
     // Refine the range of `and X, Mask` nodes with the exact set of values they
     // can produce (the sub-masks of Mask).
     if (auto MaskRange = subMaskRange(V)) {
@@ -214,12 +253,22 @@ void ValueMaterializer::computeSizeLowerBound() {
                                  or Opcode == Instruction::Sub
                                  or Opcode == Instruction::Shl);
       if (UseMaxOfSuccessors) {
-        // Use max of successors
+        // Use max of successors. What comes into a phi through an edge is
+        // no more than what that edge lets pass.
         revng_assert(SuccessorsCount > 0);
-        Node->SizeLowerBound = (*Node->successors().begin())->SizeLowerBound;
+        auto BoundOf = [Node](DataFlowGraph::Node *Successor) {
+          uint64_t Bound = Successor->SizeLowerBound;
+          auto It = Node->IncomingRanges.find(Successor->Value);
+          if (It != Node->IncomingRanges.end() and It->second.size().ult(Bound))
+            Bound = It->second.size().getLimitedValue();
+          return Bound;
+        };
+
+        Node->SizeLowerBound = BoundOf(*Node->successors().begin());
         for (auto *Successor : skip_front(Node->successors())) {
-          if (Successor->SizeLowerBound > Node->SizeLowerBound)
-            Node->SizeLowerBound = Successor->SizeLowerBound;
+          uint64_t Bound = BoundOf(Successor);
+          if (Bound > Node->SizeLowerBound)
+            Node->SizeLowerBound = Bound;
         }
       } else {
         // Compute the proudct of successors

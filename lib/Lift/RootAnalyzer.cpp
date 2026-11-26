@@ -253,8 +253,11 @@ public:
     // Configure ValueMaterializer
     switch (Type) {
     case TrackedInstructionType::WrittenInPC:
-      // We do not think it's beneficial to traverse more than one load
-      MaxLoad = 1;
+      // A jump table can be indexed through another table: compilers emit
+      // that for a `switch` whose cases share few targets, a table of bytes
+      // that tells which entry of the jump table each case takes. More than
+      // two loads are not deemed beneficial.
+      MaxLoad = 2;
       break;
     case TrackedInstructionType::LoadTarget:
     case TrackedInstructionType::StoreTarget:
@@ -618,17 +621,19 @@ RootAnalyzer::promoteCSVsToAlloca(Function *OptimizedFunction) {
   revng::IRBuilder AllocaBuilder(&*EntryBB->begin());
   revng::IRBuilder InitBuilder(EntryBB->getTerminator());
 
-  for (GlobalVariable *CSV : toSortedByName(CSVs)) {
+  auto SortedCSVs = toSortedByName(CSVs);
+  for (GlobalVariable *CSV : SortedCSVs) {
     Type *CSVType = CSV->getValueType();
-    auto *Alloca = AllocaBuilder.CreateAlloca(CSVType, nullptr, CSV->getName());
-    CSVMap[CSV] = Alloca;
-
-    // Replace all uses of the CSV within OptimizedFunction with the alloca
-    replaceAllUsesInFunctionWith(OptimizedFunction, CSV, Alloca);
-
-    // Initialize the alloca
-    InitBuilder.CreateStore(InitBuilder.createLoad(CSV), Alloca);
+    CSVMap[CSV] = AllocaBuilder.CreateAlloca(CSVType, nullptr, CSV->getName());
   }
+
+  // Replace all uses of the CSVs within OptimizedFunction with the allocas
+  replaceAllUsesInFunctionWith(OptimizedFunction, CSVMap);
+
+  // Initialize the allocas: these loads have to keep reading the CSVs, so
+  // they are emitted after the replacement
+  for (GlobalVariable *CSV : SortedCSVs)
+    InitBuilder.CreateStore(InitBuilder.createLoad(CSV), CSVMap[CSV]);
 
   return CSVMap;
 }

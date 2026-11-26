@@ -423,6 +423,18 @@ CPUStateUsageAnalysis::collectGlobalAUAResults(const llvm::Function &Function) {
   while (not Queue.empty()) {
     ++Iterations;
     const auto &[Current, FunctionsInStack] = Queue.pop_back_val();
+
+    // What a function that raises an exception does to the CPU state is not
+    // there to be seen where the helper returns normally: a division would
+    // otherwise count as writing every register an exception handler can
+    // touch, the frame pointer included.
+    const llvm::CallInst &CallSite = Current.callInstruction();
+    const llvm::Function *Called = getCalledFunction(&CallSite);
+    bool RaisesException = Called != nullptr
+                           and Called->getSection() == "revng_exceptional";
+    if (CallSite.doesNotReturn() or RaisesException)
+      continue;
+
     auto &Callee = Current.callee();
     auto &ActualArguments = Current.actualArguments();
     auto SimplifiedActualArguments = ActualArguments;

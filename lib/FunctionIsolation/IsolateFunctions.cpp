@@ -43,11 +43,13 @@
 #include "revng/Model/FunctionTags.h"
 #include "revng/Model/NameBuilder.h"
 #include "revng/Model/Register.h"
+#include "revng/Support/BlockType.h"
 #include "revng/Support/Debug.h"
 #include "revng/Support/EmitAbort.h"
 #include "revng/Support/IRBuilder.h"
 #include "revng/Support/IRHelpers.h"
 #include "revng/Support/MetaAddress.h"
+#include "revng/Support/NewPC.h"
 #include "revng/Support/SimplePassManager.h"
 
 // This name is not present after `enforce-abi`.
@@ -232,8 +234,12 @@ public:
                           const efa::CSVSet &ClobberedRegisters,
                           llvm::Value *SymbolNamePointer) final {
     revng_assert(SymbolNamePointer != nullptr);
-    if (not isa<ConstantPointerNull>(SymbolNamePointer))
-      handleCall(Builder, MetaAddress::invalid(), SymbolNamePointer);
+
+    // A jump that has been found to be a tail call is a call, whether it is
+    // to a dynamic function or through a pointer: the latter was not emitted
+    // at all, and the function then returned without having made it.
+    // handleCall does nothing where the block has no call edge.
+    handleCall(Builder, MetaAddress::invalid(), SymbolNamePointer);
   }
 
 private:
@@ -263,6 +269,14 @@ private:
     }
 
     StringRef SymbolName = extractFromConstantStringPtr(SymbolNamePointer);
+
+    // Where the code of the call does not say who is called, the function
+    // analysis can have found out: its graph says
+    if (SymbolName.empty() and Callee.isInvalid()) {
+      SymbolName = CallEdge->DynamicFunction();
+      Callee = CallEdge->Destination().notInlinedAddress();
+    }
+
     revng_assert(SymbolName == CallEdge->DynamicFunction());
 
     if (Callee != CallEdge->Destination().notInlinedAddress()) {
@@ -317,9 +331,10 @@ public:
   FunctionOutliner(llvm::Module &M,
                    const model::Binary &Binary,
                    RootFunction &Root,
-                   const CSVGlobals &Globals) :
+                   const CSVGlobals &Globals,
+                   efa::Outliner::ModuleState &State) :
     Oracle(FSOracle::importWithoutPrototypes(M, Globals, Binary)),
-    Outliner(M, Root, Globals, Oracle) {}
+    Outliner(M, Root, Globals, Oracle, State) {}
 
 public:
   efa::OutlinedFunction outline(MetaAddress Entry,
@@ -437,6 +452,13 @@ private:
 
   std::set<const llvm::GlobalVariable *> IgnorableGVs;
 
+  /// The global variables every clone gets: those that are defined and cannot
+  /// be ignored
+  std::vector<const llvm::GlobalVariable *> AlwaysClonedGVs;
+
+  /// The position of each global variable and function in the module
+  llvm::DenseMap<const llvm::GlobalValue *, size_t> Position;
+
 public:
   MinimalModuleCloner(const model::Binary &Binary, llvm::Module &Module) :
     Module(Module) {
@@ -470,6 +492,15 @@ public:
           or (FunctionTags::CSV.isTagOf(&GV) and not IsRegister(GV)))
         IgnorableGVs.insert(&GV);
     }
+
+    for (const llvm::GlobalVariable &GV : Module.globals()) {
+      Position[&GV] = Position.size();
+      if (not IgnorableGVs.contains(&GV) and not GV.isDeclaration())
+        AlwaysClonedGVs.push_back(&GV);
+    }
+
+    for (const llvm::Function &F : Module)
+      Position[&F] = Position.size();
   }
 
   std::unique_ptr<llvm::Module> cloneModule(llvm::Function &Function) {
@@ -527,7 +558,26 @@ public:
         return CloneAction::Clone;
       };
 
-    auto New = cloneFiltered(Module, ActionFunction);
+    // What ActionFunction does not omit, in the order it has in the module
+    std::vector<const llvm::GlobalVariable *> Variables(UsedGVs.begin(),
+                                                        UsedGVs.end());
+    llvm::append_range(Variables, AlwaysClonedGVs);
+    std::vector<const llvm::Function *> Functions(Visited.begin(),
+                                                  Visited.end());
+    llvm::append_range(Functions, CalledFunctions);
+
+    auto SortByPosition = [this](auto &Values) {
+      auto Before = [this](const llvm::GlobalValue *LHS,
+                           const llvm::GlobalValue *RHS) {
+        return Position.find(LHS)->second < Position.find(RHS)->second;
+      };
+      llvm::sort(Values, Before);
+      Values.erase(std::unique(Values.begin(), Values.end()), Values.end());
+    };
+    SortByPosition(Variables);
+    SortByPosition(Functions);
+
+    auto New = cloneSelected(Module, Variables, Functions, ActionFunction);
     revng::verify(New.get());
     return New;
   }
@@ -612,6 +662,7 @@ Isolate::Isolate(const class Model &Model,
   IsolatedFunctionType = createFunctionType<void>(Context);
   RootF.emplace(*ClonedModule);
   Globals.emplace(*Model.get().get(), *ClonedModule);
+  OutlinerState.emplace(*ClonedModule);
 
   auto SimpleFunctionType = createFunctionType<void>(Context);
   FunctionDispatcher = FunctionDispatcherHelper
@@ -642,6 +693,39 @@ Isolate::Isolate(const class Model &Model,
   }
 }
 
+/// Set the stack pointer, at the start of the blocks of \p F, to what the
+/// analysis of the function has proven it to be there. The steps that follow
+/// need not find it out again: they would have less to go by, since by then
+/// the direct accesses to the stack are not told apart from the others.
+static void restoreStackDepths(llvm::Function &F,
+                               const efa::ControlFlowGraph &FM,
+                               GlobalVariable *StackPointer) {
+  if (F.empty() or StackPointer == nullptr)
+    return;
+
+  revng::IRBuilder Builder(F.getContext());
+  Builder.setInsertPointToFirstNonAlloca(F);
+  auto *Initial = Builder.createLoad(StackPointer);
+
+  for (BasicBlock &BB : F) {
+    if (&BB == &F.getEntryBlock() or not isJumpTarget(&BB))
+      continue;
+
+    BasicBlockID ID = getBasicBlockID(&BB);
+    if (not ID.isValid())
+      continue;
+
+    auto It = FM.Blocks().find(ID);
+    if (It == FM.Blocks().end() or not It->HasStackDepth())
+      continue;
+
+    // After the marker the block begins with
+    Builder.SetInsertPoint(BB.getFirstNonPHI()->getNextNode());
+    auto *Depth = ConstantInt::get(Initial->getType(), It->StackDepth());
+    Builder.CreateStore(Builder.CreateSub(Initial, Depth), StackPointer);
+  }
+}
+
 Function *Isolate::isolateFunction(const efa::ControlFlowGraph &FM) {
   const MetaAddress Entry = FM.Entry();
   revng_assert(Entry.isValid());
@@ -661,12 +745,19 @@ Function *Isolate::isolateFunction(const efa::ControlFlowGraph &FM) {
 
   // Outline the function (later on we'll steal its body and move it into F)
   CallIsolatedFunction CallHandler(*this, FM);
-  FunctionOutliner Outliner(*ClonedModule, Binary, *RootF, *Globals);
+  FunctionOutliner Outliner(*ClonedModule,
+                            Binary,
+                            *RootF,
+                            *Globals,
+                            *OutlinerState);
   efa::OutlinedFunction Outlined = Outliner.outline(Entry, &CallHandler);
 
   handleUnexpectedPCCloned(Outlined);
 
   handleAnyPCJumps(Outlined, FM);
+
+  if (Outlined.Function)
+    restoreStackDepths(*Outlined.Function, FM, Globals->spReg());
 
   if (Outlined.Function)
     for (BasicBlock &BB : *Outlined.Function)
@@ -779,6 +870,7 @@ Isolate::~Isolate() {
 
   // Drop the `root` function's body to save memory, since we're done isolating
   T.advance("Cleanup", true);
+  OutlinerState.reset();
   deleteOnlyBody(*ClonedModule->getFunction("root"));
 
   // Before emitting it in output, verify the module

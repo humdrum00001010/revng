@@ -11,6 +11,7 @@
 #include "revng/BasicAnalyses/CSVGlobals.h"
 #include "revng/BasicAnalyses/RootFunction.h"
 #include "revng/EarlyFunctionAnalysis/CollectCFG.h"
+#include "revng/EarlyFunctionAnalysis/Outliner.h"
 #include "revng/Support/IRHelper.h"
 
 /// The function every indirect call is routed through
@@ -36,6 +37,9 @@ private:
   LLVMFunctionContainer &Output;
   std::optional<RootFunction> RootF;
   std::optional<CSVGlobals> Globals;
+
+  /// What the outliners of all the functions share
+  std::optional<efa::Outliner::ModuleState> OutlinerState;
   std::vector<IsolatedFunction> IsolatedFunctions;
 
   /// How many output modules still need the body of each isolated function

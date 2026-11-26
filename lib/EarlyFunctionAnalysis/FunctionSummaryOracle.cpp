@@ -76,6 +76,16 @@ FunctionSummaryOracle::getCallSite(MetaAddress Function,
                                    llvm::StringRef CalledSymbol) {
   auto &&[Summary, IsTailCall] = getExactCallSite(Function, CallerBlockAddress);
   if (Summary != nullptr) {
+    // What is recorded for a call site is what the callee does to the stack
+    // and to the registers there. That an imported function never returns is
+    // known of the function, wherever it is called: a record for the site
+    // does not take it away.
+    using model::FunctionAttribute::NoReturn;
+    if (not CalledSymbol.empty()
+        and Binary.ImportedDynamicFunctions().contains(CalledSymbol.str())
+        and getDynamicFunction(CalledSymbol).Attributes.contains(NoReturn))
+      Summary->Attributes.insert(NoReturn);
+
     return { Summary, IsTailCall };
   } else if (not CalledSymbol.empty()) {
     return { &getDynamicFunction(CalledSymbol), false };
@@ -123,6 +133,16 @@ bool FunctionSummaryOracle::registerLocalFunction(MetaAddress PC,
   if (not Changed) {
     auto &Recorded = It->second;
     Changed = not New.containedOrEqual(Recorded);
+
+    // What the function removes from the stack is part of what its callers
+    // were analyzed with: one that was analyzed before it, as happens where
+    // functions call each other, took what the default prototype says. A
+    // function whose answer keeps changing is not asked again forever.
+    constexpr unsigned MostChanges = 4;
+    if (New.ElectedFSO.has_value() and New.ElectedFSO != Recorded.ElectedFSO
+        and ++StackEffectChanges[PC] <= MostChanges)
+      Changed = true;
+
     New.combine(Recorded);
     Recorded = std::move(New);
   } else {
@@ -202,9 +222,17 @@ FunctionSummaryOracle::getExactCallSite(MetaAddress Entry,
       AttributesSet Attributes;
       for (auto &ToCopy : CallSite->Attributes())
         Attributes.insert(ToCopy);
+      FunctionSummary Summary = Importer.prototype(Attributes,
+                                                   CallSite->prototype());
+
+      // What the caller leaves on the stack without ever removing it is
+      // taken as removed
+      if (Summary.ElectedFSO.has_value())
+        *Summary.ElectedFSO += CallSite->ElidedStackCleanup();
+
       registerCallSite(Function.Entry(),
                        BasicBlockID(CallSite->CallerBlockAddress()),
-                       Importer.prototype(Attributes, CallSite->prototype()),
+                       std::move(Summary),
                        CallSite->IsTailCall());
     }
   }

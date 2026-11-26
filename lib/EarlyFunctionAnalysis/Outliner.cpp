@@ -2,8 +2,11 @@
 // This file is distributed under the MIT License. See LICENSE.md for details.
 //
 
+#include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/ADT/SCCIterator.h"
 #include "llvm/IR/GlobalValue.h"
+#include "llvm/IR/InstIterator.h"
+#include "llvm/IR/PatternMatch.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
@@ -17,6 +20,7 @@
 #include "revng/EarlyFunctionAnalysis/CallHandler.h"
 #include "revng/EarlyFunctionAnalysis/Outliner.h"
 #include "revng/Lift/Helpers.h"
+#include "revng/Model/FunctionTags.h"
 #include "revng/Model/IRHelpers.h"
 #include "revng/Support/BlockType.h"
 #include "revng/Support/EmitAbort.h"
@@ -125,6 +129,36 @@ bool OutlinedFunctionsMap::banRecursiveFunctions() {
   return Result;
 }
 
+llvm::CallInst *Outliner::stubOf(MetaAddress Callee) {
+  using namespace llvm;
+
+  if (Callee.isInvalid())
+    return nullptr;
+
+  auto [It, IsNew] = Stubs.try_emplace(Callee, nullptr);
+  if (not IsNew)
+    return It->second;
+
+  // One instruction, a jump, to what the lifter names as an imported function
+  llvm::BasicBlock *Entry = RootF.getBlockAt(Callee);
+  if (Entry == nullptr or getMarker(Entry, FunctionCallMarker) != nullptr)
+    return nullptr;
+
+  CallInst *JumpToSymbol = getMarker(Entry, JumpToSymbolMarker);
+  if (JumpToSymbol == nullptr)
+    return nullptr;
+
+  unsigned Instructions = 0;
+  for (Instruction &I : *Entry)
+    if (NewPCHelper.getCall(&I).has_value())
+      ++Instructions;
+  if (Instructions != 1)
+    return nullptr;
+
+  Stubs[Callee] = JumpToSymbol;
+  return JumpToSymbol;
+}
+
 void Outliner::integrateFunctionCallee(CallHandler *TheCallHandler,
                                        MetaAddress CallerFunction,
                                        llvm::BasicBlock *CallerBlock,
@@ -158,6 +192,26 @@ void Outliner::integrateFunctionCallee(CallHandler *TheCallHandler,
     SymbolNamePointer = CPN::get(Type::getInt8PtrTy(Context));
   }
 
+  // A call through a pointer whose callee is known all the same
+  if (ResolvedCallees != nullptr and FunctionCall != nullptr
+      and Callee.isInvalid() and not TargetIsSymbol) {
+    auto It = ResolvedCallees->find(CallerBlockAddress);
+    if (It != ResolvedCallees->end()) {
+      Callee = It->second.first;
+      if (not It->second.second.empty())
+        SymbolNamePointer = getUniqueString(&M, It->second.second);
+    }
+  }
+
+  // A call to a function that is only a jump to an imported one is a call to
+  // the imported one
+  if (FunctionCall != nullptr and not TargetIsSymbol) {
+    if (CallInst *Stub = stubOf(Callee)) {
+      Callee = MetaAddress::invalid();
+      SymbolNamePointer = Stub->getArgOperand(0);
+    }
+  }
+
   if (FunctionCall == nullptr)
     IsTailCall = true;
 
@@ -177,9 +231,6 @@ void Outliner::integrateFunctionCallee(CallHandler *TheCallHandler,
   bool IsInline = false;
   bool IsCallToUnexpected = false;
   if (FunctionCall != nullptr) {
-    auto *T = FunctionCall->getParent()->getTerminator();
-    BasicBlock *CalleeBlock = getFunctionCallCallee(T);
-
     using namespace model::FunctionAttribute;
     bool IsMarkedInline = Summary->Attributes.contains(HasOneBrokenReturn);
     bool IsCallingTheCaller = CallerFunction == Callee;
@@ -226,10 +277,11 @@ void Outliner::integrateFunctionCallee(CallHandler *TheCallHandler,
       // Inject the store
       std::string Name = ("opaque_"
                           + to_string(PointeeType->getIntegerBitWidth()));
-      auto *OpaqueReturnAddressFunction = OpaqueReturnAddress.get(PointeeType,
-                                                                  PointeeType,
-                                                                  {},
-                                                                  Name);
+      auto &Pool = State.OpaqueReturnAddress;
+      auto *OpaqueReturnAddressFunction = Pool.get(PointeeType,
+                                                   PointeeType,
+                                                   {},
+                                                   Name);
       Builder.CreateStore(Builder.CreateCall(OpaqueReturnAddressFunction),
                           Pointer);
     }
@@ -282,6 +334,20 @@ Outliner::outlineFunctionInternal(CallHandler *TheCallHandler,
   if (HasEntryBlock)
     Queue.insert(EntryBlock);
 
+  // The code the function goes on with after an exception is handled is
+  // part of it too, although nothing in the function jumps there
+  SmallVector<BasicBlock *, 2> ResumeBlocks;
+  const auto &Functions = Oracle.binary().Functions();
+  if (const model::Function *Function = Functions.tryGet(FunctionAddress)) {
+    for (const MetaAddress &Address : Function->ResumeAddresses()) {
+      BasicBlock *Block = RootF.getBlockAt(Address);
+      if (Block != nullptr and not is_contained(ResumeBlocks, Block)) {
+        ResumeBlocks.push_back(Block);
+        Queue.insert(Block);
+      }
+    }
+  }
+
   Queue.insert(AnyPCBB);
   Queue.insert(UnexpectedPCBB);
 
@@ -295,7 +361,7 @@ Outliner::outlineFunctionInternal(CallHandler *TheCallHandler,
     if (auto *FunctionCall = getMarker(Current, FunctionCallMarker)) {
       // Compute callee
       MetaAddress PCCallee = MetaAddress::invalid();
-      if (auto *Next = getFunctionCallCallee(Current))
+      if (auto *Next = getOnlyCallee(Current, Oracle.binary()))
         PCCallee = getBasicBlockAddress(Next);
 
       CallInst *JumpToSymbol = getMarker(Current, JumpToSymbolMarker);
@@ -340,6 +406,29 @@ Outliner::outlineFunctionInternal(CallHandler *TheCallHandler,
   //
   remapInstructionsInBlocks(BlocksToExtract, VMap);
 
+  // The block the function is resumed from: whoever handles the exception
+  // chooses where the function goes on. What leads to this block is added
+  // when the function is complete, see connectResumePoint.
+  if (not ResumeBlocks.empty()) {
+    LLVMContext &Context = M.getContext();
+    BasicBlock *Resume = BasicBlock::Create(Context, "resume", Root);
+    revng::IRBuilder Builder(Resume);
+    Function *Helper = exceptionHelper("revng_exception_resume", true);
+    SmallVector<Value *, 1> Arguments;
+    if (Helper->arg_size() == 1)
+      Arguments.push_back(Builder.createLoad(M.getGlobalVariable("_ebp",
+                                                                 true)));
+    auto *Selector = Builder.CreateCall(Helper, Arguments);
+    auto *Switch = Builder.CreateSwitch(Selector,
+                                        cast<BasicBlock>(VMap[ResumeBlocks[0]]),
+                                        ResumeBlocks.size() - 1);
+    for (unsigned I = 1; I < ResumeBlocks.size(); ++I)
+      Switch->addCase(Builder.getInt32(I),
+                      cast<BasicBlock>(VMap[ResumeBlocks[I]]));
+    BlocksToExtract.emplace_back(Resume);
+    OutlinedFunction.ResumeCloned = Resume;
+  }
+
   //
   // Switch successor of function calls from callee to fallthrough
   //
@@ -348,9 +437,10 @@ Outliner::outlineFunctionInternal(CallHandler *TheCallHandler,
     if (CallInst *FunctionCall = getMarker(BB, FunctionCallMarker)) {
       auto *Term = BB->getTerminator();
 
-      // If the function callee is null, we are dealing with an indirect call
+      // If the function callee is null and the call can go to more than one
+      // place, we are dealing with an indirect call
       MetaAddress PCCallee = MetaAddress::invalid();
-      if (BasicBlock *Next = getFunctionCallCallee(Term))
+      if (BasicBlock *Next = getOnlyCallee(Term, Oracle.binary()))
         PCCallee = getBasicBlockAddress(Next);
 
       CallToCallee[FunctionCall] = PCCallee;
@@ -409,7 +499,8 @@ Outliner::outlineFunctionInternal(CallHandler *TheCallHandler,
   }
 
   // Extract outlined function
-  llvm::Function *F = CodeExtractor(BlocksToExtract).extractCodeRegion(CEAC);
+  llvm::Function *F = CodeExtractor(BlocksToExtract)
+                        .extractCodeRegion(State.CEAC);
   F->addFnAttr(Attribute::NullPointerIsValid);
   OutlinedFunction.Function = UniqueValuePtr<llvm::Function>(F);
 
@@ -421,6 +512,46 @@ Outliner::outlineFunctionInternal(CallHandler *TheCallHandler,
   // Remove the only user (call to the outlined function) in `root`
   auto It = OutlinedFunction.Function->user_begin();
   cast<Instruction>(*It)->getParent()->eraseFromParent();
+
+  // The code does not go on after it raises an exception: what the lifter
+  // emits after such a call, a jump to wherever the program counter is left,
+  // is how the emulator resumes, not something the program does. Without this
+  // a software interrupt is a jump to an unknown place, and the bytes that pad
+  // the code, which are interrupts, lead into whatever follows them.
+  SmallVector<Instruction *, 4> Raising;
+  for (Instruction &I : llvm::instructions(F))
+    if (auto *Call = dyn_cast<CallInst>(&I))
+      if (const Function *Callee = getCalledFunction(Call))
+        if (FunctionTags::Exceptional.isTagOf(Callee))
+          Raising.push_back(Call);
+
+  for (Instruction *Call : Raising) {
+    BasicBlock *BB = Call->getParent();
+    BB->splitBasicBlock(Call->getNextNode());
+    Instruction *OldTerminator = BB->getTerminator();
+    new UnreachableInst(M.getContext(), BB);
+    eraseFromParent(OldTerminator);
+  }
+
+  if (not Raising.empty()) {
+    // `anypc` and `unexpectedpc` stay: they are looked for later on
+    df_iterator_default_set<BasicBlock *, 32> Reachable;
+    for (BasicBlock *Root : { &F->getEntryBlock(),
+                              OutlinedFunction.AnyPCCloned,
+                              OutlinedFunction.UnexpectedPCCloned,
+                              OutlinedFunction.ResumeCloned }) {
+      if (Root == nullptr or Root->getParent() != F)
+        continue;
+      for (BasicBlock *BB : depth_first_ext(Root, Reachable))
+        (void) BB;
+    }
+
+    SmallVector<BasicBlock *, 8> Dead;
+    for (BasicBlock &BB : *F)
+      if (not Reachable.contains(&BB))
+        Dead.push_back(&BB);
+    DeleteDeadBlocks(Dead);
+  }
 
   // Integrate function callee
   for (auto &BB : *OutlinedFunction.Function) {
@@ -621,9 +752,185 @@ OutlinedFunction Outliner::outline(const MetaAddress &Entry,
     }
   }
 
+  connectResumePoint(&Result);
+
   createAnyPCHooks(Handler, &Result);
 
   return Result;
+}
+
+llvm::Function *Outliner::exceptionHelper(llvm::StringRef Name, bool IsResume) {
+  using namespace llvm;
+
+  if (Function *Existing = M.getFunction(Name))
+    return Existing;
+
+  // Being resumed takes the frame of the function: what ran since the
+  // function saved its stack pointer changed what is in it, and that is not
+  // to be taken for what it was. Of the registers, the one that holds the
+  // frame is all the function can count on.
+  LLVMContext &Context = M.getContext();
+  Type *Int32 = Type::getInt32Ty(Context);
+  GlobalVariable *FramePointer = M.getGlobalVariable("_ebp", true);
+  SmallVector<Type *, 1> Parameters;
+  if (IsResume and FramePointer != nullptr)
+    Parameters.push_back(FramePointer->getValueType());
+  auto *Type = FunctionType::get(Int32, Parameters, false);
+  auto *Helper = Function::Create(Type, GlobalValue::ExternalLinkage, Name, &M);
+  FunctionTags::Helper.addTo(Helper);
+
+  QuickMetadata QMD(Context);
+  SmallVector<Metadata *, 16> Read;
+  SmallVector<Metadata *, 16> Written;
+  if (IsResume) {
+    for (GlobalVariable *CSV : Globals.abiRegisters())
+      if (CSV != nullptr and not Globals.isSPReg(CSV) and CSV != FramePointer)
+        Written.push_back(QMD.get(CSV->getName()));
+  }
+
+  auto Usage = [&QMD](ArrayRef<Metadata *> CSVs) {
+    return QMD.tuple({ QMD.get(uint32_t(0)), QMD.tuple(CSVs) });
+  };
+  Helper->setMetadata("revng.csvaccess.offsets.load", Usage(Read));
+  Helper->setMetadata("revng.csvaccess.offsets.store", Usage(Written));
+
+  return Helper;
+}
+
+std::pair<llvm::SmallVector<llvm::StoreInst *, 2>, int64_t>
+Outliner::stackPointerSaves(llvm::Function &F) const {
+  using namespace llvm;
+  using namespace llvm::PatternMatch;
+
+  GlobalVariable *StackPointer = Globals.spReg();
+  GlobalVariable *FramePointer = M.getGlobalVariable("_ebp", true);
+
+  // Where the function saves its stack pointer in its frame, in one of the
+  // two places the code that handles exceptions on 32-bit Windows restores
+  // it from: below the record of a C++ handler, and below that of a
+  // structured one. From there on the function can be resumed.
+  SmallVector<StoreInst *, 2> Anchors;
+  std::optional<int64_t> Offset;
+  if (FramePointer == nullptr)
+    return { Anchors, 0 };
+
+  for (Instruction &I : instructions(F)) {
+    auto *Store = dyn_cast<StoreInst>(&I);
+    if (Store == nullptr)
+      continue;
+
+    auto *Stored = dyn_cast<LoadInst>(Store->getValueOperand());
+    if (Stored == nullptr or Stored->getPointerOperand() != StackPointer)
+      continue;
+
+    Value *Address = nullptr;
+    if (not match(Store->getPointerOperand(), m_IntToPtr(m_Value(Address))))
+      continue;
+    if (auto *Extended = dyn_cast<ZExtInst>(Address))
+      Address = Extended->getOperand(0);
+
+    Value *Base = nullptr;
+    ConstantInt *Displacement = nullptr;
+    if (not match(Address, m_Add(m_Value(Base), m_ConstantInt(Displacement))))
+      continue;
+    auto *Frame = dyn_cast<LoadInst>(Base);
+    if (Frame == nullptr or Frame->getPointerOperand() != FramePointer)
+      continue;
+
+    int64_t Slot = Displacement->getSExtValue();
+    if (Slot != -0x10 and Slot != -0x18)
+      continue;
+
+    // Saved in two different places: neither is to be trusted
+    if (Offset.has_value() and *Offset != Slot)
+      return { {}, 0 };
+    Offset = Slot;
+    Anchors.push_back(Store);
+  }
+
+  return { Anchors, Offset.value_or(0) };
+}
+
+void Outliner::connectResumePoint(OutlinedFunction *Outlined) {
+  using namespace llvm;
+  using namespace llvm::PatternMatch;
+  using llvm::BasicBlock;
+
+  BasicBlock *Resume = Outlined->ResumeCloned;
+  if (Resume == nullptr)
+    return;
+
+  Function *F = Outlined->Function.get();
+  GlobalVariable *StackPointer = Globals.spReg();
+  GlobalVariable *FramePointer = M.getGlobalVariable("_ebp", true);
+  auto &&[Anchors, SlotOffset] = stackPointerSaves(*F);
+  std::optional<int64_t> Offset = SlotOffset;
+  bool IsUnique = true;
+
+  // Only where the function itself gets to counts: code it would be resumed
+  // at does not make a function one that can be resumed, and would be left
+  // with nothing leading to it from the entry
+  df_iterator_default_set<BasicBlock *, 32> FromEntry;
+  for (BasicBlock *BB : depth_first_ext(&F->getEntryBlock(), FromEntry))
+    (void) BB;
+  llvm::erase_if(Anchors, [&FromEntry](StoreInst *Anchor) {
+    return not FromEntry.contains(Anchor->getParent());
+  });
+
+  if (not IsUnique or Anchors.empty()) {
+    // Nothing leads to the code the function would be resumed at: it goes
+    // away, with whatever only it reaches
+    df_iterator_default_set<BasicBlock *, 32> Reachable;
+    for (BasicBlock *Root : { &F->getEntryBlock(),
+                              Outlined->AnyPCCloned,
+                              Outlined->UnexpectedPCCloned }) {
+      if (Root == nullptr or Root->getParent() != F)
+        continue;
+      for (BasicBlock *BB : depth_first_ext(Root, Reachable))
+        (void) BB;
+    }
+
+    SmallVector<BasicBlock *, 8> Dead;
+    for (BasicBlock &BB : *F)
+      if (not Reachable.contains(&BB))
+        Dead.push_back(&BB);
+    DeleteDeadBlocks(Dead);
+    Outlined->ResumeCloned = nullptr;
+    return;
+  }
+
+  // The function is resumed with the stack pointer it saved, and still
+  // finds it where it saved it
+  Instruction *Selector = nullptr;
+  for (Instruction &I : *Resume)
+    if (isa<CallInst>(&I))
+      Selector = &I;
+  revng_assert(Selector != nullptr);
+  revng::IRBuilder Builder(&Resume->front());
+  Type *StackPointerType = StackPointer->getValueType();
+  Value *Frame = Builder.createLoad(FramePointer);
+  Value *Address = Builder.CreateAdd(Frame,
+                                     ConstantInt::getSigned(Frame->getType(),
+                                                            *Offset));
+  Value *Slot = Builder.CreateIntToPtr(Builder.CreateZExt(Address,
+                                                          Builder.getInt64Ty()),
+                                       StackPointerType->getPointerTo());
+  Value *Saved = Builder.CreateLoad(StackPointerType, Slot);
+  Builder.SetInsertPoint(Selector->getNextNode());
+  Builder.CreateStore(Saved, Slot);
+  Builder.CreateStore(Saved, StackPointer);
+
+  for (StoreInst *Anchor : Anchors) {
+    BasicBlock *BB = Anchor->getParent();
+    BasicBlock *Rest = BB->splitBasicBlock(Anchor->getNextNode());
+    Instruction *OldTerminator = BB->getTerminator();
+    revng::IRBuilder Builder(OldTerminator);
+    Value *Caught = Builder.CreateCall(exceptionHelper("revng_exception_"
+                                                       "caught",
+                                                       false));
+    Builder.CreateCondBr(Builder.CreateIsNotNull(Caught), Resume, Rest);
+    eraseFromParent(OldTerminator);
+  }
 }
 
 llvm::Function *
@@ -678,6 +985,26 @@ Outliner::getCallSiteInfo(MetaAddress CallerFunction,
   if (JumpToSymbol != nullptr) {
     // The target is a symbol
     CalledSymbol = extractFromConstantStringPtr(JumpToSymbol->getArgOperand(0));
+  }
+
+  // A call through a pointer whose callee is known all the same
+  if (ResolvedCallees != nullptr and FunctionCall != nullptr
+      and Callee.isInvalid() and CalledSymbol.empty()
+      and not CallSiteAddress.isInlined()) {
+    auto It = ResolvedCallees->find(CallSiteAddress.start());
+    if (It != ResolvedCallees->end()) {
+      Callee = It->second.first;
+      CalledSymbol = It->second.second;
+    }
+  }
+
+  // A call to a function that is only a jump to an imported one is a call to
+  // the imported one
+  if (FunctionCall != nullptr and CalledSymbol.empty()) {
+    if (CallInst *Stub = stubOf(Callee)) {
+      Callee = MetaAddress::invalid();
+      CalledSymbol = extractFromConstantStringPtr(Stub->getArgOperand(0));
+    }
   }
 
   return Oracle.getCallSite(CallerFunction,

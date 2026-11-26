@@ -6,6 +6,7 @@ revng_add_analyses_library_internal(
   revngPromoteStackPointer
   CleanupStackSizeMarkersPass.cpp
   ComputeStackAccessesBoundsPass.cpp
+  DetachStackAllocationsPass.cpp
   DetectStackSize.cpp
   InstrumentStackAccessesPass.cpp
   InjectStackSizeProbesAtCallSites.cpp

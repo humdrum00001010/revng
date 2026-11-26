@@ -74,6 +74,10 @@ private:
 
   mutable bool TrackingIsActive = false;
 
+  /// Whether this container is in `revng::AccessLog` for a key that was looked
+  /// up since the keys were last dropped
+  mutable bool KeyLookupLogged = false;
+
 public:
   /// \defgroup Methods related to tracking
   /// @{
@@ -81,11 +85,17 @@ public:
   void stopTracking() const { TrackingIsActive = false; }
   void clearTracking() const {
     Exact.clear();
+    dropInspectedKeys();
+    TrackingIsActive = true;
+  }
+
+  /// Forget the keys that were looked up, in all the layers
+  void dropInspectedKeys() const {
     NonExisting = {};
     NonExisting.push_back(TrackingSet());
     Existing = {};
     Existing.push_back(llvm::BitVector(Content.size()));
-    TrackingIsActive = true;
+    KeyLookupLogged = false;
   }
 
   TrackingResult getTrackingResult() const {
@@ -340,7 +350,7 @@ public:
       return Quantity;
 
     if (Quantity == 0) {
-      NonExisting.back().insert(Key);
+      markNonExistingKey(Key);
     } else {
       markExistingKey(Key);
     }
@@ -353,7 +363,7 @@ public:
     auto Iter = Content.find(Key);
     if (Iter == Content.end()) {
       if (TrackingIsActive)
-        NonExisting.back().insert(Key);
+        markNonExistingKey(Key);
       return nullptr;
     }
 
@@ -368,7 +378,7 @@ public:
     auto Iter = Content.find(Key);
     if (Iter == Content.end()) {
       if (TrackingIsActive)
-        NonExisting.back().insert(Key);
+        markNonExistingKey(Key);
       return nullptr;
     }
 
@@ -463,6 +473,19 @@ private:
     revng_assert(Existing.back().size() == Content.size());
 
     Existing.back()[std::distance(Content.begin(), Iter)] = true;
+    logKeyLookup();
+  }
+
+  void markNonExistingKey(const key_type &Key) const {
+    NonExisting.back().insert(Key);
+    logKeyLookup();
+  }
+
+  void logKeyLookup() const {
+    if (not KeyLookupLogged and AccessLog != nullptr) {
+      KeyLookupLogged = true;
+      AccessLog->push_back(&Exact);
+    }
   }
 
   TrackingSet getNonExistingRequestedKeys() const {
@@ -477,9 +500,7 @@ private:
     TrackingSet Set;
     for (auto &BitVector : Existing) {
       revng_assert(Content.size() == BitVector.size());
-      for (size_t I = 0; I < Content.size(); I++) {
-        if (not BitVector[I])
-          continue;
+      for (unsigned I : BitVector.set_bits()) {
         using KOT = KeyedObjectTraits<value_type>;
         Set.insert(KOT::key(*std::next(Content.begin(), I)));
       }

@@ -121,6 +121,61 @@ getRangeFromInequality(const llvm::APInt &C1,
   return Result;
 }
 
+/// \return the value of \p V when \p Variable is \p X, if \p V is computed from
+///         \p Variable alone through casts, arithmetic and comparisons with
+///         constants.
+static std::optional<llvm::APInt> evaluateFor(llvm::Value &V,
+                                              llvm::Value &Variable,
+                                              const llvm::APInt &X,
+                                              unsigned Depth) {
+  using namespace llvm;
+
+  if (&V == &Variable)
+    return X;
+
+  if (auto *Constant = dyn_cast<ConstantInt>(&V))
+    return Constant->getValue();
+
+  constexpr unsigned MaxDepth = 8;
+  auto *I = dyn_cast<Instruction>(&V);
+  if (I == nullptr or Depth > MaxDepth or not I->getType()->isIntegerTy())
+    return std::nullopt;
+
+  SmallVector<APInt, 2> Operands;
+  for (Value *Operand : I->operands()) {
+    auto MaybeValue = evaluateFor(*Operand, Variable, X, Depth + 1);
+    if (not MaybeValue.has_value())
+      return std::nullopt;
+    Operands.push_back(*MaybeValue);
+  }
+
+  unsigned Width = I->getType()->getIntegerBitWidth();
+  switch (I->getOpcode()) {
+  case Instruction::ZExt:
+    return Operands[0].zext(Width);
+  case Instruction::SExt:
+    return Operands[0].sext(Width);
+  case Instruction::Trunc:
+    return Operands[0].trunc(Width);
+  case Instruction::Add:
+    return Operands[0] + Operands[1];
+  case Instruction::Sub:
+    return Operands[0] - Operands[1];
+  case Instruction::And:
+    return Operands[0] & Operands[1];
+  case Instruction::Or:
+    return Operands[0] | Operands[1];
+  case Instruction::Xor:
+    return Operands[0] ^ Operands[1];
+  case Instruction::ICmp: {
+    auto Predicate = cast<ICmpInst>(I)->getPredicate();
+    return APInt(1, ICmpInst::compare(Operands[0], Operands[1], Predicate));
+  }
+  default:
+    return std::nullopt;
+  }
+}
+
 namespace revng::detail {
 
 class Visitor {
@@ -295,6 +350,28 @@ revng::detail::Visitor::visit(llvm::Value &Constraint) {
                      getRangeFromInequality(Addend->getValue(),
                                             Predicate,
                                             Bound->getValue()));
+  }
+
+  // Handle any condition computed from a narrow variable, such as a byte read
+  // from memory, through casts and arithmetic with constants: the optimizer
+  // leaves many forms of `zext(x) - 4 < 5`, in types wider than that of x. A
+  // byte has few values: try them all.
+  unsigned VariableWidth = Variable.getType()->getIntegerBitWidth();
+  if (VariableWidth <= 8 and isa<ICmpInst>(Constraint)) {
+    ConstantRangeSet Result = ConstantRange::getEmpty(VariableWidth);
+    bool IsKnown = true;
+    for (uint64_t X = 0; IsKnown and X < (1ULL << VariableWidth); ++X) {
+      APInt Value(VariableWidth, X);
+      auto MaybeHolds = evaluateFor(Constraint, Variable, Value, 0);
+      IsKnown = MaybeHolds.has_value();
+      if (IsKnown and not MaybeHolds->isZero())
+        Result = Result | ConstantRangeSet(ConstantRange(Value));
+    }
+
+    if (IsKnown) {
+      revng_log(Log, "Handling a condition on a narrow variable");
+      rc_return record(Constraint, std::move(Result));
+    }
   }
 
   // Handle x - 4, i.e., x - 4 != 0, i.e., x != 4

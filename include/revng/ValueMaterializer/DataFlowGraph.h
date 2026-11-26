@@ -25,6 +25,12 @@ public:
 public:
   llvm::Value *Value = nullptr;
   std::optional<ConstantRangeSet> OracleRange;
+
+  /// For a phi: what each incoming value can be on the edges it comes in
+  /// through. A check made on one of the paths that join does not hold after
+  /// the join, where OracleRange is taken, but it does hold for what that
+  /// path brings.
+  std::map<llvm::Value *, ConstantRangeSet> IncomingRanges;
   uint64_t SizeLowerBound = 1;
   bool UseOracle = false;
 
@@ -58,6 +64,15 @@ public:
         Stream << "full set";
       else
         OracleRange->dump(Stream, aviFormatter);
+      Stream << "\n";
+    }
+
+    for (const auto &[Incoming, Range] : IncomingRanges) {
+      Stream << Prefix.str() << "Incoming " << getName(Incoming) << ": ";
+      if (Range.isFullSet())
+        Stream << "full set";
+      else
+        Range.dump(Stream, aviFormatter);
       Stream << "\n";
     }
 

@@ -26,6 +26,50 @@ void ControlFlowEdgesGraph::dump() const {
 
 using BlockSet = SmallPtrSetImpl<BasicBlock *>;
 
+/// \return the successors of \p BB that are in \p NodeSet, in the order, and
+///         as many times as, \p BB has them.
+static SmallVector<BasicBlock *, 8> successorsIn(BasicBlock *BB,
+                                                 const BlockSet &NodeSet) {
+  SmallVector<BasicBlock *, 8> Result;
+
+  // The dispatcher of `root` is a switch with one successor per jump target:
+  // instead of looking for each of them in NodeSet, look for the switch among
+  // the uses of the blocks in NodeSet, unless those turn out to be more.
+  constexpr unsigned ManySuccessors = 64;
+  auto *Switch = dyn_cast<SwitchInst>(BB->getTerminator());
+  if (Switch != nullptr and Switch->getNumSuccessors() > ManySuccessors) {
+    SmallVector<unsigned, 8> Indices;
+    unsigned Uses = 0;
+    for (BasicBlock *Successor : NodeSet) {
+      for (const Use &U : Successor->uses()) {
+        ++Uses;
+        if (U.getUser() == Switch) {
+          // The operands of a switch are the condition, the default
+          // destination and then a value and a destination for each case
+          revng_assert(U.getOperandNo() % 2 == 1);
+          Indices.push_back((U.getOperandNo() - 1) / 2);
+        }
+      }
+
+      if (Uses > Switch->getNumSuccessors())
+        break;
+    }
+
+    if (Uses <= Switch->getNumSuccessors()) {
+      llvm::sort(Indices);
+      for (unsigned Index : Indices)
+        Result.push_back(Switch->getSuccessor(Index));
+      return Result;
+    }
+  }
+
+  for (BasicBlock *Successor : successors(BB))
+    if (NodeSet.contains(Successor))
+      Result.push_back(Successor);
+
+  return Result;
+}
+
 ControlFlowEdgesGraph
 ControlFlowEdgesGraph::fromNodeSet(const BlockSet &NodeSet) {
   using namespace llvm;
@@ -45,13 +89,11 @@ ControlFlowEdgesGraph::fromNodeSet(const BlockSet &NodeSet) {
     // Get/create node for block
     Node *Source = GetNode(BB);
 
-    for (BasicBlock *Destination : successors(BB)) {
-      if (NodeSet.contains(Destination)) {
-        // Create node representing the edge on the CFG and connect it
-        Node *EdgeNode = Result.addNode(BB, Destination);
-        Source->addSuccessor(EdgeNode);
-        EdgeNode->addSuccessor(GetNode(Destination));
-      }
+    for (BasicBlock *Destination : successorsIn(BB, NodeSet)) {
+      // Create node representing the edge on the CFG and connect it
+      Node *EdgeNode = Result.addNode(BB, Destination);
+      Source->addSuccessor(EdgeNode);
+      EdgeNode->addSuccessor(GetNode(Destination));
     }
   }
 

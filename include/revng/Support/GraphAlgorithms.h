@@ -5,11 +5,13 @@
 //
 
 #include <algorithm>
+#include <limits>
 #include <ranges>
 #include <set>
 #include <vector>
 
 #include "llvm/ADT/BreadthFirstIterator.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/ADT/GraphTraits.h"
 #include "llvm/ADT/MapVector.h"
@@ -20,6 +22,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/SmallVector.h"
 
 #include "revng/Support/Debug.h"
 
@@ -283,12 +286,16 @@ bool hasSuccessor(GraphT Pred, GraphT Succ) {
 /// the `Source` node, stopping at the `Stop` node.
 /// \param Source The node where the DFS starts from
 /// \param Stop The node where the DFS should stop, if present
+/// \param MaxSize The DFS is abandoned as soon as it has found more nodes than
+///        this
 /// \return Note that the return value is a `SmallSetVector`, so we have
 ///         additional guarantees about the deterministic iteration order over
 ///         the returned set
 template<class GraphT, class GT>
 llvm::SmallSetVector<typename llvm::GraphTraits<GraphT>::NodeRef, 4>
-findReachableNodesImpl(GraphT Source, GraphT Stop = nullptr) {
+findReachableNodesImpl(GraphT Source,
+                       GraphT Stop = nullptr,
+                       size_t MaxSize = std::numeric_limits<size_t>::max()) {
   using NodeRef = typename GT::NodeRef;
 
   using SmallSetVector = llvm::SmallSetVector<NodeRef, 4>;
@@ -310,6 +317,8 @@ findReachableNodesImpl(GraphT Source, GraphT Stop = nullptr) {
 
   for (NodeRef Block : llvm::make_range(Begin, End)) {
     DFSNodes.insert(Block);
+    if (DFSNodes.size() > MaxSize)
+      break;
   }
 
   return DFSNodes;
@@ -343,13 +352,48 @@ nodesBetweenImpl(GraphT Source, GraphT Target) {
   SmallSetVector ForwardDFSNodes = findReachableNodes<NodeRef, FGT>(Source,
                                                                     Target);
 
-  // Perform the backward DFS visit, stopping at the `Source` node
-  SmallSetVector BackwardDFSNodes = findReachableNodes<NodeRef, BGT>(Target,
-                                                                     Source);
+  // Perform the backward DFS visit, stopping at the `Source` node. It can
+  // reach everything `Target` is reachable from, as much as the whole graph,
+  // so it is abandoned as soon as it is larger than the forward one.
+  size_t ForwardSize = ForwardDFSNodes.size();
+  auto BackwardDFSNodes = findReachableNodesImpl<NodeRef, BGT>(Target,
+                                                               Source,
+                                                               ForwardSize);
 
-  // Perform the set intersection between the forward and backward set nodes
-  SmallSetVector Result = llvm::set_intersection(ForwardDFSNodes,
-                                                 BackwardDFSNodes);
+  SmallSetVector Result;
+  if (BackwardDFSNodes.size() <= ForwardSize) {
+    // Perform the set intersection between the forward and backward set nodes
+    Result = llvm::set_intersection(ForwardDFSNodes, BackwardDFSNodes);
+  } else {
+    // The intersection lists the nodes of the smaller set, here the forward
+    // one, that are in the other, the nodes `Target` is reachable from without
+    // going through `Source`. Every node on a path from a node of the forward
+    // set to `Target` is in the forward set too, so they can be found going
+    // backward from `Target` along the edges the forward visit crossed.
+    llvm::DenseMap<NodeRef, llvm::SmallVector<NodeRef, 2>> Predecessors;
+    for (NodeRef Node : ForwardDFSNodes)
+      if (Node != Source)
+        for (NodeRef Successor : graph_successors<NodeRef, FGT>(Node))
+          if (Successor == Target
+              or (Successor != Source and ForwardDFSNodes.contains(Successor)))
+            Predecessors[Successor].push_back(Node);
+
+    llvm::SmallSet<NodeRef, 8> ReachTarget;
+    llvm::SmallVector<NodeRef, 8> WorkList = { Target };
+    while (not WorkList.empty()) {
+      auto It = Predecessors.find(WorkList.pop_back_val());
+      if (It == Predecessors.end())
+        continue;
+
+      for (NodeRef Predecessor : It->second)
+        if (ReachTarget.insert(Predecessor).second)
+          WorkList.push_back(Predecessor);
+    }
+
+    for (NodeRef Node : ForwardDFSNodes)
+      if (ReachTarget.contains(Node))
+        Result.insert(Node);
+  }
 
   // Corner case handling
   if (not Result.empty()) {

@@ -92,6 +92,10 @@ public:
     return hasNaturalAlignment(Type, Cache);
   }
 
+  /// \return whether the alignment of \p Type can be computed at all: the
+  ///         other functions here abort if it cannot.
+  bool canBeAligned(const model::TypeDefinition &Type) const;
+
   std::optional<uint64_t> alignment(const model::Type &Type,
                                     AlignmentCache &Cache) const;
   std::optional<uint64_t> alignment(const model::TypeDefinition &Type,

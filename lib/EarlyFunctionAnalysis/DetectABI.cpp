@@ -19,6 +19,7 @@
 #include "llvm/Support/GraphWriter.h"
 #include "llvm/Transforms/Utils/Mem2Reg.h"
 
+#include "revng/ABI/FunctionType/Conversion.h"
 #include "revng/ABI/FunctionType/Layout.h"
 #include "revng/ADT/Queue.h"
 #include "revng/BasicAnalyses/CSVGlobals.h"
@@ -145,6 +146,10 @@ private:
   CallGraph ApproximateCallGraph;
   BasicBlockToNodeMap BasicBlockNodeMap;
 
+  /// Whether each function that has been looked at saves its stack pointer
+  /// in its frame, see CFGAnalyzer::savesStackPointer
+  std::map<MetaAddress, bool> SavesStackPointer;
+
 public:
   DetectABI(llvm::Module &M,
             RootFunction &Root,
@@ -197,9 +202,80 @@ public:
     propagatePrototypes();
   }
 
+  /// Code no function reaches, right after a block of a function, is most
+  /// often where that function goes on after an exception is handled.
+  /// If the function, analyzed as being resumed there, still makes sense, the
+  /// code is its own; otherwise it is left to become a function.
+  ///
+  /// To be called on an object of its own, made after `run` has written the
+  /// model: the functions are analyzed again with what the model says about
+  /// them and their call sites, as every later step does.
+  void attachResumeBlocks();
+
+  /// Offer to the functions found before them the functions that were made
+  /// since \p Before was taken and that do not leave as functions do. To be
+  /// called as attachResumeBlocks.
+  void reattachFunctions(const std::set<MetaAddress> &Before);
+
+  /// Where a function has something left unexplained, see whether a caller
+  /// that left out the code that removes the arguments of a call explains
+  /// it, and say so at that call site. To be called as attachResumeBlocks.
+  ///
+  /// \return the functions that turn out to leave in another way than the
+  ///         model says: those that return after all, or remove another
+  ///         amount from the stack. What the model says about them, and
+  ///         about the functions that call them, was found with that.
+  std::vector<MetaAddress> inferElidedCleanups();
+
+  /// What an imported function removes from the stack is the same wherever
+  /// it is called. Where the model has no prototype for one and the records
+  /// of its call sites, taken together, say what it removes, give it a
+  /// prototype that says so. To be called as attachResumeBlocks.
+  ///
+  /// \return the functions that call such a function and were analyzed with
+  ///         something else for it: what the model says about them, and
+  ///         about the functions that call them, was found with that.
+  std::vector<MetaAddress> electImportPrototypes();
+
+  /// Make the model forget what detect-abi found about \p Functions and
+  /// about the functions that call them, directly or not: their prototype,
+  /// their attributes and what it said about their call sites, except the
+  /// clean-ups left out. They are analyzed again by the next \ref run.
+  void forgetWithCallers(const std::vector<MetaAddress> &Functions);
+
 private:
   void computeApproximateCallGraph();
   void preliminaryFunctionAnalysis();
+
+  bool tryToAttach(model::Function &Function, const MetaAddress &Address);
+
+  /// Whose the code is
+  struct Ownership {
+    /// The functions each block belongs to, by where the block starts
+    std::map<MetaAddress, llvm::SmallVector<MetaAddress, 1>> Owners;
+
+    /// Where the last block of each function starts
+    std::map<MetaAddress, MetaAddress> LastBlock;
+
+    /// Where each block ends, by where it starts
+    std::map<MetaAddress, MetaAddress> End;
+
+    /// How long the longest block is: no block that starts further before an
+    /// address than this contains it
+    uint64_t LongestBlock = 0;
+
+    /// The code no function has: where a function that has not been found
+    /// yet can be
+    std::set<MetaAddress> Unowned;
+
+    /// Whether what follows a function may be offered to more than the
+    /// nearest function that can be resumed
+    bool OnlyNearest = false;
+  };
+  Ownership
+  ownersOfBlocks(llvm::function_ref<bool(const model::Function &)> IsOwner);
+  void addBlocksOf(Ownership &Whose, const MetaAddress &Function);
+  bool offer(const MetaAddress &Candidate, Ownership &Whose);
   void analyzeABI();
   Changes analyzeFunctionABI(const model::Function &Function,
                              OutlinedFunction &OutlinedFunction,
@@ -213,7 +289,10 @@ private:
   void propagatePrototypes();
 
   /// Propagate prototypes to callers
-  void propagatePrototypesInFunction(model::Function &Function);
+  /// \param NamesAreDeduplicated whether the names in the model have been
+  ///        deduplicated and nothing has changed since
+  void propagatePrototypesInFunction(model::Function &Function,
+                                     bool &NamesAreDeduplicated);
 
 private:
   /// Record in \p Inserter the registers whose lowest CSV is in \p CSVs.
@@ -232,6 +311,28 @@ private:
   model::UpcastableType
   buildPrototypeForIndirectCall(const FunctionSummary &CallerSummary,
                                 const efa::BasicBlock &CallerBlock);
+
+  /// \return the default prototype with \p FinalStackOffset as its final stack
+  ///         offset, or an empty type if that is the one it has
+  model::UpcastableType defaultPrototypeRemoving(int64_t FinalStackOffset);
+
+  /// \return a prototype of its own for an imported function that removes
+  ///         \p FinalStackOffset: the default one with that final stack
+  ///         offset and the stack arguments that says it has
+  model::UpcastableType importPrototypeRemoving(int64_t FinalStackOffset);
+
+  /// A callee that removes more from the stack than its return address
+  /// removes its arguments: they are those bytes. Give \p Prototype, which
+  /// removes \p FinalStackOffset where a callee that leaves its arguments
+  /// removes \p DefaultOffset, the stack arguments that says it has.
+  void setRemovedStackArguments(model::RawFunctionDefinition &Prototype,
+                                int64_t FinalStackOffset,
+                                int64_t DefaultOffset);
+
+private:
+  /// The copies of the default prototype \ref defaultPrototypeRemoving made,
+  /// by their final stack offset
+  std::map<int64_t, model::TypeDefinition::Key> DefaultPrototypeCopies;
 };
 
 void DetectABI::computeApproximateCallGraph() {
@@ -263,7 +364,7 @@ void DetectABI::computeApproximateCallGraph() {
 
       if (hasMarker(Current, FunctionCallMarker)) {
         // If not an indirect call, add the node to the CG
-        if (BasicBlock *Callee = getFunctionCallCallee(Current)) {
+        if (BasicBlock *Callee = getOnlyCallee(Current, *Binary)) {
           BasicBlockNode *GraphNode = nullptr;
           auto It = BasicBlockNodeMap.find(Callee);
           if (It != BasicBlockNodeMap.end()) {
@@ -300,8 +401,12 @@ void DetectABI::computeApproximateCallGraph() {
   BasicBlockNode *RootNode = ApproximateCallGraph.addNode(MetaAddress());
   ApproximateCallGraph.setEntryNode(RootNode);
 
-  for (const auto &[_, Node] : BasicBlockNodeMap)
-    RootNode->addSuccessor(Node);
+  // The order of the successors of the root node is the order in which the
+  // functions are analyzed: follow the model, not the addresses of the blocks
+  for (const auto &Function : Binary->Functions()) {
+    auto *Entry = Root.getBlockAt(Function.Entry());
+    RootNode->addSuccessor(BasicBlockNodeMap[Entry]);
+  }
 
   // Dump the call-graph, if requested
   if (CallGraphOutputPath.getNumOccurrences() == 1) {
@@ -310,6 +415,722 @@ void DetectABI::computeApproximateCallGraph() {
     revng_assert(!EC);
     llvm::WriteGraph(OutputCG, &ApproximateCallGraph);
   }
+}
+
+/// The code at \p Entry is what another function is resumed at: forget the
+/// function that was made of it. (A function of its own: what is dropped can
+/// be watched from a debugger.)
+[[gnu::noinline]] static void
+dropFunctionNowPartOfAnother(model::Binary &Binary, const MetaAddress &Entry) {
+  Binary.Functions().erase(Entry);
+}
+
+void DetectABI::forgetWithCallers(const std::vector<MetaAddress> &Functions) {
+  // Who calls whom, from the blocks of the functions
+  std::map<MetaAddress, std::set<MetaAddress>> Callers;
+  for (const model::Function &Function : Binary->Functions())
+    for (const efa::BasicBlock &Block :
+         FMC.getControlFlowGraph(Function.Entry()).Blocks())
+      for (const auto &Edge : Block.Successors())
+        if (const auto *Call = llvm::dyn_cast<efa::CallEdge>(Edge.get()))
+          if (Call->Destination().isValid())
+            Callers[Call->Destination().notInlinedAddress()]
+              .insert(Function.Entry());
+
+  OnceQueue<MetaAddress> Queue;
+  for (const MetaAddress &Entry : Functions)
+    Queue.insert(Entry);
+  while (not Queue.empty()) {
+    MetaAddress Entry = Queue.pop();
+    auto It = Callers.find(Entry);
+    if (It != Callers.end())
+      for (const MetaAddress &Caller : It->second)
+        Queue.insert(Caller);
+  }
+
+  for (const MetaAddress &Entry : Queue.visited()) {
+    model::Function &Function = Binary->Functions().at(Entry);
+    Function.Prototype() = model::UpcastableType();
+    Function.Attributes().erase(model::FunctionAttribute::NoReturn);
+    Function.Comments().clear();
+
+    std::vector<MetaAddress> ToForget;
+    for (const model::CallSitePrototype &CallSite :
+         Function.CallSitePrototypes())
+      if (CallSite.ElidedStackCleanup() == 0)
+        ToForget.push_back(CallSite.CallerBlockAddress());
+    for (const MetaAddress &Block : ToForget)
+      Function.CallSitePrototypes().erase(Block);
+  }
+}
+
+std::vector<MetaAddress> DetectABI::inferElidedCleanups() {
+  std::vector<MetaAddress> Changed;
+  for (model::Function &Function : Binary->Functions()) {
+    if (Function.Prototype().isEmpty())
+      continue;
+
+    // Only the functions with something left to explain: a jump to nowhere,
+    // or a block where the height of the stack is not known
+    MetaAddress Entry = Function.Entry();
+    bool HasLeftover = false;
+    for (const efa::BasicBlock &Block :
+         FMC.getControlFlowGraph(Entry).Blocks()) {
+      if (not Block.ID().isInlined() and Block.ID().start() != Entry
+          and not Block.HasStackDepth())
+        HasLeftover = true;
+      for (const auto &Edge : Block.Successors())
+        if (Edge->Type() == efa::FunctionEdgeType::LongJmp)
+          HasLeftover = true;
+    }
+    if (not HasLeftover)
+      continue;
+
+    std::map<MetaAddress, uint64_t> Found;
+    auto New = Analyzer.analyzeElidedCleanups(Entry, Found);
+    if (not New.has_value())
+      continue;
+
+    for (const efa::BasicBlock &Block : New->CFG) {
+      if (Block.ID().isInlined())
+        continue;
+      MetaAddress BlockAddress = Block.ID().notInlinedAddress();
+      auto FoundIt = Found.find(BlockAddress);
+      if (FoundIt == Found.end())
+        continue;
+
+      for (const auto &Edge : Block.Successors()) {
+        const auto *CE = llvm::dyn_cast<efa::CallEdge>(Edge.get());
+        if (CE == nullptr)
+          continue;
+
+        // The call site is the callee's, with what the caller left out
+        const model::TypeDefinition *CalleePrototype = nullptr;
+        std::vector<model::FunctionAttribute::Values> Attributes;
+        if (CE->Destination().isValid()) {
+          MetaAddress Callee = CE->Destination().notInlinedAddress();
+          const auto &Local = Binary->Functions().at(Callee);
+          CalleePrototype = Local.prototype();
+          for (auto Attribute : Local.Attributes())
+            Attributes.push_back(Attribute);
+        } else if (not CE->DynamicFunction().empty()) {
+          const auto &Imported = Binary->ImportedDynamicFunctions()
+                                   .at(CE->DynamicFunction());
+          CalleePrototype = Imported.prototype();
+          for (auto Attribute : Imported.Attributes())
+            Attributes.push_back(Attribute);
+        }
+
+        if (CalleePrototype == nullptr
+            or Function.CallSitePrototypes().contains(BlockAddress))
+          continue;
+
+        auto It = Function.CallSitePrototypes()
+                    .emplace(BlockAddress,
+                             Binary->makeType(CalleePrototype->key()),
+                             false)
+                    .first;
+        It->ElidedStackCleanup() = FoundIt->second;
+        for (auto Attribute : Attributes)
+          It->Attributes().insert(Attribute);
+      }
+    }
+
+    // Does the function leave as the model says it does?
+    bool Returns = false;
+    for (const efa::BasicBlock &Block : New->CFG)
+      for (const auto &Edge : Block.Successors())
+        if (Edge->Type() == efa::FunctionEdgeType::Return)
+          Returns = true;
+    using model::FunctionAttribute::NoReturn;
+    uint64_t Removes = abi::FunctionType::finalStackOffset(*Function
+                                                              .prototype());
+    if ((Returns and Function.Attributes().contains(NoReturn))
+        or (Returns and New->ElectedFSO.has_value()
+            and uint64_t(*New->ElectedFSO) != Removes))
+      Changed.push_back(Entry);
+
+    TupleTree<efa::FunctionBundle> Bundle;
+    efa::ControlFlowGraph &Main = Bundle->MainFunction();
+    Main.Entry() = Entry;
+    Main.Blocks() = New->CFG;
+    Main.simplify(*Binary);
+    FMC.set(std::move(Bundle));
+  }
+
+  return Changed;
+}
+
+/// What is said at a call whose record is one of several answers: the
+/// function only says what a group of calls removes together. A record with
+/// this next to it is a guess, and is read as one, see
+/// DetectABI::electImportPrototypes.
+static constexpr const char *SharedArgumentsComment = "The stack arguments of "
+                                                      "this call may belong to "
+                                                      "a call next to it: the "
+                                                      "function only says how "
+                                                      "many words these calls "
+                                                      "remove from the stack "
+                                                      "together.";
+
+/// The imported function \p Name is given a prototype that removes
+/// \p Offset: \p Agreeing functions have a record that says so and is not a
+/// guess; of its call sites, \p Others have a record that says something
+/// else and \p Silent have none. (A function of its own: what was decided,
+/// and on what, can be watched from a debugger.)
+[[gnu::noinline, gnu::used]] static void
+noteElectedImport(const std::string &Name,
+                  int64_t Offset,
+                  unsigned Agreeing,
+                  unsigned Others,
+                  unsigned Silent) {
+  revng_log(Log,
+            "Imported function " << Name << " removes " << Offset << ": "
+                                 << Agreeing << " functions say so, " << Others
+                                 << " call sites say something else, " << Silent
+                                 << " say nothing");
+}
+
+std::vector<MetaAddress> DetectABI::electImportPrototypes() {
+  // The function analysis has one unknown for each call to something it
+  // knows nothing about, and settles it with what the function that makes
+  // the call shows. A function where nothing depends on what the callee
+  // removes (it restores its stack pointer from its frame pointer) shows
+  // nothing, and its call is left as removing nothing; two unknown callees
+  // on one path are settled together, and one can be given what is the
+  // other's. But the callee is the same function wherever it is called: what
+  // one caller cannot say, another can.
+  //
+  // So the records of all the call sites of an imported function are put
+  // together. Not those the analysis itself calls one of several answers
+  // (SharedArgumentsComment): they are guesses. If the others all say the
+  // same, and at least two functions have one, that is what the imported
+  // function removes. One function alone is not believed, and neither is
+  // any amount where two of them disagree: one of the two is wrong, and
+  // nothing here says which.
+  constexpr unsigned FewestCallers = 2;
+
+  const model::TypeDefinition *DefaultPrototype = Binary->defaultPrototype();
+  using RawDefinition = model::RawFunctionDefinition;
+  const auto *Default = dyn_cast_or_null<RawDefinition>(DefaultPrototype);
+  if (Default == nullptr)
+    return {};
+
+  struct CallSite {
+    MetaAddress Caller;
+
+    /// The record of the call site, if it has one
+    MetaAddress Record = MetaAddress::invalid();
+
+    /// What the caller was analyzed with
+    int64_t Assumed = 0;
+
+    bool IsGuess = false;
+    bool IsTailCall = false;
+  };
+  std::map<std::string, std::vector<CallSite>> Imports;
+
+  int64_t DefaultOffset = Default->FinalStackOffset();
+  for (const model::Function &Function : Binary->Functions()) {
+    llvm::SmallVector<MetaAddress, 4> Guessed;
+    for (const model::StatementComment &Comment : Function.Comments())
+      if (Comment.Body() == SharedArgumentsComment)
+        for (const MetaAddress &Call : Comment.Location())
+          Guessed.push_back(Call);
+
+    const auto &Records = Function.CallSitePrototypes();
+    for (const efa::BasicBlock &Block :
+         FMC.getControlFlowGraph(Function.Entry()).Blocks()) {
+      if (Block.ID().isInlined())
+        continue;
+
+      for (const auto &Edge : Block.Successors()) {
+        const auto *Call = llvm::dyn_cast<efa::CallEdge>(Edge.get());
+        if (Call == nullptr or Call->DynamicFunction().empty())
+          continue;
+
+        const auto &Imported = Binary->ImportedDynamicFunctions();
+        auto It = Imported.find(Call->DynamicFunction());
+        using model::FunctionAttribute::NoReturn;
+        if (It == Imported.end() or not It->Prototype().isEmpty()
+            or It->Attributes().contains(NoReturn))
+          continue;
+
+        CallSite &New = Imports[Call->DynamicFunction()].emplace_back();
+        New.Caller = Function.Entry();
+        New.Assumed = DefaultOffset;
+        New.IsTailCall = Call->IsTailCall();
+        if (New.IsTailCall)
+          continue;
+
+        // The record is at the block the call ended when the function was
+        // analyzed. The blocks here have been merged since: that block is
+        // this one or its last part.
+        MetaAddress Start = Block.ID().notInlinedAddress();
+        MetaAddress End = Block.End();
+        for (auto RecordIt = Records.lower_bound(Start);
+             RecordIt != Records.end()
+             and RecordIt->CallerBlockAddress().addressLowerThan(End);
+             ++RecordIt) {
+          const model::TypeDefinition *Recorded = RecordIt->prototype();
+          if (const auto *Record = dyn_cast_or_null<RawDefinition>(Recorded)) {
+            New.Record = RecordIt->CallerBlockAddress();
+            New.Assumed = Record->FinalStackOffset();
+          }
+        }
+
+        auto IsInBlock = [&Start, &End](const MetaAddress &Address) {
+          return Start.addressLowerThanOrEqual(Address)
+                 and Address.addressLowerThan(End);
+        };
+        New.IsGuess = llvm::any_of(Guessed, IsInBlock);
+      }
+    }
+  }
+
+  // The functions whose records are not guesses, by what they say
+  using Callers = std::map<int64_t, std::set<MetaAddress>>;
+  auto Believed = [](const std::vector<CallSite> &Sites,
+                     const std::set<MetaAddress> &Stale) {
+    Callers Result;
+    for (const CallSite &Site : Sites)
+      if (Site.Record.isValid() and not Site.IsGuess
+          and not Stale.contains(Site.Caller))
+        Result[Site.Assumed].insert(Site.Caller);
+    return Result;
+  };
+
+  // The imported functions most callers speak about first: a function sent
+  // back for one of them was analyzed with something wrong, and what it says
+  // about the others was settled together with that
+  std::set<MetaAddress> Changed;
+  std::vector<std::pair<size_t, const std::string *>> Order;
+  for (const auto &[Name, Sites] : Imports) {
+    size_t Most = 0;
+    for (const auto &[Offset, Functions] : Believed(Sites, Changed))
+      Most = std::max(Most, Functions.size());
+    Order.emplace_back(Most, &Name);
+  }
+  llvm::stable_sort(Order, [](const auto &Left, const auto &Right) {
+    return Left.first > Right.first;
+  });
+
+  for (const auto &[Support, Name] : Order) {
+    const std::vector<CallSite> &Sites = Imports.at(*Name);
+    Callers Said = Believed(Sites, Changed);
+    if (Said.size() != 1 or Said.begin()->second.size() < FewestCallers)
+      continue;
+
+    int64_t Elected = Said.begin()->first;
+    model::UpcastableType Prototype = importPrototypeRemoving(Elected);
+    if (Prototype.isEmpty())
+      continue;
+
+    unsigned Others = 0;
+    unsigned Silent = 0;
+    for (const CallSite &Site : Sites) {
+      if (not Site.Record.isValid())
+        ++Silent;
+      else if (Site.Assumed != Elected)
+        ++Others;
+    }
+    unsigned Agreeing = Said.begin()->second.size();
+    noteElectedImport(*Name, Elected, Agreeing, Others, Silent);
+    auto &Import = Binary->ImportedDynamicFunctions().at(*Name);
+    Import.Prototype() = std::move(Prototype);
+
+    for (const CallSite &Site : Sites) {
+      model::Function &Caller = Binary->Functions().at(Site.Caller);
+
+      // The function has a prototype now: its calls are built with that. A
+      // record that says the same has nothing more to say, and one without
+      // the stack arguments would take them away again.
+      if (Site.Record.isValid())
+        Caller.CallSitePrototypes().erase(Site.Record);
+
+      // Who was analyzed with something else is analyzed again, if what the
+      // model says about it is from here. That includes a function that ends
+      // by jumping to the imported function: it removes what that removes.
+      const model::TypeDefinition *Own = Caller.prototype();
+      bool IsFromHere = Own == nullptr or isa<RawDefinition>(Own);
+      if ((Site.IsTailCall or Site.Assumed != Elected) and IsFromHere
+          and Changed.insert(Site.Caller).second) {
+        // (The clean-ups it was found to leave out were found with what it
+        // was analyzed with: they are looked for again)
+        std::vector<MetaAddress> Cleanups;
+        for (const model::CallSitePrototype &Record :
+             Caller.CallSitePrototypes())
+          if (Record.ElidedStackCleanup() != 0)
+            Cleanups.push_back(Record.CallerBlockAddress());
+        for (const MetaAddress &Block : Cleanups)
+          Caller.CallSitePrototypes().erase(Block);
+      }
+    }
+  }
+
+  return { Changed.begin(), Changed.end() };
+}
+
+void DetectABI::attachResumeBlocks() {
+  std::vector<MetaAddress> Candidates = unusedCodeAddresses(M,
+                                                            Root,
+                                                            *Binary,
+                                                            FMC);
+  if (Candidates.empty())
+    return;
+
+  Ownership Whose = ownersOfBlocks([](const model::Function &) {
+    return true;
+  });
+  Whose.Unowned.insert(Candidates.begin(), Candidates.end());
+  for (const MetaAddress &Candidate : Candidates)
+    offer(Candidate, Whose);
+}
+
+void DetectABI::addBlocksOf(Ownership &Whose, const MetaAddress &Function) {
+  for (const efa::BasicBlock &Block :
+       FMC.getControlFlowGraph(Function).Blocks()) {
+    if (Block.ID().isInlined())
+      continue;
+    auto &List = Whose.Owners[Block.ID().start()];
+    if (not llvm::is_contained(List, Function))
+      List.push_back(Function);
+    auto [EndIt, IsNewBlock] = Whose.End.try_emplace(Block.ID().start(),
+                                                     Block.End());
+    if (not IsNewBlock and EndIt->second < Block.End())
+      EndIt->second = Block.End();
+    if (std::optional<uint64_t> Length = Block.End() - Block.ID().start())
+      Whose.LongestBlock = std::max(Whose.LongestBlock, *Length);
+    auto [It, IsNew] = Whose.LastBlock.try_emplace(Function,
+                                                   Block.ID().start());
+    if (not IsNew and It->second < Block.ID().start())
+      It->second = Block.ID().start();
+  }
+}
+
+DetectABI::Ownership
+DetectABI::ownersOfBlocks(llvm::function_ref<bool(const model::Function &)>
+                            IsOwner) {
+  Ownership Whose;
+  for (const model::Function &Function : Binary->Functions())
+    if (IsOwner(Function))
+      addBlocksOf(Whose, Function.Entry());
+  return Whose;
+}
+
+bool DetectABI::offer(const MetaAddress &Candidate, Ownership &Whose) {
+  // Code nothing jumps to is offered to the functions it leads into, if
+  // that is known, or else to the function it lies in (between two of its
+  // blocks) or follows: whether it is its own is for tryToAttach to say.
+  // Between a function and the code it goes on with there can be the
+  // handlers the function is resumed from, which are functions of their own
+  // and cannot be resumed: they are looked past, up to a point.
+  //
+  // tryToAttach cannot tell a function from another one with the same frame:
+  // what it accepts is right only for the function the code belongs to. So
+  // code that follows a function is not offered across code no function has
+  // (the function it belongs to may not have been found yet), and where
+  // Whose says so, not past a function that can be resumed and refused it.
+  //
+  // A block several functions reach (each of the functions that jump to a
+  // function has its code as their own) is resumed in all of them or in
+  // none: the code is offered to each, and stays attached only if every one
+  // of them takes it.
+  constexpr unsigned MostOwners = 4;
+  constexpr unsigned MostSeen = 32;
+  constexpr unsigned MostSharing = 8;
+
+  // (What has become a block of a function since is that function's)
+  if (Whose.Owners.contains(Candidate))
+    return false;
+
+  // Only a function that saves its stack pointer for whoever resumes it
+  // can be resumed: looking for that is much cheaper than trying
+  using OwnerList = llvm::SmallVector<MetaAddress, 1>;
+  auto AllSave = [this](const OwnerList &Sharing) {
+    bool Result = true;
+    for (const MetaAddress &Owner : Sharing) {
+      auto [SavesIt, IsNew] = SavesStackPointer.try_emplace(Owner, false);
+      if (IsNew)
+        SavesIt->second = Analyzer.savesStackPointer(Owner);
+      Result = Result and SavesIt->second;
+    }
+    return Result;
+  };
+
+  // The code becomes that of all the functions of \p Sharing, or of none
+  auto Attach = [this, &Candidate, &Whose](const OwnerList &Sharing) {
+    // What each of them was, to go back to if one of them refuses
+    using Blocks = SortedVector<efa::BasicBlock>;
+    llvm::SmallVector<std::pair<MetaAddress, Blocks>, 1> Attached;
+    bool AllTake = true;
+    for (const MetaAddress &Owner : Sharing) {
+      Blocks Old = FMC.getControlFlowGraph(Owner).Blocks();
+      if (not tryToAttach(Binary->Functions().at(Owner), Candidate)) {
+        AllTake = false;
+        break;
+      }
+      Attached.emplace_back(Owner, std::move(Old));
+    }
+
+    if (AllTake) {
+      // The code is theirs now
+      Whose.Unowned.erase(Candidate);
+      for (const MetaAddress &Owner : Sharing)
+        addBlocksOf(Whose, Owner);
+      return true;
+    }
+
+    for (auto &[Owner, Old] : Attached) {
+      Binary->Functions().at(Owner).ResumeAddresses().erase(Candidate);
+      TupleTree<efa::FunctionBundle> Bundle;
+      efa::ControlFlowGraph &Main = Bundle->MainFunction();
+      Main.Entry() = Owner;
+      Main.Blocks() = std::move(Old);
+      FMC.set(std::move(Bundle));
+    }
+
+    return false;
+  };
+
+  // Where the code goes says whose it is, and says it better than where it
+  // lies: code that was put away from its function, as what is seldom run
+  // is, leads back into it. A candidate that was made a function has blocks:
+  // the first of them that the functions of Whose have too is where it joins
+  // them, and they are asked first. (If they refuse, the functions around it
+  // are still asked, as before: nothing that was taken stops being taken.)
+  if (Binary->Functions().contains(Candidate)) {
+    const auto &Blocks = FMC.getControlFlowGraph(Candidate).Blocks();
+    OwnerList Into;
+    OnceQueue<BasicBlockID> Queue;
+    Queue.insert(BasicBlockID(Candidate));
+    while (Into.empty() and not Queue.empty()) {
+      auto It = Blocks.find(Queue.pop());
+      if (It == Blocks.end())
+        continue;
+
+      // The blocks of theirs that start there, or that the address is in:
+      // nothing in the function jumps to where it goes on, so that place is
+      // most often in the middle of one of its blocks. Functions that share
+      // code do not cut it into the same blocks: all the blocks the address
+      // is in are looked at, and the code is offered to the functions of
+      // all of them.
+      MetaAddress Start = It->ID().start();
+      auto Owned = Whose.Owners.upper_bound(Start);
+      while (Start != Candidate and Owned != Whose.Owners.begin()) {
+        --Owned;
+        std::optional<uint64_t> Before = Start - Owned->first;
+        if (not Before.has_value() or *Before > Whose.LongestBlock)
+          break;
+
+        auto EndIt = Whose.End.find(Owned->first);
+        bool IsInside = Owned->first == Start
+                        or (EndIt != Whose.End.end() and Start < EndIt->second);
+        if (not IsInside)
+          continue;
+
+        for (const MetaAddress &Owner : Owned->second)
+          if (Owner != Candidate and not llvm::is_contained(Into, Owner))
+            Into.push_back(Owner);
+      }
+      if (not Into.empty())
+        break;
+
+      for (const auto &Edge : It->Successors())
+        if (Edge->Type() == efa::FunctionEdgeType::DirectBranch
+            and not Edge->Destination().isInlined())
+          Queue.insert(Edge->Destination());
+    }
+
+    if (not Into.empty() and Into.size() <= MostSharing and AllSave(Into)
+        and Attach(Into))
+      return true;
+  }
+
+  MetaAddress Gap = MetaAddress::invalid();
+  if (auto It = Whose.Unowned.lower_bound(Candidate);
+      It != Whose.Unowned.begin())
+    Gap = *std::prev(It);
+
+  llvm::SmallVector<MetaAddress, MostSeen> Seen;
+  unsigned Tried = 0;
+  bool PastNearest = false;
+  auto It = Whose.Owners.upper_bound(Candidate);
+  while (It != Whose.Owners.begin() and Tried < MostOwners
+         and Seen.size() < MostSeen) {
+    --It;
+    const llvm::SmallVector<MetaAddress, 1> Sharing = It->second;
+    if (It->first == Candidate or Sharing.empty()
+        or Sharing.size() > MostSharing
+        or llvm::is_contained(Sharing, Candidate)
+        or llvm::is_contained(Seen, Sharing.front()))
+      continue;
+
+    Seen.push_back(Sharing.front());
+
+    // Does the code lie between two blocks of the function?
+    bool IsInside = false;
+    for (const MetaAddress &Owner : Sharing) {
+      auto Last = Whose.LastBlock.find(Owner);
+      IsInside = IsInside
+                 or (Last != Whose.LastBlock.end()
+                     and Candidate < Last->second);
+    }
+
+    bool IsBehindGap = Gap.isValid() and It->first < Gap;
+    if (not IsInside and (IsBehindGap or PastNearest))
+      continue;
+
+    if (not AllSave(Sharing))
+      continue;
+
+    ++Tried;
+    if (not IsInside and Whose.OnlyNearest)
+      PastNearest = true;
+
+    if (Attach(Sharing))
+      return true;
+  }
+
+  return false;
+}
+
+void DetectABI::reattachFunctions(const std::set<MetaAddress> &Before) {
+  // A function made from code nothing jumps to, that does not leave as a
+  // function does, may be what a function that was found at the same time is
+  // resumed at: the first time around its function was not there to be
+  // offered it. If the function takes it now, it is not a function.
+  auto LeavesProperly = [this](const model::Function &Function) {
+    if (not Function.Attributes().empty())
+      return false;
+
+    bool Returns = false;
+    for (const efa::BasicBlock &Block :
+         FMC.getControlFlowGraph(Function.Entry()).Blocks()) {
+      for (const auto &Edge : Block.Successors()) {
+        using namespace efa::FunctionEdgeType;
+        const auto *Call = llvm::dyn_cast<efa::CallEdge>(Edge.get());
+        if (Edge->Type() == Return
+            or (Call != nullptr and Edge->Type() == FunctionCall
+                and Call->IsTailCall()))
+          Returns = true;
+        else if (Edge->Type() != DirectBranch and Edge->Type() != FunctionCall)
+          return false;
+      }
+    }
+    return Returns;
+  };
+
+  std::vector<MetaAddress> Candidates;
+  for (const model::Function &Function : Binary->Functions())
+    if (not Before.contains(Function.Entry()) and not LeavesProperly(Function))
+      Candidates.push_back(Function.Entry());
+
+  // (The functions are in the order of their addresses, so are these)
+  Ownership Whose = ownersOfBlocks([&](const model::Function &Function) {
+    return not std::binary_search(Candidates.begin(),
+                                  Candidates.end(),
+                                  Function.Entry());
+  });
+
+  // All the functions there are have been found: what is between a function
+  // and the code it goes on with is its handlers, whatever they look like.
+  // But the nearest function that can be resumed is the one, or none is.
+  Whose.OnlyNearest = true;
+
+  // One that starts where a block of a function found before it starts is
+  // code of that function already: it only looked unused when the functions
+  // were less well known
+  for (const MetaAddress &Candidate : Candidates)
+    if (Whose.Owners.contains(Candidate) or offer(Candidate, Whose))
+      dropFunctionNowPartOfAnother(*Binary, Candidate);
+}
+
+bool DetectABI::tryToAttach(model::Function &Function,
+                            const MetaAddress &Address) {
+  MetaAddress Entry = Function.Entry();
+  auto Old = FMC.getControlFlowGraph(Entry).Blocks();
+  if (Function.Prototype().isEmpty() or not Function.Attributes().empty()
+      or Old.contains(BasicBlockID(Address)))
+    return false;
+
+  Function.ResumeAddresses().insert(Address);
+  FunctionSummary New = Analyzer.tryOut(Entry);
+
+  // The function has to be what it was, plus code that leads back into it
+  // or returns as it does: every block it had leaves it as it did (a return
+  // that removes another amount from the stack would turn the returns of the
+  // function into something else), and it removes what it removed
+  auto ExitsOf = [](const efa::BasicBlock &Block) {
+    llvm::SmallVector<efa::FunctionEdgeType::Values, 2> Result;
+    for (const auto &Edge : Block.Successors())
+      if (Edge->Type() != efa::FunctionEdgeType::DirectBranch)
+        Result.push_back(Edge->Type());
+    llvm::sort(Result);
+    return Result;
+  };
+
+  // (Where the function goes on can be in the middle of one of its blocks,
+  // which is then two: what counts is how the code of the old block leaves)
+  auto ExitsWithin = [&New](const efa::BasicBlock &Old) {
+    llvm::SmallVector<efa::FunctionEdgeType::Values, 2> Result;
+    for (const efa::BasicBlock &Block : New.CFG) {
+      if (Block.ID().isInlined() or Block.ID().start() < Old.ID().start()
+          or not(Block.ID().start() < Old.End()))
+        continue;
+      for (const auto &Edge : Block.Successors())
+        if (Edge->Type() != efa::FunctionEdgeType::DirectBranch)
+          Result.push_back(Edge->Type());
+    }
+    llvm::sort(Result);
+    return Result;
+  };
+
+  bool IsFine = New.CFG.contains(BasicBlockID(Address));
+  for (const efa::BasicBlock &Block : Old) {
+    auto It = New.CFG.find(Block.ID());
+    if (It == New.CFG.end()) {
+      IsFine = false;
+    } else if (Block.ID().isInlined()) {
+      IsFine = IsFine and ExitsOf(*It) == ExitsOf(Block);
+    } else {
+      IsFine = IsFine and ExitsWithin(Block) == ExitsOf(Block);
+    }
+  }
+
+  uint64_t OldFSO = abi::FunctionType::finalStackOffset(*Function.prototype());
+  IsFine = IsFine and New.ElectedFSO.has_value()
+           and uint64_t(*New.ElectedFSO) == OldFSO;
+
+  for (const efa::BasicBlock &Block : New.CFG) {
+    if (Old.contains(Block.ID()))
+      continue;
+
+    for (const auto &Edge : Block.Successors()) {
+      using namespace efa::FunctionEdgeType;
+      const auto *Call = llvm::dyn_cast<efa::CallEdge>(Edge.get());
+      bool IsPlainCall = Call != nullptr and not Call->IsTailCall();
+      if (Edge->Type() != DirectBranch and Edge->Type() != Return
+          and not IsPlainCall)
+        IsFine = false;
+    }
+  }
+
+  if (not IsFine) {
+    Function.ResumeAddresses().erase(Address);
+    return false;
+  }
+
+  {
+    TupleTree<efa::FunctionBundle> Bundle;
+    efa::ControlFlowGraph &Main = Bundle->MainFunction();
+    Main.Entry() = Entry;
+    Main.Blocks() = New.CFG;
+    Main.simplify(*Binary);
+    FMC.set(std::move(Bundle));
+  }
+
+  return true;
 }
 
 void DetectABI::preliminaryFunctionAnalysis() {
@@ -742,8 +1563,32 @@ void DetectABI::applyABIDeductions() {
     }
 
     if (ABIEnforcement == FullABIEnforcement) {
-      Arguments = ABI.enforceArgumentRegisterState(std::move(Arguments));
-      RValues = ABI.enforceReturnValueRegisterState(std::move(RValues));
+      // A register the function reads before writing it, where the default
+      // ABI passes no argument in it, is not to be taken away from it if an
+      // ABI of the same family passes one there: a member function takes
+      // `this` in a register in 32-bit Windows code, whatever the default of
+      // the binary is. Enforcing the default would leave the function
+      // reading a value nobody gives it.
+      const abi::Definition *Chosen = &ABI;
+      using RegisterSet = abi::Definition::RegisterSet;
+      auto Takes = [&Arguments](const abi::Definition &Candidate) {
+        RegisterSet Copy = Arguments;
+        return Candidate.tryDeducingArgumentRegisterState(std::move(Copy))
+          .has_value();
+      };
+      if (not Arguments.empty() and not Takes(ABI)) {
+        using abi::FunctionType::calleeCleanupCounterparts;
+        for (model::ABI::Values Other : calleeCleanupCounterparts(ABI.ABI())) {
+          const abi::Definition &Counterpart = abi::Definition::get(Other);
+          if (Takes(Counterpart)) {
+            Chosen = &Counterpart;
+            break;
+          }
+        }
+      }
+
+      Arguments = Chosen->enforceArgumentRegisterState(std::move(Arguments));
+      RValues = Chosen->enforceReturnValueRegisterState(std::move(RValues));
     } else {
       if (auto R = ABI.tryDeducingArgumentRegisterState(std::move(Arguments)))
         Arguments = *R;
@@ -916,9 +1761,40 @@ void DetectABI::finalizeModel() {
             Function->CallSitePrototypes().emplace(BlockAddress,
                                                    std::move(Prototype),
                                                    IsTailCall);
+          } else if (IsDynamic and not HasInfoOnEdge) {
+            // A dynamic function without a prototype: if the analysis of the
+            // caller found that it removes its arguments, say so here, since
+            // the function is assumed not to
+            auto FSO = Analyzer.callSiteFinalStackOffset(BlockAddress);
+            auto Prototype = FSO.has_value() ? defaultPrototypeRemoving(*FSO) :
+                                               model::UpcastableType();
+            if (not Prototype.isEmpty())
+              Function->CallSitePrototypes().emplace(BlockAddress,
+                                                     std::move(Prototype),
+                                                     false);
           }
         }
       }
+    }
+  }
+
+  // Where the function says what a group of calls removes from the stack
+  // together, but not how much each, what is assumed is one of the answers:
+  // say so where the call is, instead of leaving it to look known
+  for (auto &Function : Functions) {
+    auto &Summary = Oracle.getLocalFunction(Function->Entry());
+    for (auto &Block : Summary.CFG) {
+      if (Block.ID().isInlined())
+        continue;
+      MetaAddress Call = Analyzer.ambiguousCall(Block.ID().notInlinedAddress());
+      if (Call.isInvalid())
+        continue;
+
+      model::StatementComment Comment;
+      Comment.Index() = Function->Comments().size();
+      Comment.Location().insert(Call);
+      Comment.Body() = SharedArgumentsComment;
+      Function->Comments().insert(std::move(Comment));
     }
   }
 
@@ -932,8 +1808,9 @@ void DetectABI::finalizeModel() {
 }
 
 void DetectABI::propagatePrototypes() {
+  bool NamesAreDeduplicated = false;
   for (model::Function &Function : Binary->Functions()) {
-    propagatePrototypesInFunction(Function);
+    propagatePrototypesInFunction(Function, NamesAreDeduplicated);
   }
 }
 
@@ -960,7 +1837,8 @@ static bool isAnyWritten(llvm::Module &M,
 }
 
 // TODO: is this still necessary after the new EFA?
-void DetectABI::propagatePrototypesInFunction(model::Function &Function) {
+void DetectABI::propagatePrototypesInFunction(model::Function &Function,
+                                              bool &NamesAreDeduplicated) {
   const MetaAddress &Entry = Function.Entry();
 
   revng_log(Log, "Trying to propagate prototypes for " << Entry.toString());
@@ -1038,6 +1916,7 @@ void DetectABI::propagatePrototypesInFunction(model::Function &Function) {
             << toString(model::copyTypeDefinition(*Prototype)) << DoLog;
       }
 
+      NamesAreDeduplicated = false;
       Function.Prototype() = Binary->makeType(Prototype->key());
 
       if (Function.Name().empty()) {
@@ -1058,7 +1937,13 @@ void DetectABI::propagatePrototypesInFunction(model::Function &Function) {
   }
 
   // TODO: should this be done at a higher abstraction level?
-  model::deduplicateCollidingNames(Binary);
+  //
+  // This visits the whole model: do it again only after a change, since the
+  // previous time left no name to rename
+  if (not NamesAreDeduplicated) {
+    model::deduplicateCollidingNames(Binary);
+    NamesAreDeduplicated = true;
+  }
 }
 
 model::UpcastableType
@@ -1091,6 +1976,85 @@ DetectABI::buildPrototypeForIndirectCall(const FunctionSummary &CallerSummary,
   Prototype.PreservedRegisters() = computePreservedRegisters(Clobbered);
 
   Prototype.FinalStackOffset() = DefaultSummary.ElectedFSO.value_or(0);
+
+  // Unless the analysis of the caller found what this callee removes
+  MetaAddress CallSite = CallerBlock.ID().notInlinedAddress();
+  if (auto FSO = Analyzer.callSiteFinalStackOffset(CallSite)) {
+    Prototype.FinalStackOffset() = *FSO;
+    setRemovedStackArguments(Prototype,
+                             *FSO,
+                             DefaultSummary.ElectedFSO.value_or(0));
+  }
+
+  return std::move(NewType);
+}
+
+void DetectABI::setRemovedStackArguments(model::RawFunctionDefinition
+                                           &Prototype,
+                                         int64_t FinalStackOffset,
+                                         int64_t DefaultOffset) {
+  // The stack arguments of a prototype are otherwise found in the body of
+  // the function that has it, as what it reads above its return address. A
+  // call through a pointer and a call to an imported function without a
+  // prototype have no body to look at: all that is known is what the callee
+  // removes, and for a callee that removes its arguments that is how much it
+  // takes.
+  constexpr int64_t MostBytes = 64 * 16;
+  int64_t Bytes = FinalStackOffset - DefaultOffset;
+  if (Bytes <= 0 or Bytes > MostBytes
+      or not Prototype.StackArgumentsType().isEmpty())
+    return;
+
+  Prototype.StackArgumentsType() = Binary->makeStructDefinition(Bytes).second;
+}
+
+model::UpcastableType
+DetectABI::defaultPrototypeRemoving(int64_t FinalStackOffset) {
+  using RawDefinition = model::RawFunctionDefinition;
+  const model::TypeDefinition *Prototype = Binary->defaultPrototype();
+  const auto *Default = dyn_cast_or_null<RawDefinition>(Prototype);
+  if (Default == nullptr
+      or int64_t(Default->FinalStackOffset()) == FinalStackOffset)
+    return {};
+
+  auto It = DefaultPrototypeCopies.find(FinalStackOffset);
+  if (It != DefaultPrototypeCopies.end())
+    return Binary->makeType(It->second);
+
+  // (No stack arguments here, although the callee removes some: this is for
+  // the record of a call that names its callee, and such a call is built
+  // with the arguments of the callee's own prototype. A record with more
+  // arguments than that has no call to go with it. The imported function
+  // gets them with a prototype of its own, see importPrototypeRemoving.)
+  auto &&[Copy, NewType] = Binary->makeRawFunctionDefinition();
+  Copy.Architecture() = Default->Architecture();
+  Copy.Arguments() = Default->Arguments();
+  Copy.ReturnValues() = Default->ReturnValues();
+  Copy.PreservedRegisters() = Default->PreservedRegisters();
+  Copy.FinalStackOffset() = FinalStackOffset;
+  DefaultPrototypeCopies.emplace(FinalStackOffset, Copy.key());
+
+  return std::move(NewType);
+}
+
+model::UpcastableType
+DetectABI::importPrototypeRemoving(int64_t FinalStackOffset) {
+  using RawDefinition = model::RawFunctionDefinition;
+  const model::TypeDefinition *Prototype = Binary->defaultPrototype();
+  const auto *Default = dyn_cast_or_null<RawDefinition>(Prototype);
+  if (Default == nullptr
+      or int64_t(Default->FinalStackOffset()) == FinalStackOffset)
+    return {};
+
+  // (One for each function: what shares a prototype is taken to share the
+  // types of its arguments)
+  auto &&[Copy, NewType] = Binary->makeRawFunctionDefinition();
+  Copy.Architecture() = Default->Architecture();
+  Copy.Arguments() = Default->Arguments();
+  Copy.ReturnValues() = Default->ReturnValues();
+  Copy.PreservedRegisters() = Default->PreservedRegisters();
+  Copy.FinalStackOffset() = FinalStackOffset;
+  setRemovedStackArguments(Copy, FinalStackOffset, Default->FinalStackOffset());
 
   return std::move(NewType);
 }
@@ -1160,6 +2124,81 @@ DetectABI::computePreservedRegisters(const CSVSet &ClobberedRegisters) const {
 
 static Logger FunctionFromCalleesLog("functions-from-callees-collection");
 
+/// \p Entry is where more than one function jumps to with nothing but its
+/// return address on the stack: a function. (A function of its own: what is
+/// made one can be watched from a debugger.)
+[[gnu::noinline]] static void
+makeFunctionAtSharedJumpTarget(model::Binary &Binary,
+                               const MetaAddress &Entry) {
+  Binary.Functions()[Entry];
+}
+
+/// Code that several functions jump to is part of each of them as long as it
+/// is not a function: nobody calls it, so nothing said it was one. If each
+/// of them gets there with the stack as it was when it was entered, they
+/// leave through it as through a call that is not coming back, and it is the
+/// function they all end with: the member functions adjusting thunks jump to
+/// are found this way. As code of several functions it is decompiled once
+/// for each, and what belongs to it (the code it is resumed at after an
+/// exception) has no function to belong to.
+///
+/// \return the functions that jump to the new ones
+///
+/// \p Analyzed are the functions whose blocks are known.
+static std::vector<MetaAddress>
+collectFunctionsFromSharedJumpTargets(model::Binary &Binary,
+                                      ControlFlowGraphCache &FMC,
+                                      const std::set<MetaAddress> &Analyzed) {
+  std::map<MetaAddress, unsigned> Owners;
+  for (const MetaAddress &Entry : Analyzed)
+    for (const efa::BasicBlock &Block : FMC.getControlFlowGraph(Entry).Blocks())
+      if (not Block.ID().isInlined())
+        ++Owners[Block.ID().start()];
+
+  auto IsShared = [&Owners](const MetaAddress &Address) {
+    auto It = Owners.find(Address);
+    return It != Owners.end() and It->second > 1;
+  };
+
+  // The shared blocks a block of one function only leads to, and from which
+  // functions
+  std::map<MetaAddress, std::set<MetaAddress>> Jumpers;
+  std::set<MetaAddress> NotAtEntryHeight;
+  for (const MetaAddress &Entry : Analyzed) {
+    const auto &Blocks = FMC.getControlFlowGraph(Entry).Blocks();
+    for (const efa::BasicBlock &Block : Blocks) {
+      if (Block.ID().isInlined() or IsShared(Block.ID().start()))
+        continue;
+
+      for (const auto &Edge : Block.Successors()) {
+        if (Edge->Type() != efa::FunctionEdgeType::DirectBranch
+            or Edge->Destination().isInlined())
+          continue;
+
+        MetaAddress Target = Edge->Destination().start();
+        if (not IsShared(Target) or Binary.Functions().contains(Target))
+          continue;
+
+        Jumpers[Target].insert(Entry);
+        auto It = Blocks.find(Edge->Destination());
+        if (It == Blocks.end() or not It->HasStackDepth()
+            or It->StackDepth() != 0)
+          NotAtEntryHeight.insert(Target);
+      }
+    }
+  }
+
+  std::set<MetaAddress> Result;
+  for (const auto &[Target, From] : Jumpers) {
+    if (From.size() < 2 or NotAtEntryHeight.contains(Target))
+      continue;
+    makeFunctionAtSharedJumpTarget(Binary, Target);
+    Result.insert(From.begin(), From.end());
+  }
+
+  return { Result.begin(), Result.end() };
+}
+
 static void collectFunctionsFromCallees(Module &M, model::Binary &Binary) {
   Function &Root = *M.getFunction("root");
 
@@ -1181,6 +2220,26 @@ static void collectFunctionsFromCallees(Module &M, model::Binary &Binary) {
       Binary.Functions()[Entry];
       revng_log(FunctionFromCalleesLog,
                 "Found function from callee: " << BB.getName().str());
+    }
+  }
+
+  // The only place a call through a pointer can go to is called too
+  if (auto *Marker = functionOrNull(FunctionCallMarker.get(M))) {
+    for (CallBase *Call : callersIn(Marker, &Root)) {
+      if (not isa<ConstantPointerNull>(Call->getArgOperand(0)))
+        continue;
+
+      llvm::BasicBlock *Callee = getOnlyCallee(Call->getParent(), Binary);
+      if (Callee == nullptr)
+        continue;
+
+      MetaAddress Entry = getBasicBlockAddress(Callee);
+      if (Entry.isValid() and not Binary.Functions().contains(Entry)) {
+        Binary.Functions()[Entry];
+        revng_log(FunctionFromCalleesLog,
+                  "Found function from the only target of a call: "
+                    << Callee->getName().str());
+      }
     }
   }
 }
@@ -1299,16 +2358,85 @@ Changes DetectABI::runAnalyses(MetaAddress EntryAddress,
   return Changes;
 }
 
+static void reattachFunctions(Module &M,
+                              RootFunction &Root,
+                              const CSVGlobals &Globals,
+                              ControlFlowGraphCache &FMC,
+                              TupleTree<model::Binary> &Binary,
+                              const std::set<MetaAddress> &Before) {
+  using FSOracle = FunctionSummaryOracle;
+  FSOracle Oracle = FSOracle::importFullPrototypes(M, Globals, *Binary);
+  CFGAnalyzer Analyzer(M, Root, Globals, Binary, Oracle);
+  DetectABI Attacher(M, Root, Globals, FMC, Binary, Oracle, Analyzer);
+  Attacher.reattachFunctions(Before);
+}
+
+/// \p Entry is the address of data, not the entry of a function: forget the
+/// function that was made of it. (A function of its own: what is dropped can
+/// be watched from a debugger.)
+[[gnu::noinline]] static void
+dropFunctionAtDataAddress(model::Binary &Binary, const MetaAddress &Entry) {
+  Binary.Functions().erase(Entry);
+}
+
 static void runDetectABI(Module &M,
                          RootFunction &Root,
                          const CSVGlobals &Globals,
                          ControlFlowGraphCache &FMC,
                          TupleTree<model::Binary> &Binary) {
   using FSOracle = FunctionSummaryOracle;
+  {
+    FSOracle Oracle = FSOracle::importFullPrototypes(M, Globals, *Binary);
+    CFGAnalyzer Analyzer(M, Root, Globals, Binary, Oracle);
+    DetectABI ABIDetector(M, Root, Globals, FMC, Binary, Oracle, Analyzer);
+    ABIDetector.run();
+  }
+
+  // With what the model now says about the functions: find the clean-ups
+  // their callers left out, then give them the code they are resumed at.
+  //
+  // A function that returns after all, once such a clean-up is counted, was
+  // said never to return: its callers were cut at each call to it, without a
+  // trace. Those functions and all that call them are found again, with the
+  // clean-ups that were found; which can bring new ones to light.
+  constexpr unsigned MostRounds = 3;
+  for (unsigned Round = 0; Round < MostRounds; ++Round) {
+    std::vector<MetaAddress> Changed;
+
+    // What the call sites of an imported function say together about it is
+    // a prototype for it. Once, before the clean-ups are looked for: they
+    // are found with what the callees are known to remove, and the functions
+    // that assumed something else are found again in the same round as those
+    // the clean-ups change. (Only once: each time costs an analysis of all
+    // the functions.)
+    if (Round == 0) {
+      FSOracle Oracle = FSOracle::importFullPrototypes(M, Globals, *Binary);
+      CFGAnalyzer Analyzer(M, Root, Globals, Binary, Oracle);
+      DetectABI Elector(M, Root, Globals, FMC, Binary, Oracle, Analyzer);
+      Changed = Elector.electImportPrototypes();
+    }
+
+    {
+      FSOracle Oracle = FSOracle::importFullPrototypes(M, Globals, *Binary);
+      CFGAnalyzer Analyzer(M, Root, Globals, Binary, Oracle);
+      DetectABI Cleaner(M, Root, Globals, FMC, Binary, Oracle, Analyzer);
+      std::vector<MetaAddress> Cleaned = Cleaner.inferElidedCleanups();
+      Changed.insert(Changed.end(), Cleaned.begin(), Cleaned.end());
+      if (Changed.empty())
+        break;
+      Cleaner.forgetWithCallers(Changed);
+    }
+
+    FSOracle Oracle = FSOracle::importFullPrototypes(M, Globals, *Binary);
+    CFGAnalyzer Analyzer(M, Root, Globals, Binary, Oracle);
+    DetectABI Again(M, Root, Globals, FMC, Binary, Oracle, Analyzer);
+    Again.run();
+  }
+
   FSOracle Oracle = FSOracle::importFullPrototypes(M, Globals, *Binary);
   CFGAnalyzer Analyzer(M, Root, Globals, Binary, Oracle);
-  DetectABI ABIDetector(M, Root, Globals, FMC, Binary, Oracle, Analyzer);
-  ABIDetector.run();
+  DetectABI Attacher(M, Root, Globals, FMC, Binary, Oracle, Analyzer);
+  Attacher.attachResumeBlocks();
 }
 
 } // namespace efa
@@ -1337,8 +2465,87 @@ llvm::Error DetectABI::run(Model &Model,
 
   efa::collectFunctionsFromCallees(Module, Binary);
   efa::runDetectABI(Module, Root, Globals, FMC, TupleModel);
+
+  std::set<MetaAddress> Before;
+  for (const model::Function &Function : Binary.Functions())
+    Before.insert(Function.Entry());
+
   collectFunctionsFromUnusedAddresses(Module, Root, Binary, FMC);
+  using efa::collectFunctionsFromSharedJumpTargets;
+  auto Jumpers = collectFunctionsFromSharedJumpTargets(Binary, FMC, Before);
   efa::runDetectABI(Module, Root, Globals, FMC, TupleModel);
+
+  // The functions that were just found jump to shared code too: the thunks
+  // the tables of virtual functions refer to are found there, and several of
+  // them end in the same function
+  {
+    std::set<MetaAddress> Analyzed;
+    for (const model::Function &Function : Binary.Functions())
+      Analyzed.insert(Function.Entry());
+    auto More = collectFunctionsFromSharedJumpTargets(Binary, FMC, Analyzed);
+    if (not More.empty()) {
+      efa::runDetectABI(Module, Root, Globals, FMC, TupleModel);
+      Jumpers.insert(Jumpers.end(), More.begin(), More.end());
+    }
+  }
+
+  // What the functions that jump to a new function said about the calls in
+  // its code is now said by that function
+  for (const MetaAddress &Entry : Jumpers) {
+    model::Function &Function = Binary.Functions().at(Entry);
+    const auto &Blocks = FMC.getControlFlowGraph(Entry).Blocks();
+    std::vector<MetaAddress> Stale;
+    for (const model::CallSitePrototype &CallSite :
+         Function.CallSitePrototypes())
+      if (not Blocks.contains(BasicBlockID(CallSite.CallerBlockAddress())))
+        Stale.push_back(CallSite.CallerBlockAddress());
+    for (const MetaAddress &Block : Stale)
+      Function.CallSitePrototypes().erase(Block);
+  }
+
+  // A function made from an address nothing jumps to is not one if code that
+  // can be trusted only uses that address to say where memory is read: it is
+  // a table. Code can be trusted if it is of a function found before those,
+  // or of one that turned out to return and nothing else: what the bytes of
+  // a table decode to does not.
+  auto IsTrusted = [&](const model::Function &Function) {
+    if (Before.contains(Function.Entry()))
+      return true;
+    if (not Function.Attributes().empty())
+      return false;
+
+    bool Returns = false;
+    for (const efa::BasicBlock &Block :
+         FMC.getControlFlowGraph(Function.Entry()).Blocks()) {
+      for (const auto &Edge : Block.Successors()) {
+        using namespace efa::FunctionEdgeType;
+        const auto *Call = llvm::dyn_cast<efa::CallEdge>(Edge.get());
+        if (Edge->Type() == Return
+            or (Call != nullptr and Edge->Type() == FunctionCall
+                and Call->IsTailCall()))
+          Returns = true;
+        else if (Edge->Type() != DirectBranch and Edge->Type() != FunctionCall)
+          return false;
+      }
+    }
+    return Returns;
+  };
+  std::set<uint64_t> Data = addressesUsedAsData(Module,
+                                                Root,
+                                                Binary,
+                                                FMC,
+                                                IsTrusted);
+  std::vector<MetaAddress> NotFunctions;
+  for (const model::Function &Function : Binary.Functions())
+    if (not Before.contains(Function.Entry())
+        and Data.contains(Function.Entry().address()))
+      NotFunctions.push_back(Function.Entry());
+  for (const MetaAddress &Entry : NotFunctions)
+    efa::dropFunctionAtDataAddress(Binary, Entry);
+
+  // What is left of them and does not leave as a function does may be code
+  // that one of the others is resumed at
+  efa::reattachFunctions(Module, Root, Globals, FMC, TupleModel, Before);
 
   return llvm::Error::success();
 }

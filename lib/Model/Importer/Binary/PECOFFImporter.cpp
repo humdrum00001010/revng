@@ -3,6 +3,7 @@
 //
 
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Demangle/MicrosoftDemangle.h"
 #include "llvm/Object/COFF.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/Error.h"
@@ -77,18 +78,29 @@ private:
   /// Parse dynamic symbols from the file.
   void parseImportedSymbols();
   using ImportedSymbolRange = iterator_range<imported_symbol_iterator>;
-  void recordImportedFunctions(ImportedSymbolRange Range,
+  void recordImportedFunctions(llvm::StringRef Library,
+                               ImportedSymbolRange Range,
                                uint32_t ImportAddressTableEntry);
   /// Parse delay dynamic symbols from the file.
   void parseDelayImportedSymbols();
 
   using DelayDirectoryRef = const DelayImportDirectoryEntryRef;
+  using DelayTable = llvm::object::delay_import_directory_table_entry;
+  void recordDelayImportedFunctionsByAddress(const DelayTable &Table);
   void recordDelayImportedFunctions(DelayDirectoryRef &I,
-                                    ImportedSymbolRange Range);
+                                    ImportedSymbolRange Range,
+                                    uint64_t AddressTable);
 
   /// Parse the base relocation table, which describes the absolute pointers
   /// in the image
   void parseBaseRelocations();
+
+  /// Give the imported C++ functions that have no prototype the one their
+  /// decorated name describes.
+  void importPrototypesFromDecoratedNames();
+
+  /// Mark the imported functions the libraries document as never returning
+  void markFunctionsKnownNotToReturn();
 };
 
 Error PECOFFImporter::parseSectionsHeaders() {
@@ -388,7 +400,29 @@ void PECOFFImporter::parseExports() {
   }
 }
 
-void PECOFFImporter::recordImportedFunctions(ImportedSymbolRange Range,
+/// \return the name of the function \p Library exports as number
+///         \p Ordinal, for a function that is imported by its number alone:
+///         one that can be used as it is where the function is named in C
+static std::string nameOfOrdinal(StringRef Library, uint16_t Ordinal) {
+  std::string Result = Library.str();
+  for (char &Character : Result)
+    if (not isAlnum(Character))
+      Character = '_';
+  return Result + "_ordinal_" + std::to_string(Ordinal);
+}
+
+/// \return whether \p Symbol is imported by its number and not by a name
+static bool isImportedByOrdinal(const ImportedSymbolRef &Symbol) {
+  bool Result = false;
+  if (Error E = Symbol.isOrdinal(Result)) {
+    consumeError(std::move(E));
+    return false;
+  }
+  return Result;
+}
+
+void PECOFFImporter::recordImportedFunctions(StringRef Library,
+                                             ImportedSymbolRange Range,
                                              uint32_t ImportAddressTableEntry) {
 
   // Index of entries within import table.
@@ -412,8 +446,16 @@ void PECOFFImporter::recordImportedFunctions(ImportedSymbolRange Range,
       continue;
     }
 
-    // Dynamic functions must have a name, so skip those without it.
-    // TODO: handle imports by ordinal
+    // Dynamic functions must have a name: one that is imported by its number
+    // gets the name of the library and the number, so that the calls to it
+    // are calls to one function and not jumps through a pointer nothing is
+    // known about.
+    std::string OrdinalName;
+    if (Sym.empty() and isImportedByOrdinal(I)) {
+      OrdinalName = nameOfOrdinal(Library, Ordinal);
+      Sym = OrdinalName;
+    }
+
     if (Sym.empty() or Model->ImportedDynamicFunctions().contains(Sym.str()))
       continue;
 
@@ -504,16 +546,22 @@ void PECOFFImporter::parseImportedSymbols() {
     // The import lookup table can be missing with certain older linkers, so
     // fall back to the import address table in that case.
     if (HasImportLookupTableEntry) {
-      recordImportedFunctions(I.lookup_table_symbols(),
+      recordImportedFunctions(Name,
+                              I.lookup_table_symbols(),
                               ImportAddressTableEntry);
     } else {
-      recordImportedFunctions(I.imported_symbols(), ImportAddressTableEntry);
+      recordImportedFunctions(Name,
+                              I.imported_symbols(),
+                              ImportAddressTableEntry);
     }
   }
 }
 
 void PECOFFImporter::recordDelayImportedFunctions(DelayDirectoryRef &I,
-                                                  ImportedSymbolRange Range) {
+                                                  ImportedSymbolRange Range,
+                                                  uint64_t AddressTable) {
+  auto Architecture = Model->Architecture();
+  uint64_t PointerSize = model::Architecture::getPointerSize(Architecture);
   // Index of entries within import table.
   int32_t Index = -1;
   for (const ImportedSymbolRef &S : Range) {
@@ -546,12 +594,29 @@ void PECOFFImporter::recordDelayImportedFunctions(DelayDirectoryRef &I,
       continue;
     }
 
-    // Dynamic functions must have a name, so skip those without it.
-    // TODO: handle imports by ordinal
+    // Dynamic functions must have a name: see recordImportedFunctions for
+    // those that are imported by their number
+    std::string OrdinalName;
+    if (Sym.empty() and isImportedByOrdinal(S)) {
+      StringRef Library;
+      if (Error E = I.getName(Library)) {
+        consumeError(std::move(E));
+      } else {
+        OrdinalName = nameOfOrdinal(Library, Ordinal);
+        Sym = OrdinalName;
+      }
+    }
+
     if (Sym.empty() or Model->ImportedDynamicFunctions().contains(Sym.str()))
       continue;
 
-    MetaAddress AddressOfDelayImportEntry = ImageBase + u64(Addr);
+    // The loader stores the address of the function in the entry of the delay
+    // import address table: that entry is what the code goes through. What
+    // `getImportAddress` returns is the content of the entry in the file,
+    // which points to the code that binds the function at its first use.
+    MetaAddress AddressOfDelayImportEntry = ImageBase
+                                            + (AddressTable
+                                               + Index * PointerSize);
 
     // Lets make Relocation.
     using namespace model::RelocationType;
@@ -568,13 +633,6 @@ void PECOFFImporter::recordDelayImportedFunctions(DelayDirectoryRef &I,
 
 void PECOFFImporter::parseDelayImportedSymbols() {
   for (DelayDirectoryRef &I : TheBinary.ObjectFile.delay_import_directories()) {
-    StringRef Name;
-    if (Error E = I.getName(Name)) {
-      std::string Message = toString(std::move(E));
-      revng_log(Log, "No name of a delay imported dll: " << Message);
-      continue;
-    }
-
     const delay_import_directory_table_entry *Table;
     if (Error E = I.getDelayImportTable(Table)) {
       std::string Message = toString(std::move(E));
@@ -582,10 +640,80 @@ void PECOFFImporter::parseDelayImportedSymbols() {
       continue;
     }
 
+    // The fields of the table are RVAs if the first bit of the attributes is
+    // set, virtual addresses otherwise: the format of older linkers, which
+    // the reader of the object file does not know. Read here.
+    if ((Table->Attributes & 1) == 0) {
+      recordDelayImportedFunctionsByAddress(*Table);
+      continue;
+    }
+
+    StringRef Name;
+    if (Error E = I.getName(Name)) {
+      std::string Message = toString(std::move(E));
+      revng_log(Log, "No name of a delay imported dll: " << Message);
+      continue;
+    }
+
     if (not Model->ImportedLibraries().insert(Name.str()).second)
       continue;
 
-    recordDelayImportedFunctions(I, I.imported_symbols());
+    uint64_t AddressTable = Table->DelayImportAddressTable;
+    recordDelayImportedFunctions(I, I.imported_symbols(), AddressTable);
+  }
+}
+
+void PECOFFImporter::recordDelayImportedFunctionsByAddress(const DelayTable
+                                                             &Table) {
+  auto Architecture = Model->Architecture();
+  uint64_t PointerSize = model::Architecture::getPointerSize(Architecture);
+  uint64_t Base = ImageBase.address();
+  constexpr uint64_t Word = 4;
+  if (PointerSize != Word or Table.Name < Base
+      or Table.DelayImportAddressTable < Base
+      or Table.DelayImportNameTable < Base)
+    return;
+
+  std::optional<StringRef> Library = readString(Table.Name - Base);
+  if (not Library.has_value()) {
+    revng_log(Log, "No name of a delay imported dll");
+    return;
+  }
+
+  if (not Model->ImportedLibraries().insert(Library->str()).second)
+    return;
+
+  constexpr uint64_t MostEntries = 1 << 16;
+  for (uint64_t Index = 0; Index < MostEntries; ++Index) {
+    MetaAddress NameEntry = fromGeneric(Table.DelayImportNameTable
+                                        + Index * Word);
+    std::optional<uint64_t> Thunk = File.readInteger(NameEntry, Word);
+    if (not Thunk.has_value() or *Thunk == 0)
+      break;
+
+    // By its number, or by the address of its hint and its name
+    std::string Symbol;
+    constexpr uint64_t OrdinalFlag = uint64_t(1) << 31;
+    if (*Thunk & OrdinalFlag) {
+      Symbol = nameOfOrdinal(*Library, *Thunk & 0xFFFF);
+    } else if (*Thunk >= Base) {
+      if (std::optional<StringRef> Name = readString(*Thunk - Base + 2))
+        Symbol = Name->str();
+    }
+
+    if (Symbol.empty() or Model->ImportedDynamicFunctions().contains(Symbol))
+      continue;
+
+    // The loader stores the address of the function in the entry of the
+    // delay import address table: that entry is what the code goes through
+    MetaAddress Entry = fromGeneric(Table.DelayImportAddressTable
+                                    + Index * Word);
+    using namespace model::RelocationType;
+    auto [RelocationType, Size] = formCOFFRelocation(Model->Architecture());
+    model::Relocation NewRelocation(Entry, RelocationType, Size, 0);
+    auto NewIt = Model->ImportedDynamicFunctions().insert(Symbol).first;
+    revng_assert(NewRelocation.verify(true));
+    NewIt->Relocations().insert(NewRelocation);
   }
 }
 
@@ -639,6 +767,298 @@ void PECOFFImporter::parseBaseRelocations() {
       revng_log(Log,
                 "Cannot read the target of the base relocation at "
                   << Address.toString() << ". Ignoring.");
+    }
+  }
+}
+
+/// \return the type of an argument or of a return value that a decorated name
+///         gives \p Node as the type of, or an empty type if it is not a
+///         scalar: the name does not tell how large a class is.
+static model::UpcastableType
+scalarFromDecoratedName(const ms_demangle::TypeNode &Node,
+                        model::Architecture::Values Architecture) {
+  using namespace ms_demangle;
+  using model::PrimitiveType;
+
+  switch (Node.kind()) {
+  case NodeKind::PrimitiveType:
+    switch (static_cast<const PrimitiveTypeNode &>(Node).PrimKind) {
+    case PrimitiveKind::Void:
+      return PrimitiveType::makeVoid();
+    case PrimitiveKind::Bool:
+    case PrimitiveKind::Uchar:
+    case PrimitiveKind::Char8:
+      return PrimitiveType::makeUnsigned(1);
+    case PrimitiveKind::Char:
+    case PrimitiveKind::Schar:
+      return PrimitiveType::makeSigned(1);
+    case PrimitiveKind::Ushort:
+    case PrimitiveKind::Wchar:
+    case PrimitiveKind::Char16:
+      return PrimitiveType::makeUnsigned(2);
+    case PrimitiveKind::Short:
+      return PrimitiveType::makeSigned(2);
+    case PrimitiveKind::Uint:
+    case PrimitiveKind::Ulong:
+    case PrimitiveKind::Char32:
+      return PrimitiveType::makeUnsigned(4);
+    case PrimitiveKind::Int:
+    case PrimitiveKind::Long:
+      return PrimitiveType::makeSigned(4);
+    case PrimitiveKind::Uint64:
+      return PrimitiveType::makeUnsigned(8);
+    case PrimitiveKind::Int64:
+      return PrimitiveType::makeSigned(8);
+    case PrimitiveKind::Float:
+      return PrimitiveType::makeFloat(4);
+    case PrimitiveKind::Double:
+    case PrimitiveKind::Ldouble:
+      return PrimitiveType::makeFloat(8);
+    case PrimitiveKind::Nullptr:
+      return model::PointerType::make(PrimitiveType::makeVoid(), Architecture);
+    }
+    return {};
+
+  case NodeKind::PointerType: {
+    // Pointers and references. A pointer to a member can be larger than a
+    // pointer.
+    const auto &Pointer = static_cast<const PointerTypeNode &>(Node);
+    if (Pointer.ClassParent != nullptr or Pointer.Pointee == nullptr)
+      return {};
+
+    // What it points to is kept if it is a scalar too
+    auto Pointee = scalarFromDecoratedName(*Pointer.Pointee, Architecture);
+    if (Pointee.isEmpty())
+      Pointee = PrimitiveType::makeVoid();
+    if (Pointer.Pointee->Quals & Q_Const)
+      Pointee->IsConst() = true;
+    return model::PointerType::make(std::move(Pointee), Architecture);
+  }
+
+  case NodeKind::TagType:
+    if (static_cast<const TagTypeNode &>(Node).Tag == TagKind::Enum)
+      return PrimitiveType::makeSigned(4);
+    return {};
+
+  default:
+    return {};
+  }
+}
+
+/// \return the prototype the decorated name \p Name of a C++ function
+///         describes, or an empty type if \p Name is not such a name or does
+///         not tell what the function takes from the stack.
+static model::UpcastableType prototypeFromDecoratedName(model::Binary &Binary,
+                                                        llvm::StringRef Name) {
+  using namespace ms_demangle;
+
+  if (not Name.startswith("?"))
+    return {};
+
+  Demangler Demangler;
+  StringView View(Name.data(), Name.size());
+  SymbolNode *Symbol = Demangler.parse(View);
+  if (Demangler.Error or Symbol == nullptr
+      or Symbol->kind() != NodeKind::FunctionSymbol)
+    return {};
+
+  // Thunks and functions with a variable number of arguments are left alone
+  const FunctionSignatureNode
+    *Signature = static_cast<const FunctionSymbolNode *>(Symbol)->Signature;
+  if (Signature == nullptr or Signature->kind() != NodeKind::FunctionSignature
+      or Signature->IsVariadic)
+    return {};
+
+  model::ABI::Values ABI = model::ABI::Invalid;
+  switch (Signature->CallConvention) {
+  case ms_demangle::CallingConv::Cdecl:
+    ABI = model::ABI::Microsoft_x86_cdecl;
+    break;
+  case ms_demangle::CallingConv::Stdcall:
+    ABI = model::ABI::Microsoft_x86_stdcall;
+    break;
+  case ms_demangle::CallingConv::Thiscall:
+    ABI = model::ABI::Microsoft_x86_thiscall;
+    break;
+  case ms_demangle::CallingConv::Fastcall:
+    ABI = model::ABI::Microsoft_x86_fastcall;
+    break;
+  default:
+    return {};
+  }
+
+  model::Architecture::Values Architecture = Binary.Architecture();
+  auto Pointer = [Architecture]() {
+    return model::PointerType::make(model::PrimitiveType::makeVoid(),
+                                    Architecture);
+  };
+
+  // Collect the types first: nothing is added to the model for a name that
+  // turns out not to tell enough
+  SmallVector<model::UpcastableType, 8> Arguments;
+  model::UpcastableType ReturnType;
+
+  // A non-static member function takes `this` first
+  const unsigned Member = FC_Public | FC_Protected | FC_Private;
+  bool HasThis = (Signature->FunctionClass & Member) != 0
+                 and (Signature->FunctionClass & FC_Static) == 0;
+  if (HasThis)
+    Arguments.push_back(Pointer());
+
+  auto IsObject = [](const TypeNode &Type) {
+    return Type.kind() == NodeKind::TagType
+           and static_cast<const TagTypeNode &>(Type).Tag != TagKind::Enum;
+  };
+
+  const TypeNode *Returned = Signature->ReturnType;
+  if (Returned == nullptr) {
+    // A constructor returns `this`, a destructor returns nothing
+    const IdentifierNode *Identifier = Symbol->Name->getUnqualifiedIdentifier();
+    if (Identifier->kind() != NodeKind::StructorIdentifier)
+      return {};
+    auto *Structor = static_cast<const StructorIdentifierNode *>(Identifier);
+    if (not Structor->IsDestructor)
+      ReturnType = Pointer();
+  } else if (IsObject(*Returned)) {
+    // A member function returns an object through a pointer the caller passes
+    // after `this` and gets back. For the other functions it depends on the
+    // definition of the class.
+    if (not HasThis)
+      return {};
+    Arguments.push_back(Pointer());
+    ReturnType = Pointer();
+  } else {
+    ReturnType = scalarFromDecoratedName(*Returned, Architecture);
+    if (ReturnType.isEmpty())
+      return {};
+    if (ReturnType->isVoidPrimitive())
+      ReturnType = model::UpcastableType();
+  }
+
+  if (Signature->Params != nullptr) {
+    const NodeArrayNode &List = *Signature->Params;
+    for (size_t I = 0; I < List.Count; ++I) {
+      const auto &Parameter = static_cast<const TypeNode &>(*List.Nodes[I]);
+      auto Type = scalarFromDecoratedName(Parameter, Architecture);
+      if (Type.isEmpty() or Type->isVoidPrimitive())
+        return {};
+      Arguments.push_back(std::move(Type));
+    }
+  }
+
+  auto &&[Prototype, Type] = Binary.makeCABIFunctionDefinition();
+  Prototype.ABI() = ABI;
+  for (model::UpcastableType &Argument : Arguments)
+    Prototype.addArgument(std::move(Argument));
+  if (not ReturnType.isEmpty())
+    Prototype.ReturnType() = std::move(ReturnType);
+
+  return std::move(Type);
+}
+
+/// \return for the decorated name \p Name of a C function that removes its
+///         arguments from the stack (`_Name@N`, where N is how many bytes
+///         they take), the default prototype with those N bytes of arguments
+///         on the stack, removed by the function; an empty type for any
+///         other name. The name does not say what the arguments are, nor
+///         what the function returns: that stays as it is for a function
+///         nothing is known about.
+static model::UpcastableType prototypeFromStdcallName(model::Binary &Binary,
+                                                      llvm::StringRef Name) {
+  if (not Name.consume_front("_"))
+    return {};
+
+  size_t At = Name.rfind('@');
+  uint64_t Bytes = 0;
+  if (At == llvm::StringRef::npos or At == 0
+      or Name.substr(At + 1).getAsInteger(10, Bytes))
+    return {};
+
+  uint64_t Word = model::Architecture::getPointerSize(Binary.Architecture());
+  constexpr uint64_t MostWords = 64;
+  if (Bytes % Word != 0 or Bytes / Word > MostWords)
+    return {};
+
+  const model::TypeDefinition *Default = Binary.defaultPrototype();
+  const auto *Raw = dyn_cast_or_null<model::RawFunctionDefinition>(Default);
+  if (Raw == nullptr)
+    return {};
+
+  // Collect what is copied first: making a type can move the others
+  auto Architecture = Raw->Architecture();
+  auto Arguments = Raw->Arguments();
+  auto ReturnValues = Raw->ReturnValues();
+  auto PreservedRegisters = Raw->PreservedRegisters();
+  uint64_t FinalStackOffset = Raw->FinalStackOffset() + Bytes;
+
+  model::UpcastableType OnStack;
+  if (Bytes != 0) {
+    auto &&[Struct, StructType] = Binary.makeStructDefinition(Bytes);
+    for (uint64_t Offset = 0; Offset < Bytes; Offset += Word)
+      Struct.addField(Offset, model::PrimitiveType::makeGeneric(Word));
+    OnStack = std::move(StructType);
+  }
+
+  auto &&[Prototype, Type] = Binary.makeRawFunctionDefinition();
+  Prototype.Architecture() = Architecture;
+  Prototype.Arguments() = std::move(Arguments);
+  Prototype.ReturnValues() = std::move(ReturnValues);
+  Prototype.PreservedRegisters() = std::move(PreservedRegisters);
+  Prototype.FinalStackOffset() = FinalStackOffset;
+  if (not OnStack.isEmpty())
+    Prototype.StackArgumentsType() = std::move(OnStack);
+
+  return std::move(Type);
+}
+
+void PECOFFImporter::importPrototypesFromDecoratedNames() {
+  // The calling conventions these names can tell apart are those of x86
+  if (Model->Architecture() != model::Architecture::x86)
+    return;
+
+  for (model::DynamicFunction &Function : Model->ImportedDynamicFunctions()) {
+    if (not Function.Prototype().isEmpty())
+      continue;
+
+    auto Prototype = prototypeFromDecoratedName(*Model, Function.Name());
+    if (Prototype.isEmpty())
+      Prototype = prototypeFromStdcallName(*Model, Function.Name());
+    if (Prototype.isEmpty())
+      continue;
+
+    revng_log(Log, "Prototype from the name of " << Function.Name());
+    Function.Prototype() = std::move(Prototype);
+  }
+}
+
+void PECOFFImporter::markFunctionsKnownNotToReturn() {
+  // What the C and C++ run-time libraries and the system declare as never
+  // returning to their caller. A compiler that knows it puts nothing after
+  // the call to one of them: what follows is another function, or data (later
+  // compilers put a trap there). Nothing in the file says it, the name of
+  // the imported function is all there is to go by.
+  static constexpr const char *Names[] = { "_CxxThrowException",
+                                           "?terminate@@YAXXZ",
+                                           "__std_terminate",
+                                           "_invalid_parameter_noinfo_noreturn",
+                                           "_invoke_watson",
+                                           "_amsg_exit",
+                                           "abort",
+                                           "exit",
+                                           "_exit",
+                                           "_Exit",
+                                           "quick_exit",
+                                           "longjmp",
+                                           "ExitProcess",
+                                           "ExitThread",
+                                           "RaiseFailFastException" };
+
+  auto &Imported = Model->ImportedDynamicFunctions();
+  for (const char *Name : Names) {
+    auto It = Imported.find(Name);
+    if (It != Imported.end()) {
+      revng_log(Log, Name << " is known not to return");
+      It->Attributes().insert(model::FunctionAttribute::NoReturn);
     }
   }
 }
@@ -717,6 +1137,12 @@ Error PECOFFImporter::import(const ImporterOptions &Options) {
       revng_log(Log, "Couldn't find an appropriate rootfs");
     }
   }
+
+  // An imported function without a prototype is assumed to leave its
+  // arguments on the stack, which the member functions of C++ classes do not:
+  // their names tell
+  importPrototypesFromDecoratedNames();
+  markFunctionsKnownNotToReturn();
 
   model::flattenPrimitiveTypedefs(Model);
   model::deduplicateCollidingNames(Model);
